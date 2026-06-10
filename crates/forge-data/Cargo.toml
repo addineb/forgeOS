@@ -1,0 +1,27 @@
+[package]
+name = "forge-data"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ForgeOS hot-path data layer: packed *.forge record, writer, zero-copy mmap reader, checksum, parquet converter."
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+bytemuck = { version = "1.16", features = ["derive"] }
+memmap2 = "0.9"
+
+# Parquet -> *.forge converter (feature `convert`); kept optional so the default
+# build + CI stay light and the round-trip GATE needs no heavy deps.
+arrow = { version = "53", optional = true }
+parquet = { version = "53", optional = true, default-features = false, features = ["arrow", "snap", "zstd"] }
+
+[features]
+convert = ["dep:arrow", "dep:parquet"]
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "forge-convert"
+path = "src/bin/convert.rs"
+required-features = ["convert"]

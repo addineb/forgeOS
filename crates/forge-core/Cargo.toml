@@ -1,0 +1,8 @@
+[package]
+name = "forge-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ForgeOS fail-fast domain types: UnixNanos, fixed-point Price/Qty, Side, Event."
+
+[dependencies]
