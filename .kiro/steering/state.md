@@ -25,13 +25,17 @@ reproducible, coinflip loses on real data.
 ## Current state (update as we go)
 - Public indicators (OFI / wall / CVD), slow+fast + regime-gate: ALL no-edge
   (~12k configs). Confirms: crowded signals are arbitraged out.
-- Built: regime classifier + attribution + opt-in gate; results ledger; wall-flow
-  (real-vs-fake wall); absorption (pending box validation).
+- Built: regime classifier + attribution + opt-in gate; results ledger.
+- wall-flow (real-vs-fake wall): SWEPT slow+fast -> 0 promote (no edge, but valid).
+- absorption: validated (clippy+test green) + SWEPT (in progress / read result).
 - FIRST PULSE: spot-perp BASIS REVERSION (was "lead-lag"). ~40 trades/day,
   ~23-30bps gross, 80-93% win on 3 days. NOT trusted (idealized fills, tiny
   sample, hand-picked knobs, funding ignored). docs/research/lead-lag-study.md.
-- Now: tooling pass (Obsidian vault + NotebookLM second brain), then decide
-  build-basis-reversion vs brain->strategy engine.
+- Tooling DONE: Obsidian vault (MOC + styled graph) + NotebookLM pack + this
+  always-on memory + tools/sync-vault.ps1 (repo->vault). Vault at
+  C:\Users\User\Desktop\obsidian\forgeos.
+- NEXT: after absorption sweep, the BASIS-REVERSION honest build is the lead
+  (first pulse). Touches engine -> needs explicit sign-off.
 
 ## Standing decisions / rules
 - Metrics in PERCENT, not bps (in reports). Leverage 20x, size 20%, EUR500 paper
