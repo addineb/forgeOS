@@ -33,9 +33,11 @@ actionable backlog. Check items off as they land.
       (~40 trades/day, ~23-30bps gross, 80-93% win, ~20min holds, net-positive
       even @taker on 3 days). NOT trusted yet (idealized fills, tiny sample,
       hand-picked knobs, funding ignored). See docs/research/lead-lag-study.md.
-- [ ] 1. BUILD basis-reversion strategy honestly (HL-quote fills, spread+fee+
-      funding) and run gates (shuffled control, sweep, DSR/PBO, paper).
-- [ ] 2. BRAIN -> STRATEGY engine (does not need HL data).
+- [~] BRAIN -> STRATEGY engine: Phase A label-notes LIVE (docs/research/labels/
+      template+example+README). Trader drops setups; Kiro builds triggers.
+- [ ] BASIS-REVERSION: build on a GIT BRANCH ("lag subspace" = engine copy) so we
+      can test venues/settings/approaches without risking main. Needs sign-off
+      to start. Honest fills (HL-quote, spread+fee+funding) + gates + paper.
 - [ ] 2. BRAIN -> STRATEGY engine: annotator/visualizer + chart-trigger x
       orderflow harness. Spec: docs/research/annotator-visualizer.md. Phase A
       (label-note convention, ~zero build) first; Phase B (book/tape viewer) when

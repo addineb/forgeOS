@@ -7,6 +7,11 @@ type: map
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
 ## 2026-06-10
+- Brain->strategy Phase A live: drop setup notes in docs/research/labels/
+  (template + example there). No-lookahead trigger rule enforced.
+- Basis-reversion / cross-venue work will be done on a GIT BRANCH (the "lag
+  subspace" = a safe copy of the engine), so we can test different venues,
+  settings, and ways of trading the edge WITHOUT touching the proven main engine.
 - Obsidian vault = this repo; second brain = MOC method (hubs + links + graph) +
   NotebookLM ([[PROJECT-CONTEXT]]) + always-on Kiro memory (.kiro/steering/state.md).
 - Lead-lag (HFT) shelved (HL feed too coarse); reframed to spot-perp BASIS
