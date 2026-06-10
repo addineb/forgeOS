@@ -7,12 +7,14 @@ type: map
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
 ## 2026-06-10
-- DATA PROVIDER: DIRECTION SET = FREE OWN STACK (no monthly bill). Checked +
-  ruled out on cost: Tardis (~$300/mo), Kiyotaka (expensive; it is CCT's data
-  backend), CCT/TapeSurf (look-only terminals), CoinGecko (free but no L2).
-  Path: Coinalyze (free forced-flow/basis) + Hyperliquid S3 (free L2) + Binance/
-  Bitget archives + self-capture multi-venue L2 on the box. Covers the real leads
-  (basis-reversion + forced-flow) at $0. Do not re-litigate providers. [[data-apis]]
+- DATA PROVIDER = cryptohftdata (CHD), the one we ALREADY use. FREE (no limits
+  now; free tier forever). Covers the FULL spec: 9+ spot+deriv venues incl.
+  Hyperliquid, FULL-DEPTH tick L2 (snapshots+deltas), trades, funding,
+  LIQUIDATIONS; REST API or bulk files; normalized. All paid feeds
+  (Tardis/Kiyotaka/CCT/TapeSurf) SUPERSEDED - not needed. The real gap was OUR
+  converter pulling only Binance bookDelta+trade + HL thin hlquote -> extend it to
+  pull HL FULL L2 (fixes basis-reversion sparsity) + multi-venue L2 +
+  liquidations/funding. [[data-apis]]
 - CCT (Cloud Craft Terminal) evaluated -> REJECTED for engine: look-only
   terminal, NO data export/API ("No API Key Required"), closed proprietary
   signals = the dead-indicator trap. Useful at most as personal eyes.

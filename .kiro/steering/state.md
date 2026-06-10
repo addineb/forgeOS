@@ -34,10 +34,12 @@ reproducible, coinflip loses on real data.
 - Tooling DONE: Obsidian vault (MOC + styled graph) + NotebookLM pack + this
   always-on memory + tools/sync-vault.ps1 (repo->vault). Vault at
   C:\Users\User\Desktop\obsidian\forgeos.
-- DATA: DIRECTION SET = FREE OWN STACK. All paid feeds ruled out on cost (Tardis
-  ~$300, Kiyotaka expensive, CCT/TapeSurf look-only, CoinGecko no L2). Path:
-  Coinalyze (free) + Hyperliquid S3 (free) + Binance/Bitget archives + self-capture
-  L2 on box. Covers basis-reversion + forced-flow at $0. Do not re-shop providers.
+- DATA = cryptohftdata (CHD, already in use, FREE no limits). Covers full spec:
+  9+ venues incl Hyperliquid, FULL-DEPTH tick L2, trades, funding, LIQUIDATIONS;
+  REST/bulk. Paid feeds (Tardis/Kiyotaka/CCT) NOT needed. Gap was OUR converter
+  (only pulled Binance bookDelta+trade + thin HL hlquote). FIX: extend
+  chd-to-parquet.py to pull HL FULL L2 (unblocks basis-reversion) + multi-venue L2
+  + liquidations/funding. Do not re-shop providers.
 - NEXT: BASIS-REVERSION on a git-branch "lag subspace" (engine copy) fed by
   Tardis. Touches engine -> explicit sign-off before building.
 

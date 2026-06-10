@@ -4,7 +4,31 @@ type: note
 ---
 # Data APIs - raw feeds for the lag/basis engine + forced-flow
 
-## STATUS: DIRECTION SET = FREE OWN STACK. Paid feeds ruled out on cost (EUR500 acct).
+## >>> ANSWER: cryptohftdata (CHD) - the one we ALREADY use - covers EVERYTHING, FREE <<<
+We over-shopped. CHD (cryptohftdata.com) already meets the full spec:
+- 9+ spot+deriv venues: Binance, Bybit, HYPERLIQUID, OKX, Bitget, Kraken, BitMEX,
+  Aster, Lighter -> aggregated multi-venue, test any lag/basis combo by symbol list.
+- Data types: trades, FULL-DEPTH order books (tick L2 snapshots + delta updates),
+  FUNDING, LIQUIDATIONS. Normalized, dedup, gap-checked. REST API OR bulk files.
+- COST: 100% free now (no limits); "generous free tier forever". Key already on box.
+
+### The real gap was OUR CONVERTER, not the data
+tools/chd-to-parquet.py only pulled: Binance bookDelta+trade + HL `hlquote` (thin
+reconstructed BBO). That is why HL looked sparse (~1/10-50s) and basis-reversion
+got blocked. CHD HAS Hyperliquid FULL-DEPTH L2 - we just never pulled it.
+
+### NEXT (free, high value)
+1. Confirm on CHD which streams exist per venue (esp. Hyperliquid full L2, and
+   liquidations/funding) via the dataset pages/docs.
+2. Extend chd-to-parquet.py to pull: HL full-depth L2 (fixes basis-reversion),
+   multi-venue L2 for the lag combos, + liquidations/funding for forced-flow.
+3. Re-run the basis-reversion density check on HL FULL L2 (should be dense now).
+
+### Earlier provider survey (kept for reference, all SUPERSEDED by CHD)
+Tardis ~$300/mo, Kiyotaka expensive, CCT/TapeSurf look-only terminals, CoinGecko
+no L2, Coinalyze free (forced-flow only, no L2). None needed - CHD covers it free.
+
+## (superseded) earlier STATUS: DIRECTION SET = FREE OWN STACK. Paid feeds ruled out on cost (EUR500 acct).
 Providers checked + verdict (do not re-litigate):
 - Tardis.dev ~$300/mo - RULED OUT (most complete, fund-priced).
 - Kiyotaka (kiyotaka.ai) - expensive - RULED OUT. (Note: it is the DATA API behind
