@@ -13,5 +13,5 @@
 mod grid;
 mod run;
 
-pub use grid::{expand, GridSpec};
+pub use grid::{expand, expand_imbalance, GridSpec, ImbalanceGridSpec};
 pub use run::{run_sweep, CellResult, SweepReport, Thresholds, Verdict};

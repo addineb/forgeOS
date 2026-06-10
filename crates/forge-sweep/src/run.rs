@@ -1,16 +1,15 @@
-//! The parallel sweep runner, scoring, and verdict.
+//! The parallel sweep runner (generic over strategy), scoring, and verdict.
 
 use rayon::prelude::*;
 
 use forge_core::Event;
 use forge_metrics::{deflated_sharpe, pbo_cscv, sharpe, variance_of_sharpes};
-use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine};
-use forge_strategy::{MomentumConfig, OfiMomentum};
+use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine, Strategy};
 
 /// Tunable two-bar thresholds. Lenient to KEEP (park), strict to PROMOTE.
 #[derive(Clone, Copy, Debug)]
 pub struct Thresholds {
-    /// Minimum completed round trips to be taken seriously (knob must trade).
+    /// Minimum completed round trips to be taken seriously.
     pub min_round_trips: u64,
     /// DSR needed to keep a config as a candidate (park).
     pub dsr_candidate: f64,
@@ -39,13 +38,13 @@ pub enum Verdict {
     Retire,
 }
 
-/// Per-config result + score.
+/// Per-config result + score. Generic over the config type `C`.
 #[derive(Clone, Debug)]
-pub struct CellResult {
+pub struct CellResult<C> {
     /// Config id (stable across runs and thread counts).
     pub id: usize,
     /// The config.
-    pub config: MomentumConfig,
+    pub config: C,
     /// Net P&L summed across windows (quote units).
     pub net: f64,
     /// Completed round trips across windows.
@@ -68,23 +67,22 @@ pub struct CellResult {
 
 /// The whole sweep.
 #[derive(Clone, Debug)]
-pub struct SweepReport {
+pub struct SweepReport<C> {
     /// Cells in config-id order.
-    pub cells: Vec<CellResult>,
+    pub cells: Vec<CellResult<C>>,
     /// Sweep-level Probability of Backtest Overfitting (None if not computable).
     pub pbo: Option<f64>,
     /// Number of configs tried (the multiple-testing count).
     pub n_trials: usize,
-    /// Config id with the highest net (the in-sample "winner").
+    /// Config id with the highest net.
     pub best_net_id: Option<usize>,
 }
 
-/// Pick an even CSCV block count that fits the observation length.
 fn choose_blocks(t: usize) -> Option<usize> {
     [16usize, 12, 10, 8, 6, 4].into_iter().find(|&s| t >= s)
 }
 
-fn decide(c: &CellResult, sweep_pbo: Option<f64>, th: &Thresholds) -> Verdict {
+fn decide<C>(c: &CellResult<C>, sweep_pbo: Option<f64>, th: &Thresholds) -> Verdict {
     if c.net <= 0.0 || c.round_trips < th.min_round_trips || c.dsr < 0.5 {
         return Verdict::Retire;
     }
@@ -98,26 +96,32 @@ fn decide(c: &CellResult, sweep_pbo: Option<f64>, th: &Thresholds) -> Verdict {
     Verdict::Retire
 }
 
-/// Run the full sweep. `windows` are pre-decoded event streams (one per window);
-/// `grid` is the config list; `sample_ns` is the equity-curve bucket size.
+/// Run the full sweep. `configs` are the grid cells; `make` turns a config into
+/// a strategy. Generic over the config type and strategy, so any bot can be
+/// swept. Deterministic and identical at any thread count.
 #[must_use]
-pub fn run_sweep(
+#[allow(clippy::too_many_arguments)]
+pub fn run_sweep<C, S, F>(
     windows: &[Vec<Event>],
-    grid: &[MomentumConfig],
+    configs: &[C],
+    make: F,
     sample_ns: u64,
     fees: FeeSchedule,
     latency_ns: u64,
     book_levels: usize,
     th: Thresholds,
-) -> SweepReport {
-    let n = grid.len();
+) -> SweepReport<C>
+where
+    C: Copy + Send + Sync,
+    S: Strategy,
+    F: Fn(C) -> S + Send + Sync,
+{
+    let n = configs.len();
 
-    // Parallel over configs; rayon preserves order in collect, and each run is
-    // an independent deterministic sim -> identical results at any thread count.
-    let mut cells: Vec<CellResult> = (0..n)
+    let mut cells: Vec<CellResult<C>> = (0..n)
         .into_par_iter()
         .map(|id| {
-            let cfg = grid[id];
+            let cfg = configs[id];
             let mut returns = Vec::new();
             let mut net = 0.0f64;
             let mut trips = 0u64;
@@ -128,16 +132,11 @@ pub fn run_sweep(
             let mut max_dd = 0.0f64;
 
             for w in windows {
-                let sim_cfg = SimConfig {
-                    order_latency_ns: latency_ns,
-                    book_max_levels: book_levels,
-                    fees,
-                };
-                let mut eng = SimEngine::new(OfiMomentum::new(cfg), sim_cfg);
+                let sim_cfg = SimConfig { order_latency_ns: latency_ns, book_max_levels: book_levels, fees };
+                let mut eng = SimEngine::new(make(cfg), sim_cfg);
                 eng.enable_equity_sampling(sample_ns);
                 eng.run(w.iter()).expect("monotonic event stream");
 
-                // per-bucket returns (for Sharpe / PBO) and peak-to-trough drawdown
                 let curve = eng.equity_curve();
                 for pair in curve.windows(2) {
                     returns.push(money_to_f64(pair[1].1 - pair[0].1));
@@ -153,7 +152,6 @@ pub fn run_sweep(
                     }
                 }
 
-                // per-trip win rate + bps-of-notional edge
                 let tp = eng.account().trip_pnls();
                 let tn = eng.account().trip_notionals();
                 for (pnl, notl) in tp.iter().zip(tn.iter()) {
@@ -191,14 +189,11 @@ pub fn run_sweep(
         })
         .collect();
 
-    // Sweep-level PBO over the aligned per-bucket return matrix.
     let pbo = if n >= 2 {
         let t = cells.iter().map(|c| c.returns.len()).min().unwrap_or(0);
         match choose_blocks(t) {
             Some(s) => {
-                // truncate all rows to the common length t so the matrix aligns
-                let matrix: Vec<Vec<f64>> =
-                    cells.iter().map(|c| c.returns[..t].to_vec()).collect();
+                let matrix: Vec<Vec<f64>> = cells.iter().map(|c| c.returns[..t].to_vec()).collect();
                 pbo_cscv(&matrix, s).map(|r| r.pbo)
             }
             None => None,
@@ -207,7 +202,6 @@ pub fn run_sweep(
         None
     };
 
-    // DSR per cell against the trial distribution, then verdict.
     let var = variance_of_sharpes(&cells.iter().map(|c| c.sharpe).collect::<Vec<_>>());
     for c in cells.iter_mut() {
         c.dsr = deflated_sharpe(&c.returns, n, var);
@@ -226,7 +220,7 @@ pub fn run_sweep(
 mod tests {
     use super::*;
     use forge_core::{EventKind, Price, Qty, Side, UnixNanos};
-    use forge_strategy::Signal;
+    use forge_strategy::{MomentumConfig, OfiMomentum, Signal};
 
     struct Rng(u64);
     impl Rng {
@@ -246,12 +240,10 @@ mod tests {
         let size = Qty::from_f64(100.0).unwrap().raw();
         let mut prev: Option<(i64, i64)> = None;
         let mut ts = 1_000_000u64;
-        let mut out = Vec::new();
         let push = |out: &mut Vec<Event>, s: Side, px: i64, q: i64, ts: u64| {
-            out.push(
-                Event::new(EventKind::BookDelta, UnixNanos::new(ts), UnixNanos::new(ts), Some(s), Price::from_raw(px), Qty::from_raw(q), 0).unwrap(),
-            );
+            out.push(Event::new(EventKind::BookDelta, UnixNanos::new(ts), UnixNanos::new(ts), Some(s), Price::from_raw(px), Qty::from_raw(q), 0).unwrap());
         };
+        let mut out = Vec::new();
         for i in 0..ticks {
             ts += 1_000_000;
             if i > 0 {
@@ -292,12 +284,12 @@ mod tests {
         let grid = small_grid();
         let one = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
         let many = rayon::ThreadPoolBuilder::new().num_threads(4).build().unwrap();
-        let a = one.install(|| run_sweep(&windows, &grid, 1_000_000, FeeSchedule::legacy(), 0, 20, Thresholds::default()));
-        let b = many.install(|| run_sweep(&windows, &grid, 1_000_000, FeeSchedule::legacy(), 0, 20, Thresholds::default()));
+        let a = one.install(|| run_sweep(&windows, &grid, OfiMomentum::new, 1_000_000, FeeSchedule::legacy(), 0, 20, Thresholds::default()));
+        let b = many.install(|| run_sweep(&windows, &grid, OfiMomentum::new, 1_000_000, FeeSchedule::legacy(), 0, 20, Thresholds::default()));
         assert_eq!(a.cells.len(), b.cells.len());
         for (x, y) in a.cells.iter().zip(b.cells.iter()) {
             assert_eq!(x.id, y.id);
-            assert!((x.net - y.net).abs() < 1e-9, "net differs across thread counts");
+            assert!((x.net - y.net).abs() < 1e-9);
             assert!((x.dsr - y.dsr).abs() < 1e-12);
         }
         assert_eq!(a.pbo, b.pbo);
@@ -305,10 +297,9 @@ mod tests {
 
     #[test]
     fn random_data_yields_no_promotions() {
-        // OFI momentum on a random walk: nothing should clear the live bar.
         let windows = vec![synth(0x1234, 6_000)];
         let grid = small_grid();
-        let rep = run_sweep(&windows, &grid, 1_000_000, FeeSchedule::legacy(), 0, 20, Thresholds::default());
-        assert!(rep.cells.iter().all(|c| c.verdict != Verdict::Promote), "random data must not promote");
+        let rep = run_sweep(&windows, &grid, OfiMomentum::new, 1_000_000, FeeSchedule::legacy(), 0, 20, Thresholds::default());
+        assert!(rep.cells.iter().all(|c| c.verdict != Verdict::Promote));
     }
 }
