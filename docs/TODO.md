@@ -29,10 +29,13 @@ actionable backlog. Check items off as they land.
 
 ## Now (active - ordered, one step at a time)
 - [x] Public-indicator hunts done (OFI/wall/CVD + regime-gate): all no-edge.
-- [x] LEAD-LAG study: BLOCKED on data - HL quotes ~1/10-50s (too sparse for a
-      sub-second lead-lag edge). Shelved; needs a dense HL feed. See
-      docs/research/lead-lag-study.md. (Study saved us the engine surgery.)
-- [ ] 1. BRAIN -> STRATEGY engine is now next (does not need HL data).
+- [~] LEAD-LAG -> reframed as SPOT-PERP BASIS REVERSION: FIRST PULSE found
+      (~40 trades/day, ~23-30bps gross, 80-93% win, ~20min holds, net-positive
+      even @taker on 3 days). NOT trusted yet (idealized fills, tiny sample,
+      hand-picked knobs, funding ignored). See docs/research/lead-lag-study.md.
+- [ ] 1. BUILD basis-reversion strategy honestly (HL-quote fills, spread+fee+
+      funding) and run gates (shuffled control, sweep, DSR/PBO, paper).
+- [ ] 2. BRAIN -> STRATEGY engine (does not need HL data).
 - [ ] 2. BRAIN -> STRATEGY engine: annotator/visualizer + chart-trigger x
       orderflow harness. Spec: docs/research/annotator-visualizer.md. Phase A
       (label-note convention, ~zero build) first; Phase B (book/tape viewer) when

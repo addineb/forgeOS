@@ -1,27 +1,36 @@
-# Lead-lag study - VERDICT: BLOCKED on data (do not build yet)
+# Spot-Perp Basis Reversion (was "lead-lag") - FIRST PULSE, NOT yet trusted
 
-Question: does Binance lead Hyperliquid by enough (after latency + fees) to trade?
-Method: before any engine work, check the raw HL quote density vs Binance.
+CORRECTION: earlier "blocked - HL too sparse" was wrong (judged from one dead-hour
+file). Full days show ~1600-2800 HL quotes/day (median ~1s, bursty). Reframe: this
+is NOT sub-second lead-lag - it is SPOT(Binance) vs PERP(Hyperliquid) BASIS
+mean-reversion. No speed race; ~20-min holds, so sparse HL quotes are fine.
 
-## Finding (decisive)
-- Binance BTCUSDT trades: ~200k rows/hour (continuous, sub-second).
-- Hyperliquid hlquote: ~0.02-0.10 updates/SECOND = one quote every ~10-50s,
-  SYSTEMIC across all dates/hours checked (/root/chd/data/ticks/BTC/hlquote).
+## What the data shows (python pre-study, tools/lag_study*.py)
+Signal: gap = (HL_mid - Binance)/Binance in bps; dev = gap - rolling-200 mean.
+Bet reversion of dev (HL rich -> short HL), hold until dev sign flips.
+- 3 days (2026-02-01, 2025-12-01, 2026-05-01): ~14-42 trades/day, gross ~23-30
+  bps/trade, win 81-93%, avg hold ~20-40 min.
+- Net after taker (~11 bps r/t): +12 to +19 bps/trade. Net at maker (~2): +21-28.
+- Naive "exit next quote" version: wins 90% but only ~1 bp gross -> loses to costs.
+  The edge (if real) needs the FULL reversion hold, not one step.
 
-A lead-lag edge lives at 50ms-few seconds. With HL sampled every ~20s we cannot
-measure or trade it. The cross-venue execution build (engine/fill surgery) is NOT
-justified on this data.
+## DO NOT TRUST YET - skeptic flags (must clear before believing)
+1. Idealized fills: traded at HL mid at the quote instant; no spread/slippage, and
+   HL quotes are sparse - may not be executable when wanted.
+2. Tiny sample: ~100 trades / 3 days. 80-93% win on that N is not significance.
+3. Hand-picked knobs: 20 bps trigger, 60-step hold - not swept, no control.
+4. Funding ignored: holding a perp ~20 min has a funding cost/credit.
+5. ~500-1000 bps/day is implausibly high -> assume artifact until proven.
 
-## Why HL is sparse
-Our captured stream is `hlquote` = reconstructed BBO, and the source delivers it
-sparsely. We have no dense HL trades / book-delta feed.
-
-## To unblock later (only if we still want lead-lag)
-- Find a DENSE Hyperliquid feed: HL trades and/or book deltas (check if
-  cryptohftdata offers them; our converter currently only does hlquote BBO), OR
-- Capture HL live ourselves via websocket going forward (new data project).
-- Then re-run this density check; if HL is sub-second, do the study, THEN build.
+## Honest next step (build it properly, run the gates)
+- Strategy in forge-strategy: trigger on |dev|>thr, hold to reversion. Execute
+  ONLY at real HL quotes; pay HL spread + fee + funding. Engine extension is
+  modest because holds are minutes (no latency race) - HL quote stream as the
+  executable points.
+- Gates: shuffled-direction control, sweep thr/hold across ALL 15 windows,
+  DSR/PBO, then EUR500 paper gate. Trust the verdict, not the python pre-study.
+- This is a TYPE-C (forced-flow/basis) edge; pairs with funding data if we add it.
 
 ## Status
-SHELVED. Pivot to the brain->strategy engine (does not need HL data). The cheap
-study did its job: killed a hard build before it started.
+PROMISING (first pulse). Pre-study only. Not validated. High priority to build
+honestly because nothing else has shown a pulse.
