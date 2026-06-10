@@ -1,0 +1,30 @@
+{
+  "collapse-filter": true,
+  "search": "",
+  "showTags": false,
+  "showAttachments": false,
+  "hideUnresolved": true,
+  "showOrphans": false,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {"query": "path:legacy", "color": {"a": 1, "rgb": 5660553}},
+    {"query": "path:research", "color": {"a": 1, "rgb": 8037111}},
+    {"query": "path:context", "color": {"a": 1, "rgb": 12294903}},
+    {"query": "file:PROJECT-CONTEXT", "color": {"a": 1, "rgb": 10407530}},
+    {"query": "file:TODO", "color": {"a": 1, "rgb": 16752228}},
+    {"query": "file:ForgeOS-HOME", "color": {"a": 1, "rgb": 16217742}},
+    {"query": "tag:#moc", "color": {"a": 1, "rgb": 14725480}}
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 1.5,
+  "nodeSizeMultiplier": 2.4,
+  "lineSizeMultiplier": 1.3,
+  "collapse-forces": false,
+  "centerStrength": 0.42,
+  "repelStrength": 13,
+  "linkStrength": 0.9,
+  "linkDistance": 130,
+  "scale": 1,
+  "close": true
+}
