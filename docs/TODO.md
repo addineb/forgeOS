@@ -54,6 +54,14 @@ actionable backlog. Check items off as they land.
 - [ ] TP/SL + reversion grids on any config that shows a pulse (Park). (Not code -
       just run a sweep with --tps/--sls/--reversions set.)
 
+## Compute / cost (when hunts get heavy)
+- [ ] Coarse-then-fine sweeps: cheap wide grid to find the promising region,
+      then a fine grid only around winners (~10-20x less compute). Add WHEN a
+      candidate shows a pulse, not for blind first looks.
+- [ ] On-demand compute: rent a high-core box BY THE HOUR for big hunts (tmux,
+      pull results, destroy). Do not pay monthly for idle cores. Current box is
+      fine for day-to-day.
+
 ## Data
 - [ ] Pull more days / longer windows for OOS depth (tools/pull-data.sh in tmux).
 
