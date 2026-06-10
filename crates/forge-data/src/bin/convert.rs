@@ -119,8 +119,9 @@ fn run() -> Result<(), String> {
                 meta.count
             ));
         }
+        let recs = reader.records();
         let mut last = 0u64;
-        for rec in reader.records() {
+        for rec in recs {
             if rec.local_ts < last {
                 return Err("verify failed: local_ts not monotonic".to_string());
             }
@@ -130,6 +131,9 @@ fn run() -> Result<(), String> {
             return Err("verify failed: checksum mismatch".to_string());
         }
         println!("verify OK: {} events, monotonic, checksum match", reader.len());
+        if let (Some(f), Some(l)) = (recs.first(), recs.last()) {
+            println!("  local_ts range (ns): {} .. {}", f.local_ts, l.local_ts);
+        }
     }
     Ok(())
 }

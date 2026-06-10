@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
-use forge_core::{side_to_u8, Event, EventKind, Price, Qty, Side, UnixNanos};
+use forge_core::{side_to_u8, Event, EventKind, ForgeError, Price, Qty, Side, UnixNanos};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 use crate::writer::{DataError, StreamMeta};
@@ -107,6 +107,18 @@ fn check_non_null(arr: &dyn Array, i: usize, name: &str) -> Result<(), DataError
     Ok(())
 }
 
+/// The chd normalized feed stamps timestamps in MILLISECONDS; forge-core is
+/// nanosecond-native, so convert at ingest. Fail-fast on negative or overflow.
+fn exch_from_ms(ms: i64) -> Result<UnixNanos, DataError> {
+    if ms < 0 {
+        return Err(DataError::Forge(ForgeError::Negative { field: "exch_ts_ms", value: ms }));
+    }
+    let ns = ms
+        .checked_mul(1_000_000)
+        .ok_or(DataError::Forge(ForgeError::Overflow { op: "ms_to_ns" }))?;
+    UnixNanos::from_i64(ns).map_err(DataError::Forge)
+}
+
 fn local_from(exch: UnixNanos, feed_latency_ns: u64) -> Result<UnixNanos, DataError> {
     exch.checked_add(feed_latency_ns).map_err(DataError::Forge)
 }
@@ -122,7 +134,7 @@ fn push_trades(path: &Path, lat: u64, out: &mut Vec<Event>) -> Result<(), DataEr
             check_non_null(price, i, "price")?;
             check_non_null(qty, i, "qty")?;
             check_non_null(ibm, i, "isBuyerMaker")?;
-            let exch = UnixNanos::from_i64(ts.value(i)).map_err(DataError::Forge)?;
+            let exch = exch_from_ms(ts.value(i))?;
             let local = local_from(exch, lat)?;
             // is_buyer_maker => the taker (aggressor) is the seller => Ask.
             let side = if ibm.value(i) { Side::Ask } else { Side::Bid };
@@ -153,7 +165,7 @@ fn push_book_delta(path: &Path, lat: u64, out: &mut Vec<Event>) -> Result<(), Da
             check_non_null(side, i, "side")?;
             check_non_null(price, i, "price")?;
             check_non_null(qty, i, "qty")?;
-            let exch = UnixNanos::from_i64(vts.value(i)).map_err(DataError::Forge)?;
+            let exch = exch_from_ms(vts.value(i))?;
             let local = local_from(exch, lat)?;
             let s = match side.value(i) {
                 "bid" | "buy" | "b" => Side::Bid,
@@ -186,7 +198,7 @@ fn push_hlquote(path: &Path, lat: u64, out: &mut Vec<Event>) -> Result<(), DataE
             check_non_null(ts, i, "ts")?;
             check_non_null(bid, i, "bid")?;
             check_non_null(ask, i, "ask")?;
-            let exch = UnixNanos::from_i64(ts.value(i)).map_err(DataError::Forge)?;
+            let exch = exch_from_ms(ts.value(i))?;
             let local = local_from(exch, lat)?;
             // A BBO quote is emitted as a paired bid/ask Quote event (qty 0,
             // since BBO-only carries no size). mid is derivable downstream.
@@ -274,4 +286,27 @@ pub fn convert(cfg: &ConvertConfig) -> Result<StreamMeta, DataError> {
         writer.write_event(ev)?;
     }
     writer.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ms_to_ns_converts() {
+        // 2025-12-01 00:00:00 UTC in ms -> ns.
+        let e = exch_from_ms(1_764_547_200_000).unwrap();
+        assert_eq!(e.get(), 1_764_547_200_000_000_000);
+    }
+
+    #[test]
+    fn ms_to_ns_rejects_negative() {
+        assert!(exch_from_ms(-1).is_err());
+    }
+
+    #[test]
+    fn ms_to_ns_rejects_overflow() {
+        // i64::MAX ms * 1e6 overflows i64 -> fail fast, not wrap.
+        assert!(exch_from_ms(i64::MAX).is_err());
+    }
 }
