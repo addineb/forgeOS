@@ -104,10 +104,41 @@ fn run() -> Result<(), String> {
     let mut sl_ax = vec![0.0, 8.0];
     let mut lim_ax = vec![false];
 
-    let mut args = std::env::args().skip(1);
+    // Pre-scan for a preset so it can set base axes before explicit flags override.
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(pos) = argv.iter().position(|a| a == "--preset") {
+        match argv.get(pos + 1).map(String::as_str) {
+            Some("fast") => {
+                windows_ax = vec![20, 50, 100];
+                topn_ax = vec![3, 5, 10];
+                thr_ax = vec![1.0, 1.5, 2.0, 2.5];
+                rev_ax = vec![false, true];
+                hold_ax = vec![50, 100, 300];
+                cd_ax = vec![20, 50];
+                tp_ax = vec![0.0, 5.0, 8.0];
+                sl_ax = vec![0.0, 5.0, 8.0];
+            }
+            Some("slow") => {
+                windows_ax = vec![100, 200, 400];
+                topn_ax = vec![5, 10, 20];
+                thr_ax = vec![2.0, 3.0, 4.0];
+                rev_ax = vec![false, true];
+                hold_ax = vec![5_000, 20_000, 60_000];
+                cd_ax = vec![1_000, 5_000];
+                tp_ax = vec![0.0, 15.0, 30.0];
+                sl_ax = vec![0.0, 15.0, 30.0];
+            }
+            other => return Err(format!("--preset must be fast|slow, got {other:?}")),
+        }
+    }
+
+    let mut args = argv.into_iter();
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or_else(|| format!("missing value after {a}"));
         match a.as_str() {
+            "--preset" => {
+                let _ = val()?; // already handled in the pre-scan
+            }
             "--strategy" => strategy = val()?,
             "--shuffle" => signal = Signal::Shuffled,
             "--sample-ns" => sample_ns = val()?.parse().map_err(|e| format!("sample-ns: {e}"))?,
