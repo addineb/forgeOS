@@ -271,7 +271,7 @@ impl<S: Strategy> SimEngine<S> {
     }
 
     fn fill_taker(&mut self, side: Side, fill: &crate::fills::Fill) {
-        self.account.apply_taker(side, fill, &self.fees);
+        self.account.apply_taker(side, fill, &self.fees, self.now);
         self.orders_filled += 1;
         fold_u64(&mut self.det_hash, fill.avg_price.raw() as u64);
         fold_u64(&mut self.det_hash, fill.filled.raw() as u64);
@@ -337,7 +337,7 @@ impl<S: Strategy> SimEngine<S> {
             let fill = avail.min(o.qty_remaining);
             if fill > 0 {
                 let f = maker_fill(forge_core::Price::from_raw(o.price), forge_core::Qty::from_raw(fill));
-                self.account.apply_maker(o.side, &f, &self.fees);
+                self.account.apply_maker(o.side, &f, &self.fees, self.now);
                 self.orders_filled += 1;
                 self.maker_fills += 1;
                 fold_u64(&mut self.det_hash, o.price as u64);

@@ -16,3 +16,7 @@ rayon = "1"
 [[bin]]
 name = "forge-sweep"
 path = "src/bin/sweep.rs"
+
+[[bin]]
+name = "forge-paper"
+path = "src/bin/paper.rs"

@@ -21,7 +21,8 @@ pub struct Account {
     open_fees: Money,     // fees attributed to the currently open position
     open_notional: Money, // entry notional of the currently open position
     trip_pnls: Vec<Money>, // per-round-trip NET pnl (gross - entry/exit fees)
-    trip_notionals: Vec<Money>, // entry notional per round trip (for bps return)
+    trip_notionals: Vec<Money>, // entry notional per round trip (for % return)
+    trip_close_ts: Vec<u64>, // close timestamp (ns) per round trip
 }
 
 impl Account {
@@ -32,28 +33,28 @@ impl Account {
     }
 
     /// Apply a taker fill on `side` (Bid = bought, Ask = sold).
-    pub fn apply_taker(&mut self, side: Side, fill: &Fill, fees: &FeeSchedule) {
+    pub fn apply_taker(&mut self, side: Side, fill: &Fill, fees: &FeeSchedule, ts: u64) {
         let fee = fees.taker_fee(fill.notional);
-        self.apply(side, fill, fee);
+        self.apply(side, fill, fee, ts);
     }
 
     /// Apply a maker fill on `side` (fee may be a rebate).
-    pub fn apply_maker(&mut self, side: Side, fill: &Fill, fees: &FeeSchedule) {
+    pub fn apply_maker(&mut self, side: Side, fill: &Fill, fees: &FeeSchedule, ts: u64) {
         let fee = fees.maker_fee(fill.notional);
-        self.apply(side, fill, fee);
+        self.apply(side, fill, fee, ts);
     }
 
-    fn apply(&mut self, side: Side, fill: &Fill, fee: Money) {
+    fn apply(&mut self, side: Side, fill: &Fill, fee: Money, ts: u64) {
         self.fees += fee;
         self.fills += 1;
         let delta = match side {
             Side::Bid => fill.filled.raw(),
             Side::Ask => -fill.filled.raw(),
         };
-        self.apply_position(delta, fill.avg_price.raw(), fee, fill.notional);
+        self.apply_position(delta, fill.avg_price.raw(), fee, fill.notional, ts);
     }
 
-    fn apply_position(&mut self, delta: i64, price: i64, fee: Money, notional: Money) {
+    fn apply_position(&mut self, delta: i64, price: i64, fee: Money, notional: Money, ts: u64) {
         let old = self.net_qty;
 
         if old == 0 {
@@ -91,6 +92,7 @@ impl Account {
             self.round_trips += 1;
             self.trip_pnls.push(pnl - self.open_fees - fee);
             self.trip_notionals.push(self.open_notional);
+            self.trip_close_ts.push(ts);
             self.net_qty = 0;
             self.avg_entry = 0;
             self.open_fees = 0;
@@ -103,6 +105,7 @@ impl Account {
             self.round_trips += 1;
             self.trip_pnls.push(pnl - self.open_fees - fee);
             self.trip_notionals.push(self.open_notional);
+            self.trip_close_ts.push(ts);
             self.net_qty = new_qty;
             self.avg_entry = price;
             self.open_fees = 0;
@@ -169,6 +172,12 @@ impl Account {
     pub fn trip_notionals(&self) -> &[Money] {
         &self.trip_notionals
     }
+
+    /// Close timestamp (ns) per round trip (pairs with trip_pnls).
+    #[must_use]
+    pub fn trip_close_ts(&self) -> &[u64] {
+        &self.trip_close_ts
+    }
 }
 
 #[cfg(test)]
@@ -188,8 +197,8 @@ mod tests {
     fn long_round_trip_profit_minus_fees() {
         let fees = FeeSchedule::legacy();
         let mut a = Account::new();
-        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees); // buy 1 @100
-        a.apply_taker(Side::Ask, &fill(110.0, 1.0), &fees); // sell 1 @110
+        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees, 1); // buy 1 @100
+        a.apply_taker(Side::Ask, &fill(110.0, 1.0), &fees, 1); // sell 1 @110
         // gross = +10; fees = 0.025% of (100 + 110) = 0.025 + 0.0275 = 0.0525
         assert!((money_to_f64(a.realized()) - 10.0).abs() < 1e-6);
         assert!((money_to_f64(a.fees()) - 0.0525).abs() < 1e-6);
@@ -203,8 +212,8 @@ mod tests {
     fn short_round_trip_profit() {
         let fees = FeeSchedule::zero();
         let mut a = Account::new();
-        a.apply_taker(Side::Ask, &fill(110.0, 1.0), &fees); // short 1 @110
-        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees); // cover @100
+        a.apply_taker(Side::Ask, &fill(110.0, 1.0), &fees, 1); // short 1 @110
+        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees, 1); // cover @100
         assert!((money_to_f64(a.realized()) - 10.0).abs() < 1e-6); // shorted high, bought low
         assert_eq!(a.round_trips(), 1);
     }
@@ -215,8 +224,8 @@ mod tests {
         // only thing that happens is paying fees twice -> guaranteed net loss.
         let fees = FeeSchedule::legacy();
         let mut a = Account::new();
-        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees);
-        a.apply_taker(Side::Ask, &fill(100.0, 1.0), &fees);
+        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees, 1);
+        a.apply_taker(Side::Ask, &fill(100.0, 1.0), &fees, 1);
         assert_eq!(money_to_f64(a.realized()), 0.0);
         assert!(a.net_pnl() < 0, "a flat round trip must lose the fees");
         assert!((money_to_f64(a.net_pnl()) + 0.05).abs() < 1e-6); // -(0.025+0.025)
@@ -226,9 +235,9 @@ mod tests {
     fn averaging_in_then_closing() {
         let fees = FeeSchedule::zero();
         let mut a = Account::new();
-        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees);
-        a.apply_taker(Side::Bid, &fill(102.0, 1.0), &fees); // avg entry 101
-        a.apply_taker(Side::Ask, &fill(105.0, 2.0), &fees); // close 2 @105
+        a.apply_taker(Side::Bid, &fill(100.0, 1.0), &fees, 1);
+        a.apply_taker(Side::Bid, &fill(102.0, 1.0), &fees, 1); // avg entry 101
+        a.apply_taker(Side::Ask, &fill(105.0, 2.0), &fees, 1); // close 2 @105
         // gross = (105-101)*2 = 8
         assert!((money_to_f64(a.realized()) - 8.0).abs() < 1e-6);
         assert_eq!(a.net_qty(), 0);
