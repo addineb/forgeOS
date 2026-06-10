@@ -14,10 +14,10 @@ use std::process::ExitCode;
 use forge_core::{Event, Qty};
 use forge_data::ForgeReader;
 use forge_sim::FeeSchedule;
-use forge_strategy::{CvdBot, ObiBot, OfiMomentum, RegimeFilter, Signal};
+use forge_strategy::{CvdBot, ObiBot, OfiMomentum, RegimeFilter, Signal, WallFlowBot};
 use forge_sweep::{
-    expand, expand_cvd, expand_imbalance, run_sweep, CvdGridSpec, GridSpec, ImbalanceGridSpec,
-    SweepReport, Thresholds, Verdict,
+    expand, expand_cvd, expand_imbalance, expand_wallflow, run_sweep, CvdGridSpec, GridSpec,
+    ImbalanceGridSpec, SweepReport, Thresholds, Verdict, WallFlowGridSpec,
 };
 
 fn parse_f64s(s: &str) -> Result<Vec<f64>, String> {
@@ -132,6 +132,56 @@ fn print_report<C: Debug>(rep: &SweepReport<C>, signal: Signal, leverage: f64, t
     println!("verdicts: {promote} promote / {park} park / {retire} retire");
 }
 
+/// Persist a sweep to disk: a full per-config scorecard CSV for this run, plus
+/// one appended summary row in `ledger.csv` (the tracked verdict history).
+fn write_outputs<C>(
+    rep: &SweepReport<C>,
+    dir: &str,
+    tag: &str,
+    knobs: impl Fn(&C) -> String,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let scorecard = format!("{dir}/{tag}-{ts}.csv");
+    let mut f = std::fs::File::create(&scorecard)?;
+    writeln!(f, "id,net,trips,win_pct,ret_pct_per_trip,max_dd,trend_net,side_net,neut_net,sharpe,dsr,verdict,knobs")?;
+    for c in &rep.cells {
+        writeln!(
+            f,
+            "{},{:.6},{},{:.4},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:.6},{:?},{}",
+            c.id, c.net, c.round_trips, c.win_rate * 100.0, c.avg_pct, c.max_dd,
+            c.net_by_regime[0], c.net_by_regime[1], c.net_by_regime[2], c.sharpe, c.dsr,
+            c.verdict, knobs(&c.config)
+        )?;
+    }
+
+    let promote = rep.cells.iter().filter(|c| c.verdict == Verdict::Promote).count();
+    let park = rep.cells.iter().filter(|c| c.verdict == Verdict::Park).count();
+    let retire = rep.cells.iter().filter(|c| c.verdict == Verdict::Retire).count();
+    let best = rep.best_net_id.and_then(|id| rep.cells.iter().find(|c| c.id == id));
+    let (best_net, best_knobs) = best.map_or((0.0, String::new()), |c| (c.net, knobs(&c.config)));
+    let pbo = rep.pbo.unwrap_or(-1.0);
+
+    let ledger = format!("{dir}/ledger.csv");
+    let fresh = !std::path::Path::new(&ledger).exists();
+    let mut lf = std::fs::OpenOptions::new().create(true).append(true).open(&ledger)?;
+    if fresh {
+        writeln!(lf, "unix_ts,tag,n_trials,pbo,promote,park,retire,best_net,best_knobs,scorecard")?;
+    }
+    writeln!(
+        lf,
+        "{ts},{tag},{},{pbo:.4},{promote},{park},{retire},{best_net:.6},{best_knobs},{scorecard}",
+        rep.n_trials
+    )?;
+    eprintln!("wrote {scorecard} (+ ledger row in {ledger})");
+    Ok(())
+}
+
 #[allow(clippy::too_many_lines)]
 fn run() -> Result<(), String> {
     let mut paths: Vec<String> = Vec::new();
@@ -142,6 +192,7 @@ fn run() -> Result<(), String> {
     let mut leverage: f64 = 1.0;
     let mut top: usize = 25;
     let mut qty = 0.01_f64;
+    let mut out_dir: Option<String> = None;
 
     // Pre-scan strategy so threshold axes match the signal's scale: OFI's
     // normalised signal can exceed 1, but imbalance/CVD are bounded to [-1, 1],
@@ -149,8 +200,14 @@ fn run() -> Result<(), String> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let bounded = matches!(
         argv.iter().position(|a| a == "--strategy").and_then(|p| argv.get(p + 1)).map(String::as_str),
-        Some("wall") | Some("cvd")
+        Some("wall") | Some("cvd") | Some("wallflow")
     );
+    let preset_name = argv
+        .iter()
+        .position(|a| a == "--preset")
+        .and_then(|p| argv.get(p + 1))
+        .cloned()
+        .unwrap_or_else(|| "custom".to_string());
 
     // ofi axes
     let mut windows_ax = vec![20usize, 50, 100];
@@ -165,6 +222,7 @@ fn run() -> Result<(), String> {
     let mut sl_ax = vec![0.0, 8.0];
     let mut lim_ax = vec![false];
     let mut reg_ax = vec![RegimeFilter::Any];
+    let mut wallmin_ax = vec![2.0_f64, 5.0, 10.0];
 
     // Preset sets base axes before explicit flags override (argv pre-scanned above).
     if let Some(pos) = argv.iter().position(|a| a == "--preset") {
@@ -217,6 +275,8 @@ fn run() -> Result<(), String> {
             "--sls" => sl_ax = parse_f64s(&val()?)?,
             "--limits" => lim_ax = parse_bools(&val()?)?,
             "--regimes" => reg_ax = parse_regimes(&val()?)?,
+            "--wallmins" => wallmin_ax = parse_f64s(&val()?)?,
+            "--out" => out_dir = Some(val()?),
             s if s.starts_with("--") => return Err(format!("unknown flag {s}")),
             s => paths.push(s.to_string()),
         }
@@ -244,9 +304,13 @@ fn run() -> Result<(), String> {
             });
             eprintln!("ofi grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, OfiMomentum::new, sample_ns, fees, latency_ns, 20, th);
-            print_report(&rep, signal, leverage, top, |c| {
+            let knobs = |c: &forge_strategy::MomentumConfig| {
                 format!("w={} thr={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.ofi_window, c.threshold, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
-            });
+            };
+            print_report(&rep, signal, leverage, top, knobs);
+            if let Some(dir) = &out_dir {
+                write_outputs(&rep, dir, &format!("ofi-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
+            }
         }
         "wall" => {
             let grid = expand_imbalance(&ImbalanceGridSpec {
@@ -255,9 +319,13 @@ fn run() -> Result<(), String> {
             });
             eprintln!("wall grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, ObiBot::new, sample_ns, fees, latency_ns, 20, th);
-            print_report(&rep, signal, leverage, top, |c| {
+            let knobs = |c: &forge_strategy::ImbalanceConfig| {
                 format!("topN={} thr={} rev={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.top_n, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
-            });
+            };
+            print_report(&rep, signal, leverage, top, knobs);
+            if let Some(dir) = &out_dir {
+                write_outputs(&rep, dir, &format!("wall-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
+            }
         }
         "cvd" => {
             let grid = expand_cvd(&CvdGridSpec {
@@ -266,11 +334,31 @@ fn run() -> Result<(), String> {
             });
             eprintln!("cvd grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, CvdBot::new, sample_ns, fees, latency_ns, 20, th);
-            print_report(&rep, signal, leverage, top, |c| {
+            let knobs = |c: &forge_strategy::CvdConfig| {
                 format!("win={} thr={} rev={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.window, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
-            });
+            };
+            print_report(&rep, signal, leverage, top, knobs);
+            if let Some(dir) = &out_dir {
+                write_outputs(&rep, dir, &format!("cvd-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
+            }
         }
-        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd)")),
+        "wallflow" => {
+            let grid = expand_wallflow(&WallFlowGridSpec {
+                wall_min: wallmin_ax, window: windows_ax, cancel_ratio_min: thr_ax, reversion: rev_ax,
+                qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax, tp_bps: tp_ax, sl_bps: sl_ax,
+                use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000, regime_filter: reg_ax,
+            });
+            eprintln!("wallflow grid: {} configs x {} window(s)", grid.len(), windows.len());
+            let rep = run_sweep(&windows, &grid, WallFlowBot::new, sample_ns, fees, latency_ns, 20, th);
+            let knobs = |c: &forge_strategy::WallFlowConfig| {
+                format!("wmin={} win={} cr={} rev={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.wall_min, c.window, c.cancel_ratio_min, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
+            };
+            print_report(&rep, signal, leverage, top, knobs);
+            if let Some(dir) = &out_dir {
+                write_outputs(&rep, dir, &format!("wallflow-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
+            }
+        }
+        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd|wallflow)")),
     }
     Ok(())
 }

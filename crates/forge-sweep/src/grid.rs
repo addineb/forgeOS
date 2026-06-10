@@ -1,7 +1,7 @@
 //! Cartesian-product expansion of a parameter grid into concrete configs.
 
 use forge_core::Qty;
-use forge_strategy::{CvdConfig, ImbalanceConfig, MomentumConfig, RegimeFilter, Signal};
+use forge_strategy::{CvdConfig, ImbalanceConfig, MomentumConfig, RegimeFilter, Signal, WallFlowConfig};
 
 /// The swept knobs. Each vector is a set of values to try; the grid is their
 /// Cartesian product (deterministic order).
@@ -201,6 +201,82 @@ pub fn expand_cvd(spec: &CvdGridSpec) -> Vec<CvdConfig> {
                                             fill_timeout_ns: spec.fill_timeout_ns,
                                             regime_filter: rf,
                                         });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Grid for the wall-flow (real-vs-fake wall) bot.
+#[derive(Clone, Debug)]
+pub struct WallFlowGridSpec {
+    /// Minimum resting size (qty units) to count as a wall.
+    pub wall_min: Vec<f64>,
+    /// Rolling window of flow events.
+    pub window: Vec<usize>,
+    /// Minimum cancelled-share to act on (0..1).
+    pub cancel_ratio_min: Vec<f64>,
+    /// Fade (false) vs invert (true).
+    pub reversion: Vec<bool>,
+    /// Trade size.
+    pub qty: Qty,
+    /// Hold durations (nanoseconds).
+    pub hold_ns: Vec<u64>,
+    /// Cooldowns (nanoseconds).
+    pub cooldown_ns: Vec<u64>,
+    /// Take-profit bps.
+    pub tp_bps: Vec<f64>,
+    /// Stop-loss bps.
+    pub sl_bps: Vec<f64>,
+    /// Market vs limit entry.
+    pub use_limit: Vec<bool>,
+    /// Direction source.
+    pub signal: Signal,
+    /// Seed.
+    pub seed: u64,
+    /// Fill timeout.
+    pub fill_timeout_ns: u64,
+    /// Regime entry gate(s) to try (Any = no gate).
+    pub regime_filter: Vec<RegimeFilter>,
+}
+
+/// Expand the wall-flow grid into concrete configs (deterministic order).
+#[must_use]
+pub fn expand_wallflow(spec: &WallFlowGridSpec) -> Vec<WallFlowConfig> {
+    let mut out = Vec::new();
+    for &wm in &spec.wall_min {
+        for &win in &spec.window {
+            for &cr in &spec.cancel_ratio_min {
+                for &rev in &spec.reversion {
+                    for &h in &spec.hold_ns {
+                        for &cd in &spec.cooldown_ns {
+                            for &tp in &spec.tp_bps {
+                                for &sl in &spec.sl_bps {
+                                    for &lim in &spec.use_limit {
+                                        for &rf in &spec.regime_filter {
+                                            out.push(WallFlowConfig {
+                                                wall_min: wm,
+                                                window: win,
+                                                cancel_ratio_min: cr,
+                                                reversion: rev,
+                                                qty: spec.qty,
+                                                hold_ns: h,
+                                                cooldown_ns: cd,
+                                                tp_bps: tp,
+                                                sl_bps: sl,
+                                                use_limit: lim,
+                                                signal: spec.signal,
+                                                seed: spec.seed,
+                                                fill_timeout_ns: spec.fill_timeout_ns,
+                                                regime_filter: rf,
+                                            });
+                                        }
                                     }
                                 }
                             }

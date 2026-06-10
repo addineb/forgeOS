@@ -9,9 +9,11 @@ mod cvd;
 mod imbalance;
 mod momentum;
 mod ofi;
+mod wallflow;
 
 pub use cvd::{Cvd, CvdBot, CvdConfig, CvdSignal};
 pub use imbalance::{ImbalanceConfig, ObiBot, ObiSignal};
 pub use momentum::{MomentumConfig, OfiMomentum, OfiSignal, Signal};
 pub use ofi::Ofi;
+pub use wallflow::{WallFlow, WallFlowBot, WallFlowConfig, WallFlowSignal};
 pub use forge_sim::{EfficiencyRatio, Regime, RegimeConfig, RegimeFilter};

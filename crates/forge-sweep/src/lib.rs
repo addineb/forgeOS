@@ -13,5 +13,5 @@
 mod grid;
 mod run;
 
-pub use grid::{expand, expand_cvd, expand_imbalance, CvdGridSpec, GridSpec, ImbalanceGridSpec};
+pub use grid::{expand, expand_cvd, expand_imbalance, expand_wallflow, CvdGridSpec, GridSpec, ImbalanceGridSpec, WallFlowGridSpec};
 pub use run::{run_sweep, CellResult, SweepReport, Thresholds, Verdict};
