@@ -5,8 +5,10 @@
 
 #![forbid(unsafe_code)]
 
+mod imbalance;
 mod momentum;
 mod ofi;
 
+pub use imbalance::{ImbalanceConfig, ObiBot, ObiSignal};
 pub use momentum::{MomentumConfig, OfiMomentum, OfiSignal, Signal};
 pub use ofi::Ofi;
