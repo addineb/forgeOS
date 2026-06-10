@@ -7,6 +7,10 @@ type: map
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
 ## 2026-06-10
+- CONCLUSION (evidence): plain orderflow INDICATORS (OFI, CVD, imbalance,
+  wall-flow, absorption) all = no statistical edge (~15k configs, 0 promote).
+  Lesson: orderflow is not the SIGNAL - it is the CONFIRMATION/truth-test on a
+  pattern or a structural/forced-flow setup. Stop backtesting plain indicators.
 - Brain->strategy Phase A live: drop setup notes in docs/research/labels/
   (template + example there). No-lookahead trigger rule enforced.
 - Basis-reversion / cross-venue work will be done on a GIT BRANCH (the "lag
