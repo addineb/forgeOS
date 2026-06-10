@@ -9,6 +9,7 @@ members = [
     "crates/forge-data",
     "crates/forge-book",
     "crates/forge-sim",
+    "crates/forge-strategy",
 ]
 
 [profile.release]

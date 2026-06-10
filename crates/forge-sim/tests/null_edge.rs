@@ -48,12 +48,16 @@ fn synth_market(seed: u64, ticks: usize, spread_raw: i64, tick_raw: i64) -> Vec<
     }
 
     for i in 0..ticks {
-        ts += 1000;
+        ts += 1_000_000; // 1ms/tick so the fill-timeout is proportionally small
         if i > 0 {
             mid += if rng.bit() { tick_raw } else { -tick_raw };
         }
         let bid = mid - half;
         let ask = mid + half;
+        // set the new touch BEFORE removing the old, so the book is never
+        // one-sided (a market order always has a side to fill against)
+        push(&mut out, Side::Bid, bid, size.raw(), ts);
+        push(&mut out, Side::Ask, ask, size.raw(), ts);
         if let Some((pb, pa)) = prev {
             if pb != bid {
                 push(&mut out, Side::Bid, pb, 0, ts);
@@ -62,8 +66,6 @@ fn synth_market(seed: u64, ticks: usize, spread_raw: i64, tick_raw: i64) -> Vec<
                 push(&mut out, Side::Ask, pa, 0, ts);
             }
         }
-        push(&mut out, Side::Bid, bid, size.raw(), ts);
-        push(&mut out, Side::Ask, ask, size.raw(), ts);
         prev = Some((bid, ask));
     }
     out

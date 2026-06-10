@@ -1,0 +1,17 @@
+[package]
+name = "forge-strategy"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ForgeOS strategy layer: flow primitives (OFI) + thesis strategies."
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-book = { path = "../forge-book" }
+forge-sim = { path = "../forge-sim" }
+# used by the runner binary (reads a *.forge file)
+forge-data = { path = "../forge-data" }
+
+[[bin]]
+name = "forge-strat"
+path = "src/bin/strat.rs"
