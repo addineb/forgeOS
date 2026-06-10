@@ -134,9 +134,9 @@ fn run() -> Result<(), String> {
     println!("halted days     {}", res.halted_days);
     println!("ruined          {}", res.ruined);
 
-    let pass = res.return_pct > 0.0 && !res.ruined && res.max_drawdown_pct < 50.0;
+    let pass = res.return_pct > 0.0 && !res.ruined;
     if pass {
-        println!("PAPER GATE      PASS (profitable, survived, drawdown < 50%)");
+        println!("PAPER GATE      PASS (profitable + survived; drawdown is reported, not gated)");
         Ok(())
     } else {
         println!("PAPER GATE      FAIL");

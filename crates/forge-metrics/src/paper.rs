@@ -21,7 +21,7 @@ pub struct PaperConfig {
 
 impl Default for PaperConfig {
     fn default() -> Self {
-        Self { start_balance: 500.0, leverage: 20.0, risk_pct: 0.10, daily_loss_limit_pct: 0.05 }
+        Self { start_balance: 500.0, leverage: 20.0, risk_pct: 0.20, daily_loss_limit_pct: 0.05 }
     }
 }
 
