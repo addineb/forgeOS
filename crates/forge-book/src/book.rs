@@ -202,6 +202,21 @@ impl OrderBook {
             .collect()
     }
 
+    /// Iterate bids best-first (highest price first) without allocating.
+    pub fn bids_iter(&self) -> impl DoubleEndedIterator<Item = (Price, Qty)> + '_ {
+        self.bids
+            .iter()
+            .rev()
+            .map(|(&p, &q)| (Price::from_raw(p), Qty::from_raw(q)))
+    }
+
+    /// Iterate asks best-first (lowest price first) without allocating.
+    pub fn asks_iter(&self) -> impl DoubleEndedIterator<Item = (Price, Qty)> + '_ {
+        self.asks
+            .iter()
+            .map(|(&p, &q)| (Price::from_raw(p), Qty::from_raw(q)))
+    }
+
     /// Number of bid price levels.
     #[must_use]
     pub fn bid_levels(&self) -> usize {
