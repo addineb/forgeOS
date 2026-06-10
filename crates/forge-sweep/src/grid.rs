@@ -13,10 +13,10 @@ pub struct GridSpec {
     pub threshold: Vec<f64>,
     /// Trade size (fixed).
     pub qty: Qty,
-    /// Hold lengths (events) to try.
-    pub hold: Vec<u32>,
-    /// Cooldowns (events) to try.
-    pub cooldown: Vec<u32>,
+    /// Hold durations (nanoseconds) to try.
+    pub hold_ns: Vec<u64>,
+    /// Cooldowns (nanoseconds) to try.
+    pub cooldown_ns: Vec<u64>,
     /// Take-profit bps to try (0 = disabled).
     pub tp_bps: Vec<f64>,
     /// Stop-loss bps to try (0 = disabled).
@@ -38,8 +38,8 @@ pub fn expand(spec: &GridSpec) -> Vec<MomentumConfig> {
     let mut out = Vec::new();
     for &w in &spec.ofi_window {
         for &th in &spec.threshold {
-            for &h in &spec.hold {
-                for &cd in &spec.cooldown {
+            for &h in &spec.hold_ns {
+                for &cd in &spec.cooldown_ns {
                     for &tp in &spec.tp_bps {
                         for &sl in &spec.sl_bps {
                             for &lim in &spec.use_limit {
@@ -47,8 +47,8 @@ pub fn expand(spec: &GridSpec) -> Vec<MomentumConfig> {
                                     ofi_window: w,
                                     threshold: th,
                                     qty: spec.qty,
-                                    hold: h,
-                                    cooldown: cd,
+                                    hold_ns: h,
+                                    cooldown_ns: cd,
                                     tp_bps: tp,
                                     sl_bps: sl,
                                     use_limit: lim,
@@ -77,10 +77,10 @@ pub struct ImbalanceGridSpec {
     pub reversion: Vec<bool>,
     /// Trade size.
     pub qty: Qty,
-    /// Hold lengths (events).
-    pub hold: Vec<u32>,
-    /// Cooldowns (events).
-    pub cooldown: Vec<u32>,
+    /// Hold durations (nanoseconds).
+    pub hold_ns: Vec<u64>,
+    /// Cooldowns (nanoseconds).
+    pub cooldown_ns: Vec<u64>,
     /// Take-profit bps.
     pub tp_bps: Vec<f64>,
     /// Stop-loss bps.
@@ -102,8 +102,8 @@ pub fn expand_imbalance(spec: &ImbalanceGridSpec) -> Vec<ImbalanceConfig> {
     for &tn in &spec.top_n {
         for &th in &spec.threshold {
             for &rev in &spec.reversion {
-                for &h in &spec.hold {
-                    for &cd in &spec.cooldown {
+                for &h in &spec.hold_ns {
+                    for &cd in &spec.cooldown_ns {
                         for &tp in &spec.tp_bps {
                             for &sl in &spec.sl_bps {
                                 for &lim in &spec.use_limit {
@@ -112,8 +112,8 @@ pub fn expand_imbalance(spec: &ImbalanceGridSpec) -> Vec<ImbalanceConfig> {
                                         threshold: th,
                                         reversion: rev,
                                         qty: spec.qty,
-                                        hold: h,
-                                        cooldown: cd,
+                                        hold_ns: h,
+                                        cooldown_ns: cd,
                                         tp_bps: tp,
                                         sl_bps: sl,
                                         use_limit: lim,
@@ -143,10 +143,10 @@ pub struct CvdGridSpec {
     pub reversion: Vec<bool>,
     /// Trade size.
     pub qty: Qty,
-    /// Hold lengths (events).
-    pub hold: Vec<u32>,
-    /// Cooldowns (events).
-    pub cooldown: Vec<u32>,
+    /// Hold durations (nanoseconds).
+    pub hold_ns: Vec<u64>,
+    /// Cooldowns (nanoseconds).
+    pub cooldown_ns: Vec<u64>,
     /// Take-profit bps.
     pub tp_bps: Vec<f64>,
     /// Stop-loss bps.
@@ -168,8 +168,8 @@ pub fn expand_cvd(spec: &CvdGridSpec) -> Vec<CvdConfig> {
     for &w in &spec.window {
         for &th in &spec.threshold {
             for &rev in &spec.reversion {
-                for &h in &spec.hold {
-                    for &cd in &spec.cooldown {
+                for &h in &spec.hold_ns {
+                    for &cd in &spec.cooldown_ns {
                         for &tp in &spec.tp_bps {
                             for &sl in &spec.sl_bps {
                                 for &lim in &spec.use_limit {
@@ -178,8 +178,8 @@ pub fn expand_cvd(spec: &CvdGridSpec) -> Vec<CvdConfig> {
                                         threshold: th,
                                         reversion: rev,
                                         qty: spec.qty,
-                                        hold: h,
-                                        cooldown: cd,
+                                        hold_ns: h,
+                                        cooldown_ns: cd,
                                         tp_bps: tp,
                                         sl_bps: sl,
                                         use_limit: lim,
@@ -208,8 +208,8 @@ mod tests {
             ofi_window: vec![10, 20],
             threshold: vec![1.0, 2.0, 3.0],
             qty: Qty::from_raw(1_000_000),
-            hold: vec![50],
-            cooldown: vec![10],
+            hold_ns: vec![5_000_000_000],
+            cooldown_ns: vec![1_000_000_000],
             tp_bps: vec![0.0],
             sl_bps: vec![0.0],
             use_limit: vec![false, true],

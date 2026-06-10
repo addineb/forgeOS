@@ -3,7 +3,7 @@
 //! limit) to see if it survives + profits the money you would actually risk.
 //!
 //!   forge-paper w1.forge w2.forge --strategy ofi --window 100 --threshold 3 \
-//!     --hold 60000 --cooldown 1000 --tp-bps 0 --sl-bps 0 \
+//!     --hold 5m --cooldown 30s --tp-bps 0 --sl-bps 0 \
 //!     --balance 500 --leverage 20 --risk-pct 0.10 --daily-limit 0.05
 
 use std::process::ExitCode;
@@ -13,6 +13,31 @@ use forge_data::ForgeReader;
 use forge_metrics::{paper_run, PaperConfig};
 use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine};
 use forge_strategy::{ImbalanceConfig, MomentumConfig, ObiBot, OfiMomentum, Signal};
+
+/// Parse a duration like `30s`, `5m`, `2h`, `250ms` (bare = ns) into nanoseconds.
+fn parse_dur(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mult): (&str, u64) = if let Some(p) = s.strip_suffix("ms") {
+        (p, 1_000_000)
+    } else if let Some(p) = s.strip_suffix("us") {
+        (p, 1_000)
+    } else if let Some(p) = s.strip_suffix("ns") {
+        (p, 1)
+    } else if let Some(p) = s.strip_suffix('h') {
+        (p, 3_600_000_000_000)
+    } else if let Some(p) = s.strip_suffix('m') {
+        (p, 60_000_000_000)
+    } else if let Some(p) = s.strip_suffix('s') {
+        (p, 1_000_000_000)
+    } else {
+        (s, 1)
+    };
+    let v: f64 = num.trim().parse().map_err(|e| format!("bad duration `{s}`: {e}"))?;
+    if !v.is_finite() || v < 0.0 {
+        return Err(format!("bad duration `{s}`"));
+    }
+    Ok((v * mult as f64) as u64)
+}
 
 fn load_window(path: &str) -> Result<Vec<Event>, String> {
     let reader = ForgeReader::open(path).map_err(|e| format!("open {path}: {e}"))?;
@@ -59,8 +84,8 @@ fn run() -> Result<(), String> {
     let mut topn = 5usize;
     let mut threshold = 3.0f64;
     let mut reversion = false;
-    let mut hold = 60_000u32;
-    let mut cooldown = 1_000u32;
+    let mut hold_ns: u64 = 300_000_000_000;   // 5m
+    let mut cooldown_ns: u64 = 30_000_000_000; // 30s
     let mut tp_bps = 0.0f64;
     let mut sl_bps = 0.0f64;
     let mut use_limit = false;
@@ -79,8 +104,8 @@ fn run() -> Result<(), String> {
             "--topn" => topn = val()?.parse().map_err(|e| format!("{e}"))?,
             "--threshold" => threshold = val()?.parse().map_err(|e| format!("{e}"))?,
             "--reversion" => reversion = val()?.parse().map_err(|e| format!("{e}"))?,
-            "--hold" => hold = val()?.parse().map_err(|e| format!("{e}"))?,
-            "--cooldown" => cooldown = val()?.parse().map_err(|e| format!("{e}"))?,
+            "--hold" => hold_ns = parse_dur(&val()?)?,
+            "--cooldown" => cooldown_ns = parse_dur(&val()?)?,
             "--tp-bps" => tp_bps = val()?.parse().map_err(|e| format!("{e}"))?,
             "--sl-bps" => sl_bps = val()?.parse().map_err(|e| format!("{e}"))?,
             "--limit" => use_limit = true,
@@ -106,14 +131,14 @@ fn run() -> Result<(), String> {
     let trips = match strategy.as_str() {
         "ofi" => {
             let c = MomentumConfig {
-                ofi_window: window, threshold, qty: q, hold, cooldown, tp_bps, sl_bps,
+                ofi_window: window, threshold, qty: q, hold_ns, cooldown_ns, tp_bps, sl_bps,
                 use_limit, signal: Signal::Real, seed: 1, fill_timeout_ns: 200_000_000,
             };
             collect_trips(&windows, || OfiMomentum::new(c), latency_ns)
         }
         "wall" => {
             let c = ImbalanceConfig {
-                top_n: topn, threshold, reversion, qty: q, hold, cooldown, tp_bps, sl_bps,
+                top_n: topn, threshold, reversion, qty: q, hold_ns, cooldown_ns, tp_bps, sl_bps,
                 use_limit, signal: Signal::Real, seed: 1, fill_timeout_ns: 200_000_000,
             };
             collect_trips(&windows, || ObiBot::new(c), latency_ns)

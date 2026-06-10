@@ -1,7 +1,7 @@
 //! `forge-nulledge` - run the seeded coinflip over a *.forge stream and report
 //! the net edge. The verdict: in an honest engine the coinflip MUST lose.
 //!
-//! Usage: forge-nulledge <path.forge> [qty] [hold] [cooldown] [seed] [latency_ns]
+//! Usage: forge-nulledge <path.forge> [qty] [hold_ns] [cooldown_ns] [seed] [latency_ns]
 
 use std::process::ExitCode;
 
@@ -26,17 +26,17 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let path = args
         .next()
-        .ok_or("usage: forge-nulledge <path.forge> [qty] [hold] [cooldown] [seed] [latency_ns]")?;
+        .ok_or("usage: forge-nulledge <path.forge> [qty] [hold_ns] [cooldown_ns] [seed] [latency_ns]")?;
     let qty_f = arg_f64(args.next(), 0.01)?;
-    let hold = arg_u(args.next(), 50)? as u32;
-    let cooldown = arg_u(args.next(), 10)? as u32;
+    let hold_ns = arg_u(args.next(), 5_000_000_000)?;
+    let cooldown_ns = arg_u(args.next(), 1_000_000_000)?;
     let seed = arg_u(args.next(), 1)?;
     let latency_ns = arg_u(args.next(), 0)?;
 
     let reader = ForgeReader::open(&path).map_err(|e| format!("open {path}: {e}"))?;
     let qty = Qty::from_f64(qty_f).map_err(|e| format!("bad qty: {e}"))?;
     let cfg = SimConfig { order_latency_ns: latency_ns, book_max_levels: 20, fees: FeeSchedule::legacy() };
-    let mut eng = SimEngine::new(Coinflip::new(seed, qty, hold, cooldown), cfg);
+    let mut eng = SimEngine::new(Coinflip::new(seed, qty, hold_ns, cooldown_ns), cfg);
     for rec in reader.records() {
         let ev = rec.to_event().map_err(|e| format!("decode: {e}"))?;
         eng.step(&ev).map_err(|e| format!("step: {e}"))?;
@@ -44,7 +44,7 @@ fn run() -> Result<(), String> {
     let r = eng.finish();
 
     println!("file            {path}");
-    println!("coinflip        qty={qty_f} hold={hold} cooldown={cooldown} seed={seed} latency_ns={latency_ns}");
+    println!("coinflip        qty={qty_f} hold_ns={hold_ns} cooldown_ns={cooldown_ns} seed={seed} latency_ns={latency_ns}");
     println!("events          {}", r.events);
     println!("round trips     {}", r.round_trips);
     println!("orders filled   {}", r.orders_filled);

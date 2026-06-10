@@ -37,13 +37,13 @@ impl EntrySignal for CoinSignal {
 pub struct Coinflip(ExecutionShell<CoinSignal>);
 
 impl Coinflip {
-    /// Seeded coinflip: trade `qty`, hold `hold` events, wait `cooldown` events.
+    /// Seeded coinflip: trade `qty`, hold `hold_ns` ns, wait `cooldown_ns` ns.
     #[must_use]
-    pub fn new(seed: u64, qty: Qty, hold: u32, cooldown: u32) -> Self {
+    pub fn new(seed: u64, qty: Qty, hold_ns: u64, cooldown_ns: u64) -> Self {
         let cfg = ExecConfig {
             qty,
-            hold,
-            cooldown,
+            hold_ns,
+            cooldown_ns,
             tp_bps: 0.0,
             sl_bps: 0.0,
             use_limit: false,

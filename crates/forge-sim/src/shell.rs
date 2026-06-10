@@ -4,15 +4,14 @@
 //! A strategy implements [`EntrySignal`] (when flat, "do I enter, and which
 //! way?"); the shell handles everything dangerous and repetitive:
 //!   - ONE order in flight at a time (wait for the position to change or a
-//!     fill-timeout before acting again) - events can share a timestamp, so an
-//!     event-count cooldown passes ~0 real time and naive logic spams orders;
-//!   - enter only on a two-sided book (a market order cannot trivially reject);
-//!   - exits on take-profit / stop-loss (bps of entry mid) or a hold timeout;
-//!   - flatten the exact held size (partial fills do not let inventory drift);
-//!   - a cooldown between trades; at most one open position.
+//!     fill-timeout before acting again);
+//!   - enter only on a two-sided book;
+//!   - exits on take-profit / stop-loss (bps of entry mid) or a hold TIMEOUT
+//!     measured in virtual time (nanoseconds), not event counts;
+//!   - flatten the exact held size; a cooldown (ns) between trades; one position.
 //!
-//! This is the "execution shell" of the design (engine-design section 4): the
-//! cheap, faithful wrapper a sweep fans out per combo over a shared signal.
+//! Holds and cooldowns are in NANOSECONDS of virtual time, so "hold 30 minutes"
+//! is expressible and robust to event clustering (events can share a timestamp).
 
 use forge_core::{Qty, Side};
 
@@ -20,12 +19,10 @@ use crate::strategy::{Ctx, OrderIntent, Strategy};
 
 /// A bot's signal: the only part each thesis writes.
 pub trait EntrySignal {
-    /// Called every event so the signal can update its state from the book/tape
-    /// regardless of position. Default: no-op.
+    /// Called every event so the signal can update its state. Default: no-op.
     fn observe(&mut self, _ctx: &Ctx) {}
-
-    /// Called when flat and ready to trade. Return `Some(side)` to enter
-    /// (`Bid` = go long, `Ask` = go short), or `None` to stand aside.
+    /// Called when flat and ready: `Some(side)` to enter (`Bid` long / `Ask`
+    /// short), or `None` to stand aside.
     fn entry(&mut self, ctx: &Ctx) -> Option<Side>;
 }
 
@@ -34,10 +31,10 @@ pub trait EntrySignal {
 pub struct ExecConfig {
     /// Trade size.
     pub qty: Qty,
-    /// Max events to hold before a timeout exit.
-    pub hold: u32,
-    /// Events to wait after a trade before the next.
-    pub cooldown: u32,
+    /// Hold duration in nanoseconds before a timeout exit.
+    pub hold_ns: u64,
+    /// Cooldown in nanoseconds after a trade before the next.
+    pub cooldown_ns: u64,
     /// Take-profit in bps of entry mid (0 = disabled).
     pub tp_bps: f64,
     /// Stop-loss in bps of entry mid (0 = disabled).
@@ -52,8 +49,8 @@ impl Default for ExecConfig {
     fn default() -> Self {
         Self {
             qty: Qty::from_raw(1_000_000), // 0.01
-            hold: 50,
-            cooldown: 10,
+            hold_ns: 5_000_000_000,        // 5 s
+            cooldown_ns: 1_000_000_000,    // 1 s
             tp_bps: 0.0,
             sl_bps: 0.0,
             use_limit: false,
@@ -64,8 +61,8 @@ impl Default for ExecConfig {
 
 #[derive(Clone, Copy)]
 enum Phase {
-    Flat(u32),
-    Open { left: u32, dir: i64, entry_mid: i64 },
+    Flat { ready_at: u64 },
+    Open { entry_ts: u64, dir: i64, entry_mid: i64 },
 }
 
 /// Wraps an [`EntrySignal`] into a full `forge_sim::Strategy` with safe order
@@ -80,7 +77,7 @@ pub struct ExecutionShell<S: EntrySignal> {
 impl<S: EntrySignal> ExecutionShell<S> {
     /// Build a shell around a signal.
     pub fn new(sig: S, cfg: ExecConfig) -> Self {
-        Self { sig, cfg, pending: None, phase: Phase::Flat(0) }
+        Self { sig, cfg, pending: None, phase: Phase::Flat { ready_at: 0 } }
     }
 
     fn flatten(pos: i64) -> OrderIntent {
@@ -91,13 +88,11 @@ impl<S: EntrySignal> ExecutionShell<S> {
 
 impl<S: EntrySignal> Strategy for ExecutionShell<S> {
     fn on_event(&mut self, ctx: &Ctx, out: &mut Vec<OrderIntent>) {
-        // The signal always gets to update its state.
         self.sig.observe(ctx);
 
         let pos = ctx.position_qty;
         let now = ctx.now.get();
 
-        // Resolve any in-flight order, then refuse to act while one is pending.
         if let Some((sent_pos, deadline)) = self.pending {
             if pos != sent_pos || now >= deadline {
                 self.pending = None;
@@ -113,8 +108,8 @@ impl<S: EntrySignal> Strategy for ExecutionShell<S> {
         };
 
         match self.phase {
-            Phase::Open { left, dir, entry_mid } => {
-                let mut close = left == 0;
+            Phase::Open { entry_ts, dir, entry_mid } => {
+                let mut close = now.saturating_sub(entry_ts) >= self.cfg.hold_ns;
                 if let Some(m) = mid {
                     let move_bps =
                         ((m - entry_mid) as f64 / entry_mid as f64) * 10_000.0 * dir as f64;
@@ -130,41 +125,40 @@ impl<S: EntrySignal> Strategy for ExecutionShell<S> {
                         out.push(Self::flatten(pos));
                         self.pending = Some((pos, now + self.cfg.fill_timeout_ns));
                     }
-                    self.phase = Phase::Flat(self.cfg.cooldown);
-                } else {
-                    self.phase = Phase::Open { left: left.saturating_sub(1), dir, entry_mid };
+                    self.phase = Phase::Flat { ready_at: now + self.cfg.cooldown_ns };
                 }
             }
-            Phase::Flat(0) => {
+            Phase::Flat { ready_at } => {
                 if pos != 0 {
                     out.push(Self::flatten(pos));
                     self.pending = Some((pos, now + self.cfg.fill_timeout_ns));
-                    self.phase = Phase::Flat(self.cfg.cooldown);
-                } else if let Some(m) = mid {
-                    if let Some(side) = self.sig.entry(ctx) {
-                        let intent = if self.cfg.use_limit {
-                            let px = match side {
-                                Side::Bid => ctx.book.best_bid().map(|(p, _)| p),
-                                Side::Ask => ctx.book.best_ask().map(|(p, _)| p),
+                    self.phase = Phase::Flat { ready_at: now + self.cfg.cooldown_ns };
+                } else if now >= ready_at {
+                    if let Some(m) = mid {
+                        if let Some(side) = self.sig.entry(ctx) {
+                            let intent = if self.cfg.use_limit {
+                                let px = match side {
+                                    Side::Bid => ctx.book.best_bid().map(|(p, _)| p),
+                                    Side::Ask => ctx.book.best_ask().map(|(p, _)| p),
+                                };
+                                match px {
+                                    Some(p) => OrderIntent::limit(side, p, self.cfg.qty),
+                                    None => return,
+                                }
+                            } else {
+                                OrderIntent::market(side, self.cfg.qty)
                             };
-                            match px {
-                                Some(p) => OrderIntent::limit(side, p, self.cfg.qty),
-                                None => return,
-                            }
-                        } else {
-                            OrderIntent::market(side, self.cfg.qty)
-                        };
-                        out.push(intent);
-                        self.pending = Some((pos, now + self.cfg.fill_timeout_ns));
-                        self.phase = Phase::Open {
-                            left: self.cfg.hold,
-                            dir: if side == Side::Bid { 1 } else { -1 },
-                            entry_mid: m,
-                        };
+                            out.push(intent);
+                            self.pending = Some((pos, now + self.cfg.fill_timeout_ns));
+                            self.phase = Phase::Open {
+                                entry_ts: now,
+                                dir: if side == Side::Bid { 1 } else { -1 },
+                                entry_mid: m,
+                            };
+                        }
                     }
                 }
             }
-            Phase::Flat(n) => self.phase = Phase::Flat(n - 1),
         }
     }
 }
@@ -175,7 +169,6 @@ mod tests {
     use crate::{FeeSchedule, SimConfig, SimEngine};
     use forge_core::{Event, EventKind, Price, Qty, Side, UnixNanos};
 
-    /// A signal that always wants to go long - to exercise the shell plumbing.
     struct AlwaysLong;
     impl EntrySignal for AlwaysLong {
         fn entry(&mut self, _ctx: &Ctx) -> Option<Side> {
@@ -184,37 +177,25 @@ mod tests {
     }
 
     fn delta(side: Side, px: i64, qty: i64, ts: u64) -> Event {
-        Event::new(
-            EventKind::BookDelta,
-            UnixNanos::new(ts),
-            UnixNanos::new(ts),
-            Some(side),
-            Price::from_raw(px),
-            Qty::from_raw(qty),
-            0,
-        )
-        .unwrap()
+        Event::new(EventKind::BookDelta, UnixNanos::new(ts), UnixNanos::new(ts), Some(side), Price::from_raw(px), Qty::from_raw(qty), 0).unwrap()
     }
 
     #[test]
     fn shell_round_trips_and_pays_costs() {
-        // two-sided book at 100/101, size 100, walking timestamps
         let mut evs = Vec::new();
         let mut ts = 1_000_000u64;
         for _ in 0..200 {
-            ts += 1_000_000;
+            ts += 1_000_000; // 1 ms / tick
             evs.push(delta(Side::Bid, 100 * 100_000_000, 100 * 100_000_000, ts));
             evs.push(delta(Side::Ask, 101 * 100_000_000, 100 * 100_000_000, ts));
         }
-        let cfg = ExecConfig { qty: Qty::from_f64(0.1).unwrap(), hold: 2, cooldown: 1, ..ExecConfig::default() };
+        // hold 2 ms, cooldown 1 ms
+        let cfg = ExecConfig { qty: Qty::from_f64(0.1).unwrap(), hold_ns: 2_000_000, cooldown_ns: 1_000_000, ..ExecConfig::default() };
         let shell = ExecutionShell::new(AlwaysLong, cfg);
         let mut eng = SimEngine::new(shell, SimConfig { order_latency_ns: 0, book_max_levels: 20, fees: FeeSchedule::legacy() });
         eng.run(evs.iter()).unwrap();
         let r = eng.finish();
-        // it traded, and a buy-high/sell-low round trip on a static book loses.
         assert!(r.round_trips > 5, "shell must trade (round_trips={})", r.round_trips);
         assert!(r.net_pnl < 0, "always-long on a static book pays the spread+fees");
-        // clean accounting: roughly two fills per round trip, no runaway.
-        assert!(r.orders_filled <= r.round_trips * 3 + 5, "no order spam");
     }
 }

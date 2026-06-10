@@ -3,10 +3,10 @@
 //! drawdown, and a leverage lens. Run detached in tmux (tools/sweep.sh).
 //!
 //!   forge-sweep w1.forge w2.forge --strategy ofi \
-//!     --windows 20,50,100 --thresholds 1,1.5,2 --holds 100,300 --cooldowns 50 \
+//!     --windows 20,50,100 --thresholds 1,1.5,2 --holds 5s,30s --cooldowns 2s \
 //!     --tps 0,8 --sls 0,8 --limits false --leverage 20
 //!   forge-sweep w1.forge --strategy wall --topn 3,5,10 --thresholds 0.2,0.4 \
-//!     --reversions false,true --holds 100,300 --cooldowns 50 --tps 0,8 --sls 0,8
+//!     --reversions false,true --holds 5s,30s --cooldowns 2s --tps 0,8 --sls 0,8
 
 use std::fmt::Debug;
 use std::process::ExitCode;
@@ -26,8 +26,46 @@ fn parse_f64s(s: &str) -> Result<Vec<f64>, String> {
 fn parse_usizes(s: &str) -> Result<Vec<usize>, String> {
     s.split(',').map(|x| x.trim().parse().map_err(|e| format!("bad int `{x}`: {e}"))).collect()
 }
-fn parse_u32s(s: &str) -> Result<Vec<u32>, String> {
-    s.split(',').map(|x| x.trim().parse().map_err(|e| format!("bad int `{x}`: {e}"))).collect()
+/// Parse a duration like `30s`, `5m`, `2h`, `250ms`, `500us`, `1000ns` (bare = ns) into nanoseconds.
+fn parse_dur(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mult): (&str, u64) = if let Some(p) = s.strip_suffix("ms") {
+        (p, 1_000_000)
+    } else if let Some(p) = s.strip_suffix("us") {
+        (p, 1_000)
+    } else if let Some(p) = s.strip_suffix("ns") {
+        (p, 1)
+    } else if let Some(p) = s.strip_suffix('h') {
+        (p, 3_600_000_000_000)
+    } else if let Some(p) = s.strip_suffix('m') {
+        (p, 60_000_000_000)
+    } else if let Some(p) = s.strip_suffix('s') {
+        (p, 1_000_000_000)
+    } else {
+        (s, 1)
+    };
+    let v: f64 = num.trim().parse().map_err(|e| format!("bad duration `{s}`: {e}"))?;
+    if !v.is_finite() || v < 0.0 {
+        return Err(format!("bad duration `{s}`"));
+    }
+    Ok((v * mult as f64) as u64)
+}
+fn parse_durs(s: &str) -> Result<Vec<u64>, String> {
+    s.split(',').map(parse_dur).collect()
+}
+/// Format nanoseconds back to a compact human duration for the scorecard.
+fn fmt_dur(ns: u64) -> String {
+    if ns >= 3_600_000_000_000 && ns.is_multiple_of(3_600_000_000_000) {
+        format!("{}h", ns / 3_600_000_000_000)
+    } else if ns >= 60_000_000_000 && ns.is_multiple_of(60_000_000_000) {
+        format!("{}m", ns / 60_000_000_000)
+    } else if ns >= 1_000_000_000 && ns.is_multiple_of(1_000_000_000) {
+        format!("{}s", ns / 1_000_000_000)
+    } else if ns >= 1_000_000 && ns.is_multiple_of(1_000_000) {
+        format!("{}ms", ns / 1_000_000)
+    } else {
+        format!("{ns}ns")
+    }
 }
 fn parse_bools(s: &str) -> Result<Vec<bool>, String> {
     s.split(',')
@@ -99,8 +137,8 @@ fn run() -> Result<(), String> {
     let mut topn_ax = vec![3usize, 5, 10];
     let mut rev_ax = vec![false, true];
     // shared axes
-    let mut hold_ax = vec![100u32, 300];
-    let mut cd_ax = vec![50u32];
+    let mut hold_ax: Vec<u64> = vec![5_000_000_000, 30_000_000_000];
+    let mut cd_ax: Vec<u64> = vec![1_000_000_000];
     let mut tp_ax = vec![0.0, 8.0];
     let mut sl_ax = vec![0.0, 8.0];
     let mut lim_ax = vec![false];
@@ -114,8 +152,8 @@ fn run() -> Result<(), String> {
                 topn_ax = vec![3, 5, 10];
                 thr_ax = vec![1.0, 1.5, 2.0, 2.5];
                 rev_ax = vec![false, true];
-                hold_ax = vec![50, 100, 300];
-                cd_ax = vec![20, 50];
+                hold_ax = vec![1_000_000_000, 5_000_000_000, 15_000_000_000]; // 1s,5s,15s
+                cd_ax = vec![500_000_000, 2_000_000_000];                      // 0.5s,2s
                 tp_ax = vec![0.0, 5.0, 8.0];
                 sl_ax = vec![0.0, 5.0, 8.0];
             }
@@ -124,8 +162,8 @@ fn run() -> Result<(), String> {
                 topn_ax = vec![5, 10, 20];
                 thr_ax = vec![2.0, 3.0, 4.0];
                 rev_ax = vec![false, true];
-                hold_ax = vec![5_000, 20_000, 60_000];
-                cd_ax = vec![1_000, 5_000];
+                hold_ax = vec![300_000_000_000, 900_000_000_000, 1_800_000_000_000]; // 5m,15m,30m
+                cd_ax = vec![30_000_000_000, 120_000_000_000];                        // 30s,2m
                 tp_ax = vec![0.0, 15.0, 30.0];
                 sl_ax = vec![0.0, 15.0, 30.0];
             }
@@ -151,8 +189,8 @@ fn run() -> Result<(), String> {
             "--thresholds" => thr_ax = parse_f64s(&val()?)?,
             "--topn" => topn_ax = parse_usizes(&val()?)?,
             "--reversions" => rev_ax = parse_bools(&val()?)?,
-            "--holds" => hold_ax = parse_u32s(&val()?)?,
-            "--cooldowns" => cd_ax = parse_u32s(&val()?)?,
+            "--holds" => hold_ax = parse_durs(&val()?)?,
+            "--cooldowns" => cd_ax = parse_durs(&val()?)?,
             "--tps" => tp_ax = parse_f64s(&val()?)?,
             "--sls" => sl_ax = parse_f64s(&val()?)?,
             "--limits" => lim_ax = parse_bools(&val()?)?,
@@ -178,35 +216,35 @@ fn run() -> Result<(), String> {
     match strategy.as_str() {
         "ofi" => {
             let grid = expand(&GridSpec {
-                ofi_window: windows_ax, threshold: thr_ax, qty: q, hold: hold_ax, cooldown: cd_ax,
+                ofi_window: windows_ax, threshold: thr_ax, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
                 tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000,
             });
             eprintln!("ofi grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, OfiMomentum::new, sample_ns, fees, latency_ns, 20, th);
             print_report(&rep, signal, leverage, top, |c| {
-                format!("w={} thr={} hold={} cd={} tp={} sl={} lim={}", c.ofi_window, c.threshold, c.hold, c.cooldown, c.tp_bps, c.sl_bps, c.use_limit)
+                format!("w={} thr={} hold={} cd={} tp={} sl={} lim={}", c.ofi_window, c.threshold, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit)
             });
         }
         "wall" => {
             let grid = expand_imbalance(&ImbalanceGridSpec {
-                top_n: topn_ax, threshold: thr_ax, reversion: rev_ax, qty: q, hold: hold_ax, cooldown: cd_ax,
+                top_n: topn_ax, threshold: thr_ax, reversion: rev_ax, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
                 tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000,
             });
             eprintln!("wall grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, ObiBot::new, sample_ns, fees, latency_ns, 20, th);
             print_report(&rep, signal, leverage, top, |c| {
-                format!("topN={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.top_n, c.threshold, c.reversion, c.hold, c.cooldown, c.tp_bps, c.sl_bps, c.use_limit)
+                format!("topN={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.top_n, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit)
             });
         }
         "cvd" => {
             let grid = expand_cvd(&CvdGridSpec {
-                window: windows_ax, threshold: thr_ax, reversion: rev_ax, qty: q, hold: hold_ax, cooldown: cd_ax,
+                window: windows_ax, threshold: thr_ax, reversion: rev_ax, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
                 tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000,
             });
             eprintln!("cvd grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, CvdBot::new, sample_ns, fees, latency_ns, 20, th);
             print_report(&rep, signal, leverage, top, |c| {
-                format!("win={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.window, c.threshold, c.reversion, c.hold, c.cooldown, c.tp_bps, c.sl_bps, c.use_limit)
+                format!("win={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.window, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit)
             });
         }
         other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd)")),

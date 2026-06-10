@@ -29,10 +29,10 @@ pub struct MomentumConfig {
     pub threshold: f64,
     /// Trade size.
     pub qty: Qty,
-    /// Max events to hold before a timeout exit.
-    pub hold: u32,
-    /// Events to wait after a trade before the next.
-    pub cooldown: u32,
+    /// Hold duration in nanoseconds before a timeout exit.
+    pub hold_ns: u64,
+    /// Cooldown in nanoseconds after a trade before the next.
+    pub cooldown_ns: u64,
     /// Take-profit in bps of entry mid (0 = disabled).
     pub tp_bps: f64,
     /// Stop-loss in bps of entry mid (0 = disabled).
@@ -53,8 +53,8 @@ impl Default for MomentumConfig {
             ofi_window: 20,
             threshold: 1.0,
             qty: Qty::from_raw(1_000_000),
-            hold: 50,
-            cooldown: 10,
+            hold_ns: 5_000_000_000,
+            cooldown_ns: 1_000_000_000,
             tp_bps: 0.0,
             sl_bps: 0.0,
             use_limit: false,
@@ -122,8 +122,8 @@ impl OfiMomentum {
         };
         let exec = ExecConfig {
             qty: cfg.qty,
-            hold: cfg.hold,
-            cooldown: cfg.cooldown,
+            hold_ns: cfg.hold_ns,
+            cooldown_ns: cfg.cooldown_ns,
             tp_bps: cfg.tp_bps,
             sl_bps: cfg.sl_bps,
             use_limit: cfg.use_limit,

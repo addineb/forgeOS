@@ -76,7 +76,7 @@ fn coinflip_loses_with_spread_and_fees() {
     let evs = synth_market(0xC0FFEE, 20_000, 2_000_000, 1_000_000);
     let qty = Qty::from_f64(0.1).unwrap();
     let cfg = SimConfig { order_latency_ns: 0, book_max_levels: 20, fees: FeeSchedule::legacy() };
-    let mut eng = SimEngine::new(Coinflip::new(99, qty, 2, 1), cfg);
+    let mut eng = SimEngine::new(Coinflip::new(99, qty, 2_000_000, 1_000_000), cfg);
     eng.run(evs.iter()).unwrap();
     let r = eng.finish();
 
@@ -90,14 +90,14 @@ fn spread_alone_loses_and_fees_make_it_worse() {
     let qty = Qty::from_f64(0.1).unwrap();
 
     let mut eng_zero = SimEngine::new(
-        Coinflip::new(99, qty, 2, 1),
+        Coinflip::new(99, qty, 2_000_000, 1_000_000),
         SimConfig { order_latency_ns: 0, book_max_levels: 20, fees: FeeSchedule::zero() },
     );
     eng_zero.run(evs.iter()).unwrap();
     let zero = eng_zero.finish();
 
     let mut eng_fee = SimEngine::new(
-        Coinflip::new(99, qty, 2, 1),
+        Coinflip::new(99, qty, 2_000_000, 1_000_000),
         SimConfig { order_latency_ns: 0, book_max_levels: 20, fees: FeeSchedule::legacy() },
     );
     eng_fee.run(evs.iter()).unwrap();

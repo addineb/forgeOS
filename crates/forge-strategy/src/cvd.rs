@@ -71,10 +71,10 @@ pub struct CvdConfig {
     pub reversion: bool,
     /// Trade size.
     pub qty: Qty,
-    /// Hold length (events).
-    pub hold: u32,
-    /// Cooldown (events).
-    pub cooldown: u32,
+    /// Hold duration in nanoseconds before a timeout exit.
+    pub hold_ns: u64,
+    /// Cooldown in nanoseconds between trades.
+    pub cooldown_ns: u64,
     /// Take-profit bps (0 = off).
     pub tp_bps: f64,
     /// Stop-loss bps (0 = off).
@@ -96,8 +96,8 @@ impl Default for CvdConfig {
             threshold: 0.3,
             reversion: false,
             qty: Qty::from_raw(1_000_000),
-            hold: 50,
-            cooldown: 10,
+            hold_ns: 5_000_000_000,
+            cooldown_ns: 1_000_000_000,
             tp_bps: 0.0,
             sl_bps: 0.0,
             use_limit: false,
@@ -170,8 +170,8 @@ impl CvdBot {
         };
         let exec = ExecConfig {
             qty: cfg.qty,
-            hold: cfg.hold,
-            cooldown: cfg.cooldown,
+            hold_ns: cfg.hold_ns,
+            cooldown_ns: cfg.cooldown_ns,
             tp_bps: cfg.tp_bps,
             sl_bps: cfg.sl_bps,
             use_limit: cfg.use_limit,

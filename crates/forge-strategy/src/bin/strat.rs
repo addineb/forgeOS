@@ -2,7 +2,7 @@
 //! report the edge. Use --shuffle to run the random-direction control.
 //!
 //! Usage: forge-strat <path.forge> [--window N] [--threshold X] [--qty Q]
-//!        [--hold H] [--cooldown C] [--tp-bps T] [--sl-bps S] [--limit] [--shuffle]
+//!        [--hold DUR] [--cooldown DUR] [--tp-bps T] [--sl-bps S] [--limit] [--shuffle]
 
 use std::process::ExitCode;
 
@@ -10,6 +10,31 @@ use forge_core::Qty;
 use forge_data::ForgeReader;
 use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine};
 use forge_strategy::{MomentumConfig, OfiMomentum, Signal};
+
+/// Parse a duration like `30s`, `5m`, `2h`, `250ms` (bare = ns) into nanoseconds.
+fn parse_dur(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mult): (&str, u64) = if let Some(p) = s.strip_suffix("ms") {
+        (p, 1_000_000)
+    } else if let Some(p) = s.strip_suffix("us") {
+        (p, 1_000)
+    } else if let Some(p) = s.strip_suffix("ns") {
+        (p, 1)
+    } else if let Some(p) = s.strip_suffix('h') {
+        (p, 3_600_000_000_000)
+    } else if let Some(p) = s.strip_suffix('m') {
+        (p, 60_000_000_000)
+    } else if let Some(p) = s.strip_suffix('s') {
+        (p, 1_000_000_000)
+    } else {
+        (s, 1)
+    };
+    let v: f64 = num.trim().parse().map_err(|e| format!("bad duration `{s}`: {e}"))?;
+    if !v.is_finite() || v < 0.0 {
+        return Err(format!("bad duration `{s}`"));
+    }
+    Ok((v * mult as f64) as u64)
+}
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -23,8 +48,8 @@ fn run() -> Result<(), String> {
             "--window" => c.ofi_window = val()?.parse().map_err(|e| format!("window: {e}"))?,
             "--threshold" => c.threshold = val()?.parse().map_err(|e| format!("threshold: {e}"))?,
             "--qty" => c.qty = Qty::from_f64(val()?.parse().map_err(|e| format!("qty: {e}"))?).map_err(|e| format!("qty: {e}"))?,
-            "--hold" => c.hold = val()?.parse().map_err(|e| format!("hold: {e}"))?,
-            "--cooldown" => c.cooldown = val()?.parse().map_err(|e| format!("cooldown: {e}"))?,
+            "--hold" => c.hold_ns = parse_dur(&val()?)?,
+            "--cooldown" => c.cooldown_ns = parse_dur(&val()?)?,
             "--tp-bps" => c.tp_bps = val()?.parse().map_err(|e| format!("tp: {e}"))?,
             "--sl-bps" => c.sl_bps = val()?.parse().map_err(|e| format!("sl: {e}"))?,
             "--seed" => c.seed = val()?.parse().map_err(|e| format!("seed: {e}"))?,
@@ -52,7 +77,7 @@ fn run() -> Result<(), String> {
 
     println!("file            {path}");
     println!("signal          {:?}", c.signal);
-    println!("knobs           window={} thr={} hold={} cd={} tp={} sl={} limit={}", c.ofi_window, c.threshold, c.hold, c.cooldown, c.tp_bps, c.sl_bps, c.use_limit);
+    println!("knobs           window={} thr={} hold_ns={} cd_ns={} tp={} sl={} limit={}", c.ofi_window, c.threshold, c.hold_ns, c.cooldown_ns, c.tp_bps, c.sl_bps, c.use_limit);
     println!("events          {}", r.events);
     println!("round trips     {}", r.round_trips);
     println!("orders filled   {} (maker {})", r.orders_filled, r.maker_fills);
