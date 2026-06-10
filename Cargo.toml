@@ -1,0 +1,19 @@
+# ForgeOS Rust workspace. Crates are added per docs/roadmap.md (Phase 0+).
+# Kept intentionally minimal until Phase 0 lands the data + replay core.
+[workspace]
+resolver = "2"
+members = [
+    # "crates/forge-core",     # domain types, UnixNanos, Price/Qty, errors (fail-fast)
+    # "crates/forge-data",     # normalized event stream: writer, mmap reader (zero-copy)
+    # "crates/forge-book",     # L2 reconstruction from deltas + snapshots
+    # "crates/forge-sim",      # virtual clock, two-clock latency, matching + fills, P&L
+    # "crates/forge-strategy", # strategy trait + features/primitives
+    # "crates/forge-metrics",  # metrics + PBO/CPCV/DSR + null-edge harness
+    # "crates/forge-sweep",    # rayon combo-level parallel sweeps over shared mmap
+]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+Cargo.lock
+# normalized event streams + run artifacts are large / machine-local
+/data
+/runs
+*.forge
+*.feather
+*.parquet
+.DS_Store
