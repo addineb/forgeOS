@@ -29,9 +29,10 @@ actionable backlog. Check items off as they land.
 
 ## Now (active - ordered, one step at a time)
 - [x] Public-indicator hunts done (OFI/wall/CVD + regime-gate): all no-edge.
-- [ ] 1. LEAD-LAG (venue lag) bot: Binance signal -> Hyperliquid execution with
-      honest latency. FIRST STEP: confirm HL quote data is in/alignable with the
-      .forge stream (it is a separate venue feed) before building.
+- [x] LEAD-LAG study: BLOCKED on data - HL quotes ~1/10-50s (too sparse for a
+      sub-second lead-lag edge). Shelved; needs a dense HL feed. See
+      docs/research/lead-lag-study.md. (Study saved us the engine surgery.)
+- [ ] 1. BRAIN -> STRATEGY engine is now next (does not need HL data).
 - [ ] 2. BRAIN -> STRATEGY engine: annotator/visualizer + chart-trigger x
       orderflow harness. Spec: docs/research/annotator-visualizer.md. Phase A
       (label-note convention, ~zero build) first; Phase B (book/tape viewer) when
