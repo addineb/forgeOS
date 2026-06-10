@@ -129,6 +129,10 @@ pub struct SimEngine<S: Strategy> {
     events: u64,
     det_hash: u64,
     buf: Vec<OrderIntent>,
+    equity_sample_ns: u64,
+    next_sample: u64,
+    sampling_started: bool,
+    equity: Vec<(u64, i128)>,
 }
 
 impl<S: Strategy> SimEngine<S> {
@@ -154,7 +158,22 @@ impl<S: Strategy> SimEngine<S> {
             events: 0,
             det_hash: FNV_OFFSET,
             buf: Vec::new(),
+            equity_sample_ns: 0,
+            next_sample: 0,
+            sampling_started: false,
+            equity: Vec::new(),
         }
+    }
+
+    /// Sample the equity curve every interval_ns of virtual time (0 = off).
+    pub fn enable_equity_sampling(&mut self, interval_ns: u64) {
+        self.equity_sample_ns = interval_ns;
+    }
+
+    /// The sampled equity curve as (ts, net_pnl_including_unrealized).
+    #[must_use]
+    pub fn equity_curve(&self) -> &[(u64, i128)] {
+        &self.equity
     }
 
     /// Process one event.
@@ -207,6 +226,21 @@ impl<S: Strategy> SimEngine<S> {
             fold_u64(&mut self.det_hash, u64::from(intent.side.as_u8()));
             fold_u64(&mut self.det_hash, intent.qty.raw() as u64);
             fold_u64(&mut self.det_hash, arrival);
+        }
+
+        if self.equity_sample_ns > 0 {
+            if !self.sampling_started {
+                self.next_sample = t;
+                self.sampling_started = true;
+            }
+            if t >= self.next_sample {
+                let mark = self.book.mid().map(forge_core::Price::raw);
+                let unreal = mark.map_or(0, |m| self.account.unrealized(m));
+                self.equity.push((t, self.account.net_pnl() + unreal));
+                while self.next_sample <= t {
+                    self.next_sample += self.equity_sample_ns;
+                }
+            }
         }
 
         self.events += 1;

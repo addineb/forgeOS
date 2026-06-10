@@ -13,7 +13,7 @@ pub mod normal;
 pub mod pbo;
 pub mod stats;
 
-pub use dsr::{deflated_sharpe, probabilistic_sharpe};
+pub use dsr::{deflated_sharpe, expected_max_sharpe, probabilistic_sharpe, variance_of_sharpes};
 pub use normal::{inv_normal_cdf, normal_cdf};
 pub use pbo::{pbo_cscv, PboResult};
 pub use stats::{kurtosis, mean, sharpe, skewness, std_dev, EdgeStats};

@@ -1,0 +1,18 @@
+[package]
+name = "forge-sweep"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ForgeOS parallel (config x window) sweep engine + promote/park/retire scorecard."
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-sim = { path = "../forge-sim" }
+forge-strategy = { path = "../forge-strategy" }
+forge-metrics = { path = "../forge-metrics" }
+forge-data = { path = "../forge-data" }
+rayon = "1"
+
+[[bin]]
+name = "forge-sweep"
+path = "src/bin/sweep.rs"
