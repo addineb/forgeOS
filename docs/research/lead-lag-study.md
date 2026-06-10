@@ -1,3 +1,27 @@
+# !!! CORRECTION (2026-06-11, later same day): the KILL below was WRONG - my bug.
+
+The "KILLED on dense data" verdict directly below was produced by a TIMESTAMP BUG
+in my own study: Binance trade `ts` is already in MILLISECONDS, but my code divided
+it by 1,000,000 (treating it as nanoseconds). That collapsed the Binance leg to a
+single frozen price, so the study accidentally tested "HL reverts to its OWN rolling
+mean", NOT spot-perp basis. Same class of self-inflicted error the project exists to
+catch - caught it while building the liquidation study (same bug there).
+
+## Corrected single-day result (2026-02-01, 8h, CORRECT alignment)
+Reversion, depth-5 HL microprice vs time-aligned Binance trade price, dev = gap -
+rolling-500 mean, fixed-horizon exit:
+- thr>8bps H=180s: ~39 trades/day, gross +15.2bps, NET +4.2bps after 11bps, win 92%.
+- thr>8bps H=360s: net +2.3bps, win 82%.   thr>8 H=60s: net -0.9bps, win 93%.
+- Momentum side = clean MIRROR (strongly negative) -> real directional content.
+- BUT thin: only 11-14 trades at thr>8 (one day); thr>5 (larger N) is net-negative;
+  fills idealized (HL microprice, no spread/slippage); funding still ignored.
+
+## Status: RE-OPENED. Pulse survives correct alignment but unproven.
+Multi-day out-of-sample validation (8 days across 7 months) RUNNING. Verdict pending.
+The lag-subspace engine plan is back on the table ONLY if the pulse holds across days
+with adequate sample - and that build touches the engine -> needs explicit sign-off.
+
+---
 # Spot-Perp Basis Reversion (was "lead-lag") - KILLED on dense data (2026-06-11)
 
 ## VERDICT: NO EDGE. The pulse was a DATA ARTIFACT, not a real edge.

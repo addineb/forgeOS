@@ -6,6 +6,16 @@ type: map
 
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
+## 2026-06-11 (CORRECTION - read this first)
+- The "BASIS-REVERSION = KILLED" entry below was WRONG: a timestamp bug in my study
+  (divided Binance trade ts by 1e6 though it was already ms) froze the Binance leg
+  to one price, so it tested HL-vs-its-own-mean, not basis. Caught it building the
+  liquidation study. CORRECTED + validated out-of-sample across 6 days / 7 months:
+  thr>8bps stretch, ~2min hold = ~9 trades/day, gross +17.8bps, NET +6.75bps after
+  11bps, 84% win, POSITIVE EVERY DAY. Momentum mirror negative; small stretches
+  (thr>5) net-negative -> only big dislocations snap back (coherent). Remaining
+  risk = idealized fills (spread-aware re-test running). Lag-subspace engine build
+  is back on the table pending the fill haircut + sign-off. [[lead-lag-study]]
 ## 2026-06-11
 - BASIS-REVERSION = KILLED on dense data. Re-ran the spot-perp study on REAL HL
   full-depth L2 (fresh 20-level snapshot every ~0.55s; 52,492 microprice pts/8h vs
@@ -19,6 +29,15 @@ Append new decisions at the top with a date. The "why" matters as much as the wh
   (dense, both directions, multiple exits) and is dead.
 - Lesson reinforced: NEVER trust a python pre-study built on a thin/derived feed.
   Re-confirm any pulse on raw full-depth data BEFORE believing it or building.
+- LAG AVENUES = CLOSED after a big external research pass. Two independent
+  large-scale studies (Arrakis Hayashi-Yoshida on 29 assets incl. our Binance-HL
+  pair; Microstructure Lab 657M snapshots) both show: lead-lag is real but lives
+  in SUB-SECOND latency races (Binance leads HL ~700ms, structural = 2 HyperBFT
+  blocks) and the persistent cross-venue gaps are fee/funding EQUILIBRIA that do
+  not revert. Untradeable at retail speed + 11bps. No own scan run (would only
+  re-derive the untradeable 700ms). [[lag-avenues-study]]
+- GO TYPE C: liquidation cascades (forced flow). Aftermath plays out over
+  seconds-to-minutes -> inside our speed/cost budget, no latency race.
 ## 2026-06-10
 - DATA PROVIDER = cryptohftdata (CHD), the one we ALREADY use. FREE (no limits
   now; free tier forever). Covers the FULL spec: 9+ spot+deriv venues incl.

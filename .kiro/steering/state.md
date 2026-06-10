@@ -28,11 +28,13 @@ reproducible, coinflip loses on real data.
 - Built: regime classifier + attribution + opt-in gate; results ledger.
 - wall-flow (real-vs-fake wall): SWEPT slow+fast -> 0 promote (no edge, but valid).
 - absorption: validated (clippy+test green) + SWEPT (in progress / read result).
-- BASIS REVERSION = KILLED (2026-06-11). Re-ran on REAL HL full-depth L2 (20-level
-  snapshot every ~0.55s; 52,492 pts/8h vs old 57). Edge GONE: gross -2.6..-5.3bps,
-  both reversion+momentum net-negative every thr/horizon, win 45-59% (coinflip).
-  Old "23-30bps/80-93% win" = ARTIFACT of the BBO-collapsed hlquote sparsity (the
-  5-10s gaps WERE the fake edge). docs/research/lead-lag-study.md.
+- BASIS REVERSION = RE-OPENED (2026-06-11). My morning "KILLED" was a TIMESTAMP BUG
+  (divided Binance trade ts by 1e6 though it was already ms -> Binance leg frozen to
+  one price; accidentally tested HL-vs-its-own-mean). Corrected single day
+  (2026-02-01): thr>8bps, ~3min hold = ~39 trades/day, gross +15bps, NET +4.2bps
+  after 11bps, 92% win; momentum side a clean mirror. THIN (11-14 trades, idealized
+  fills, funding ignored). Multi-day out-of-sample validation running.
+  docs/research/lead-lag-study.md.
 - Tooling DONE: Obsidian vault (MOC + styled graph) + NotebookLM pack + this
   always-on memory + tools/sync-vault.ps1 (repo->vault). Vault at
   C:\Users\User\Desktop\obsidian\forgeos.
