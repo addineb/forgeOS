@@ -7,6 +7,14 @@ type: map
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
 ## 2026-06-10
+- CCT (Cloud Craft Terminal) evaluated -> REJECTED for engine: look-only
+  terminal, NO data export/API ("No API Key Required"), closed proprietary
+  signals = the dead-indicator trap. Useful at most as personal eyes.
+- DECISION: the lag/basis CLONE engine will use AGGREGATED GRANULAR L2
+  (multi-venue book depth) + funding + liquidations. Data sourcing in
+  [[data-apis]]. Key leads: Hyperliquid S3 free L2 snapshots (may unblock
+  basis-reversion), CoinGlass ~$35/mo for forced-flow, self-capture multi-venue
+  L2 on the box (free). No vendor SIGNALS - raw data only, then our gates.
 - CONCLUSION (evidence): plain orderflow INDICATORS (OFI, CVD, imbalance,
   wall-flow, absorption) all = no statistical edge (~15k configs, 0 promote).
   Lesson: orderflow is not the SIGNAL - it is the CONFIRMATION/truth-test on a

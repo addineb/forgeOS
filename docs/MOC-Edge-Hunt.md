@@ -16,6 +16,10 @@ or FORCED FLOW (liquidations/funding/stops).
 - [[lead-lag-study]] - spot-perp basis reversion: FIRST PULSE (unproven).
 - [[real-vs-fake-wall]] - hard-to-compute spoof detection thesis.
 
+## Data sourcing
+- [[data-apis]] - raw feeds for the lag/basis engine (aggregated L2) + forced-flow
+  (liquidations/funding). CCT rejected (look-only, no export).
+
 ## The labelled-setup inbox
 - docs/research/labels/ - drop a note per setup (screenshot + exact timestamp +
   one-line setup/invalidation). No-lookahead: trigger uses data <= now only.
