@@ -8,5 +8,5 @@
 mod momentum;
 mod ofi;
 
-pub use momentum::{MomentumConfig, OfiMomentum, Signal};
+pub use momentum::{MomentumConfig, OfiMomentum, OfiSignal, Signal};
 pub use ofi::Ofi;
