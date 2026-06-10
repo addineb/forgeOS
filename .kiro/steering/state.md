@@ -34,8 +34,10 @@ reproducible, coinflip loses on real data.
 - Tooling DONE: Obsidian vault (MOC + styled graph) + NotebookLM pack + this
   always-on memory + tools/sync-vault.ps1 (repo->vault). Vault at
   C:\Users\User\Desktop\obsidian\forgeos.
-- NEXT: after absorption sweep, the BASIS-REVERSION honest build is the lead
-  (first pulse). Touches engine -> needs explicit sign-off.
+- DATA: chosen single provider = TARDIS.DEV (commit, no churn) for aggregated
+  granular L2 + funding/liq/OI, spot+perp, all venues. Validate free sample first.
+- NEXT: BASIS-REVERSION on a git-branch "lag subspace" (engine copy) fed by
+  Tardis. Touches engine -> explicit sign-off before building.
 
 ## Standing decisions / rules
 - Metrics in PERCENT, not bps (in reports). Leverage 20x, size 20%, EUR500 paper

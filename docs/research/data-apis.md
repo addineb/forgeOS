@@ -4,6 +4,24 @@ type: note
 ---
 # Data APIs - raw feeds for the lag/basis engine + forced-flow
 
+## >>> CHOSEN PROVIDER (commit, do NOT churn): TARDIS.DEV <<<
+One source for ALL specs in ONE normalized schema -> no multi-provider stitching
+(the inconsistency that rots an engine).
+- Venues: Binance spot+perp, Bybit, OKX, Hyperliquid, Deribit, Coinbase, Kraken...
+  -> test any exchange COMBINATION for lag by just changing the symbol list.
+- Data types (same schema): granular incremental L2 book (full depth), trades,
+  quotes, funding + open interest (derivative ticker), LIQUIDATIONS.
+- Spot + perps together (needed for honest basis).
+- Historical download + replay; exchange-native or normalized.
+- Tradeoff: priciest option (per-exchange paid). Accepted for completeness +
+  never-change. Cheaper fallbacks only if cost blocks: Coinalyze (free, but NO
+  granular L2), Crypto Lake (cheap parquet, thinner on liq/quotes).
+- COMMIT GATE (not churn - foundation check): pull Tardis FREE first-day-of-month
+  sample, confirm (a) Hyperliquid L2 is dense, (b) liquidations + funding fields
+  are present, (c) the venue combos we want exist. THEN commit permanently and
+  build the lag clone engine to ingest Tardis normalized data as the ONE feed.
+
+
 DECISION: the lag/basis-reversion CLONE engine (its own git branch) will consume
 AGGREGATED GRANULAR L2 (multi-venue book depth, not sparse quotes) + funding +
 liquidations. This note is the sourcing research. (Compliance: vendor claims
