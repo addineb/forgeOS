@@ -19,7 +19,9 @@ pub struct Account {
     fills: u64,           // fills applied
     round_trips: u64,     // positions fully closed
     open_fees: Money,     // fees attributed to the currently open position
+    open_notional: Money, // entry notional of the currently open position
     trip_pnls: Vec<Money>, // per-round-trip NET pnl (gross - entry/exit fees)
+    trip_notionals: Vec<Money>, // entry notional per round trip (for bps return)
 }
 
 impl Account {
@@ -48,16 +50,17 @@ impl Account {
             Side::Bid => fill.filled.raw(),
             Side::Ask => -fill.filled.raw(),
         };
-        self.apply_position(delta, fill.avg_price.raw(), fee);
+        self.apply_position(delta, fill.avg_price.raw(), fee, fill.notional);
     }
 
-    fn apply_position(&mut self, delta: i64, price: i64, fee: Money) {
+    fn apply_position(&mut self, delta: i64, price: i64, fee: Money, notional: Money) {
         let old = self.net_qty;
 
         if old == 0 {
             self.net_qty = delta;
             self.avg_entry = price;
             self.open_fees = fee;
+            self.open_notional = notional;
             return;
         }
 
@@ -70,6 +73,7 @@ impl Account {
             self.avg_entry = ((oa + da) / tot) as i64;
             self.net_qty = old + delta;
             self.open_fees += fee;
+            self.open_notional += notional;
             return;
         }
 
@@ -86,9 +90,11 @@ impl Account {
             // Fully closed -> one round trip.
             self.round_trips += 1;
             self.trip_pnls.push(pnl - self.open_fees - fee);
+            self.trip_notionals.push(self.open_notional);
             self.net_qty = 0;
             self.avg_entry = 0;
             self.open_fees = 0;
+            self.open_notional = 0;
         } else if (new_qty > 0) == (old > 0) {
             // Partially closed, same side remains; entry price unchanged.
             self.net_qty = new_qty;
@@ -96,9 +102,11 @@ impl Account {
             // Flipped through zero: old fully closed, remainder opens new leg.
             self.round_trips += 1;
             self.trip_pnls.push(pnl - self.open_fees - fee);
+            self.trip_notionals.push(self.open_notional);
             self.net_qty = new_qty;
             self.avg_entry = price;
             self.open_fees = 0;
+            self.open_notional = notional;
         }
     }
 
@@ -154,6 +162,12 @@ impl Account {
     #[must_use]
     pub fn trip_pnls(&self) -> &[Money] {
         &self.trip_pnls
+    }
+
+    /// Entry notional per round trip (pairs with trip_pnls) for percent returns.
+    #[must_use]
+    pub fn trip_notionals(&self) -> &[Money] {
+        &self.trip_notionals
     }
 }
 

@@ -52,6 +52,10 @@ pub struct CellResult {
     pub round_trips: u64,
     /// Fraction of round trips that were profitable.
     pub win_rate: f64,
+    /// Mean per-trade return in percent of notional (the leverage-free edge).
+    pub avg_pct: f64,
+    /// Worst peak-to-trough equity drawdown across windows (quote units).
+    pub max_dd: f64,
     /// Sharpe of the per-bucket equity returns.
     pub sharpe: f64,
     /// Deflated Sharpe (probability of real edge given the trial count).
@@ -119,6 +123,9 @@ pub fn run_sweep(
             let mut trips = 0u64;
             let mut wins = 0u64;
             let mut trip_total = 0u64;
+            let mut pct_sum = 0.0f64;
+            let mut pct_count = 0u64;
+            let mut max_dd = 0.0f64;
 
             for w in windows {
                 let sim_cfg = SimConfig {
@@ -130,11 +137,34 @@ pub fn run_sweep(
                 eng.enable_equity_sampling(sample_ns);
                 eng.run(w.iter()).expect("monotonic event stream");
 
-                for pair in eng.equity_curve().windows(2) {
+                // per-bucket returns (for Sharpe / PBO) and peak-to-trough drawdown
+                let curve = eng.equity_curve();
+                for pair in curve.windows(2) {
                     returns.push(money_to_f64(pair[1].1 - pair[0].1));
                 }
+                let mut peak = i128::MIN;
+                for &(_, eq) in curve {
+                    if eq > peak {
+                        peak = eq;
+                    }
+                    let dd = money_to_f64(peak - eq);
+                    if dd > max_dd {
+                        max_dd = dd;
+                    }
+                }
+
+                // per-trip win rate + bps-of-notional edge
                 let tp = eng.account().trip_pnls();
-                wins += tp.iter().filter(|&&p| p > 0).count() as u64;
+                let tn = eng.account().trip_notionals();
+                for (pnl, notl) in tp.iter().zip(tn.iter()) {
+                    if *pnl > 0 {
+                        wins += 1;
+                    }
+                    if *notl > 0 {
+                        pct_sum += money_to_f64(*pnl) / money_to_f64(*notl) * 100.0;
+                        pct_count += 1;
+                    }
+                }
                 trip_total += tp.len() as u64;
 
                 let r = eng.finish();
@@ -144,12 +174,15 @@ pub fn run_sweep(
 
             let shp = sharpe(&returns);
             let win_rate = if trip_total == 0 { 0.0 } else { wins as f64 / trip_total as f64 };
+            let avg_pct = if pct_count == 0 { 0.0 } else { pct_sum / pct_count as f64 };
             CellResult {
                 id,
                 config: cfg,
                 net,
                 round_trips: trips,
                 win_rate,
+                avg_pct,
+                max_dd,
                 sharpe: shp,
                 dsr: 0.0,
                 verdict: Verdict::Retire,

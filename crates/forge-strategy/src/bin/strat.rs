@@ -42,6 +42,12 @@ fn run() -> Result<(), String> {
         let ev = rec.to_event().map_err(|e| format!("decode: {e}"))?;
         eng.step(&ev).map_err(|e| format!("step: {e}"))?;
     }
+    let tp = eng.account().trip_pnls();
+    let wins = tp.iter().filter(|&&v| v > 0).count();
+    let losses = tp.iter().filter(|&&v| v < 0).count();
+    let n_trips = tp.len();
+    let avg_trip = if n_trips > 0 { money_to_f64(tp.iter().sum::<i128>()) / n_trips as f64 } else { 0.0 };
+    let win_rate = if n_trips > 0 { wins as f64 / n_trips as f64 * 100.0 } else { 0.0 };
     let r = eng.finish();
 
     println!("file            {path}");
@@ -54,6 +60,7 @@ fn run() -> Result<(), String> {
     println!("realized gross  {:.4}", money_to_f64(r.realized));
     println!("fees paid       {:.4}", money_to_f64(r.fees));
     println!("NET P&L         {:.4}", money_to_f64(r.net_pnl));
+    println!("trips {n_trips}  wins {wins}  losses {losses}  win% {win_rate:.2}  avg/trip {avg_trip:.4}");
     Ok(())
 }
 
