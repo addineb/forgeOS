@@ -1,7 +1,7 @@
 //! Cartesian-product expansion of a parameter grid into concrete configs.
 
 use forge_core::Qty;
-use forge_strategy::{ImbalanceConfig, MomentumConfig, Signal};
+use forge_strategy::{CvdConfig, ImbalanceConfig, MomentumConfig, Signal};
 
 /// The swept knobs. Each vector is a set of values to try; the grid is their
 /// Cartesian product (deterministic order).
@@ -109,6 +109,72 @@ pub fn expand_imbalance(spec: &ImbalanceGridSpec) -> Vec<ImbalanceConfig> {
                                 for &lim in &spec.use_limit {
                                     out.push(ImbalanceConfig {
                                         top_n: tn,
+                                        threshold: th,
+                                        reversion: rev,
+                                        qty: spec.qty,
+                                        hold: h,
+                                        cooldown: cd,
+                                        tp_bps: tp,
+                                        sl_bps: sl,
+                                        use_limit: lim,
+                                        signal: spec.signal,
+                                        seed: spec.seed,
+                                        fill_timeout_ns: spec.fill_timeout_ns,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Grid for the CVD bot.
+#[derive(Clone, Debug)]
+pub struct CvdGridSpec {
+    /// Rolling windows (trades).
+    pub window: Vec<usize>,
+    /// Thresholds.
+    pub threshold: Vec<f64>,
+    /// Follow (false) vs fade (true).
+    pub reversion: Vec<bool>,
+    /// Trade size.
+    pub qty: Qty,
+    /// Hold lengths (events).
+    pub hold: Vec<u32>,
+    /// Cooldowns (events).
+    pub cooldown: Vec<u32>,
+    /// Take-profit bps.
+    pub tp_bps: Vec<f64>,
+    /// Stop-loss bps.
+    pub sl_bps: Vec<f64>,
+    /// Market vs limit entry.
+    pub use_limit: Vec<bool>,
+    /// Direction source.
+    pub signal: Signal,
+    /// Seed.
+    pub seed: u64,
+    /// Fill timeout.
+    pub fill_timeout_ns: u64,
+}
+
+/// Expand the CVD grid into concrete configs (deterministic order).
+#[must_use]
+pub fn expand_cvd(spec: &CvdGridSpec) -> Vec<CvdConfig> {
+    let mut out = Vec::new();
+    for &w in &spec.window {
+        for &th in &spec.threshold {
+            for &rev in &spec.reversion {
+                for &h in &spec.hold {
+                    for &cd in &spec.cooldown {
+                        for &tp in &spec.tp_bps {
+                            for &sl in &spec.sl_bps {
+                                for &lim in &spec.use_limit {
+                                    out.push(CvdConfig {
+                                        window: w,
                                         threshold: th,
                                         reversion: rev,
                                         qty: spec.qty,

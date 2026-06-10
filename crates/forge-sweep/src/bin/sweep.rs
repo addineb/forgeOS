@@ -14,9 +14,10 @@ use std::process::ExitCode;
 use forge_core::{Event, Qty};
 use forge_data::ForgeReader;
 use forge_sim::FeeSchedule;
-use forge_strategy::{ObiBot, OfiMomentum, Signal};
+use forge_strategy::{CvdBot, ObiBot, OfiMomentum, Signal};
 use forge_sweep::{
-    expand, expand_imbalance, run_sweep, GridSpec, ImbalanceGridSpec, SweepReport, Thresholds, Verdict,
+    expand, expand_cvd, expand_imbalance, run_sweep, CvdGridSpec, GridSpec, ImbalanceGridSpec,
+    SweepReport, Thresholds, Verdict,
 };
 
 fn parse_f64s(s: &str) -> Result<Vec<f64>, String> {
@@ -197,7 +198,18 @@ fn run() -> Result<(), String> {
                 format!("topN={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.top_n, c.threshold, c.reversion, c.hold, c.cooldown, c.tp_bps, c.sl_bps, c.use_limit)
             });
         }
-        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall)")),
+        "cvd" => {
+            let grid = expand_cvd(&CvdGridSpec {
+                window: windows_ax, threshold: thr_ax, reversion: rev_ax, qty: q, hold: hold_ax, cooldown: cd_ax,
+                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000,
+            });
+            eprintln!("cvd grid: {} configs x {} window(s)", grid.len(), windows.len());
+            let rep = run_sweep(&windows, &grid, CvdBot::new, sample_ns, fees, latency_ns, 20, th);
+            print_report(&rep, signal, leverage, top, |c| {
+                format!("win={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.window, c.threshold, c.reversion, c.hold, c.cooldown, c.tp_bps, c.sl_bps, c.use_limit)
+            });
+        }
+        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd)")),
     }
     Ok(())
 }
