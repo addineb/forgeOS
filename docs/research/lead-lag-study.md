@@ -1,3 +1,39 @@
+# Spot-Perp Basis Reversion (was "lead-lag") - KILLED on dense data (2026-06-11)
+
+## VERDICT: NO EDGE. The pulse was a DATA ARTIFACT, not a real edge.
+The earlier "first pulse" (~23-30bps gross, 80-93% win, ~40 trades/day) was
+produced ENTIRELY by the thin, BBO-collapsed `hlquote` feed (the 5-10s sparse
+updates). When the study is re-run on the REAL HL full-depth L2 - a fresh 20-level
+snapshot every ~0.55s (52,492 microprice points over 8h on 2026-02-01, 1.82/sec) -
+the edge VANISHES and goes gross-NEGATIVE.
+
+### Dense re-study results (tools/basis_restudy.py + basis_restudy_robust.py)
+Depth-weighted top-5 HL microprice vs Binance BTCUSDT, dev = gap - rolling-500 mean.
+- Hold-to-sign-flip exit: gross -2.6 to -5.3 bps at EVERY threshold (5-25bps),
+  win 42-59%. Net @11bps = -13 to -16 bps. The trade loses BEFORE costs.
+- Fixed-horizon sweep (thr 5/8/12/18, H 60/180/360 snaps), BOTH directions:
+  - Reversion: all net-negative; best net -6.56bps (40 trades, noise).
+  - Momentum: also all net-negative; best gross +2.78bps - pure noise vs 11bps wall.
+  - Win rates 45-59% across the board = coinflip.
+- median|dev| ~4.8bps, p90 ~17.6bps: the real local stretch is far below the
+  11bps round-trip cost. There is no room to pay for the trade.
+
+### Why the old number lied (same class of bug as the first TS engine)
+The collapsed BBO `hlquote` only printed on BBO change, so the "microprice" jumped
+in coarse 5-10s steps. A trade entered at one stale print and "reverted" to the
+next stale print looked like a clean 20-30bps round-trip - but that move was the
+quantization of the feed, not an executable price path. Dense data removes the
+illusion. The data sparsity WAS the fake edge.
+
+### Consequence for the plan
+The lag-subspace ENGINE CLONE is CANCELLED. It was justified only by a trusted
+pulse; there is no pulse. We do NOT touch the sacred engine for this. No churn:
+we tested the lead properly (1 day, 8h, dense, both directions, multiple exits)
+and it is dead. Could still re-test other venue pairs/days for completeness, but
+the headline reason to build is gone.
+
+---
+# (HISTORICAL - the pre-study that turned out to be an artifact)
 # Spot-Perp Basis Reversion (was "lead-lag") - FIRST PULSE, NOT yet trusted
 
 CORRECTION: earlier "blocked - HL too sparse" was wrong (judged from one dead-hour

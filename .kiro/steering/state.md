@@ -28,9 +28,11 @@ reproducible, coinflip loses on real data.
 - Built: regime classifier + attribution + opt-in gate; results ledger.
 - wall-flow (real-vs-fake wall): SWEPT slow+fast -> 0 promote (no edge, but valid).
 - absorption: validated (clippy+test green) + SWEPT (in progress / read result).
-- FIRST PULSE: spot-perp BASIS REVERSION (was "lead-lag"). ~40 trades/day,
-  ~23-30bps gross, 80-93% win on 3 days. NOT trusted (idealized fills, tiny
-  sample, hand-picked knobs, funding ignored). docs/research/lead-lag-study.md.
+- BASIS REVERSION = KILLED (2026-06-11). Re-ran on REAL HL full-depth L2 (20-level
+  snapshot every ~0.55s; 52,492 pts/8h vs old 57). Edge GONE: gross -2.6..-5.3bps,
+  both reversion+momentum net-negative every thr/horizon, win 45-59% (coinflip).
+  Old "23-30bps/80-93% win" = ARTIFACT of the BBO-collapsed hlquote sparsity (the
+  5-10s gaps WERE the fake edge). docs/research/lead-lag-study.md.
 - Tooling DONE: Obsidian vault (MOC + styled graph) + NotebookLM pack + this
   always-on memory + tools/sync-vault.ps1 (repo->vault). Vault at
   C:\Users\User\Desktop\obsidian\forgeos.
@@ -40,8 +42,10 @@ reproducible, coinflip loses on real data.
   (only pulled Binance bookDelta+trade + thin HL hlquote). FIX: extend
   chd-to-parquet.py to pull HL FULL L2 (unblocks basis-reversion) + multi-venue L2
   + liquidations/funding. Do not re-shop providers.
-- NEXT: BASIS-REVERSION on a git-branch "lag subspace" (engine copy) fed by
-  Tardis. Touches engine -> explicit sign-off before building.
+- LAG-SUBSPACE engine clone = CANCELLED (no pulse to justify touching the engine).
+- NEXT: pick a fresh lead from the UNTESTED high-value buckets - Type C forced-flow
+  (LIQUIDATION cascades, via CHD liquidations) or Type B chart-trigger + orderflow-
+  CONFIRM (the labels/ on-ramp). No engine touch needed for the studies.
 
 ## Standing decisions / rules
 - Metrics in PERCENT, not bps (in reports). Leverage 20x, size 20%, EUR500 paper

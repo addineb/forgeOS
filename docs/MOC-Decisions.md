@@ -6,6 +6,19 @@ type: map
 
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
+## 2026-06-11
+- BASIS-REVERSION = KILLED on dense data. Re-ran the spot-perp study on REAL HL
+  full-depth L2 (fresh 20-level snapshot every ~0.55s; 52,492 microprice pts/8h vs
+  the old 57). Edge VANISHES: gross -2.6 to -5.3bps hold-to-flip; both reversion
+  AND momentum net-negative at every thr/horizon; win 45-59% (coinflip). The old
+  "23-30bps, 80-93% win" pulse was a pure ARTIFACT of the BBO-collapsed hlquote
+  feed (the 5-10s sparsity quantized price into fake clean round-trips). Same class
+  of lie as the first TS engine, from data sparsity not lookahead. [[lead-lag-study]]
+- LAG-SUBSPACE ENGINE CLONE = CANCELLED. It was justified only by a trusted pulse;
+  there is none. Engine stays untouched. No churn - the lead was tested properly
+  (dense, both directions, multiple exits) and is dead.
+- Lesson reinforced: NEVER trust a python pre-study built on a thin/derived feed.
+  Re-confirm any pulse on raw full-depth data BEFORE believing it or building.
 ## 2026-06-10
 - DATA PROVIDER = cryptohftdata (CHD), the one we ALREADY use. FREE (no limits
   now; free tier forever). Covers the FULL spec: 9+ spot+deriv venues incl.
