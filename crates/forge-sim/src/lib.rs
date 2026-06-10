@@ -20,5 +20,5 @@ mod strategy;
 pub use account::Account;
 pub use coinflip::Coinflip;
 pub use engine::{SimConfig, SimEngine, SimReport};
-pub use fills::{money_to_f64, price_market, FeeSchedule, Fill, Money};
+pub use fills::{maker_fill, money_to_f64, price_market, price_to_limit, FeeSchedule, Fill, Money};
 pub use strategy::{Ctx, NoopStrategy, OrderIntent, OrderKind, Strategy};

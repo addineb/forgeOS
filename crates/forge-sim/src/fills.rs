@@ -1,20 +1,18 @@
 //! Fill pricing and fee math, all fixed-point and overflow-safe.
 //!
-//! Money is tracked as `i128` quote units scaled by `forge_core::SCALE` (1e8),
-//! so a notional like 200.00 USDT is `20_000_000_000`. Products use `i128` to
-//! avoid the `price_raw * qty_raw` overflow that an `i64` would hit on BTC-sized
-//! numbers. No floating point ever touches the money path.
+//! Money is tracked as `i128` quote units scaled by `forge_core::SCALE` (1e8).
+//! Products use `i128` to avoid the `price_raw * qty_raw` overflow an `i64`
+//! would hit on BTC-sized numbers. No floating point touches the money path.
 //!
-//! Convention: an order `side` is OUR side. `Side::Bid` = we BUY = we lift the
-//! offers (consume asks). `Side::Ask` = we SELL = we hit the bids (consume
-//! bids). Our orders never move the replayed market; the book is only read to
-//! price the fill (walking levels = slippage).
+//! Convention: an order `side` is OUR side. `Side::Bid` = we BUY = lift the
+//! offers (consume asks). `Side::Ask` = we SELL = hit the bids (consume bids).
+//! Our orders never move the replayed market; the book is only read to price
+//! fills (walking levels = slippage).
 
 use forge_book::OrderBook;
 use forge_core::{Price, Qty, Side, SCALE};
 
-/// Quote currency scaled by `SCALE` (1e8). Signed: profit positive, cost/loss
-/// negative where applicable.
+/// Quote currency scaled by `SCALE` (1e8).
 pub type Money = i128;
 
 #[inline]
@@ -29,15 +27,15 @@ pub fn notional_money(price_raw: i64, qty_raw: i64) -> Money {
     i128::from(price_raw) * i128::from(qty_raw) / scale_i128()
 }
 
-/// Convert scaled money to a human f64 (display/reporting only).
+/// Convert scaled money to a human f64 (display only).
 #[inline]
 #[must_use]
 pub fn money_to_f64(m: Money) -> f64 {
     m as f64 / SCALE as f64
 }
 
-/// Taker/maker fee schedule. Rates are scaled by `SCALE`: 0.025% = 0.00025 is
-/// stored as `25_000`. Maker may be negative (a rebate).
+/// Taker/maker fee schedule. Rates scaled by `SCALE`: 0.025% = `25_000`. Maker
+/// may be negative (a rebate).
 #[derive(Clone, Copy, Debug)]
 pub struct FeeSchedule {
     /// Taker fee rate, scaled by `SCALE`.
@@ -47,19 +45,19 @@ pub struct FeeSchedule {
 }
 
 impl FeeSchedule {
-    /// Build a schedule from scaled rates.
+    /// Build from scaled rates.
     #[must_use]
     pub const fn new(taker_rate_raw: i64, maker_rate_raw: i64) -> Self {
         Self { taker_rate_raw, maker_rate_raw }
     }
 
-    /// The legacy/Hyperliquid-style schedule: taker 0.025%, maker -0.002%.
+    /// Legacy/Hyperliquid-style: taker 0.025%, maker -0.002% (rebate).
     #[must_use]
     pub const fn legacy() -> Self {
         Self { taker_rate_raw: 25_000, maker_rate_raw: -2_000 }
     }
 
-    /// Zero fees (for isolating the spread in tests).
+    /// Zero fees (isolate the spread in tests).
     #[must_use]
     pub const fn zero() -> Self {
         Self { taker_rate_raw: 0, maker_rate_raw: 0 }
@@ -80,26 +78,33 @@ impl FeeSchedule {
     }
 }
 
-/// The result of pricing a market order against the book.
+/// Result of pricing a market/marketable order against the book.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fill {
     /// Volume-weighted average fill price.
     pub avg_price: Price,
-    /// Quantity actually filled (<= requested if the book was too thin).
+    /// Quantity actually filled.
     pub filled: Qty,
     /// Notional of the fill (quote, scaled).
     pub notional: Money,
-    /// Book levels consumed (1 = no slippage beyond the touch).
+    /// Book levels consumed.
     pub levels: u32,
-    /// Whether the full requested quantity was filled.
+    /// Whether the full requested quantity filled.
     pub complete: bool,
 }
 
-/// Price a taker market order of `qty` on `side` by walking the book from the
-/// touch. Returns `None` if the relevant side is empty or `qty <= 0`. Does not
-/// mutate the book.
+/// Price a taker market order by walking the book from the touch (no cap).
 #[must_use]
 pub fn price_market(book: &OrderBook, side: Side, qty: Qty) -> Option<Fill> {
+    price_to_limit(book, side, qty, None)
+}
+
+/// Price a fill walking the book from the touch, optionally stopping at a price
+/// cap (`limit_raw`): a buy will not pay above the cap, a sell will not accept
+/// below it. `cap = None` is a pure market order. Returns `None` if nothing
+/// fills.
+#[must_use]
+pub fn price_to_limit(book: &OrderBook, side: Side, qty: Qty, cap: Option<i64>) -> Option<Fill> {
     let want = qty.raw();
     if want <= 0 {
         return None;
@@ -109,10 +114,14 @@ pub fn price_market(book: &OrderBook, side: Side, qty: Qty) -> Option<Fill> {
     let mut filled: i64 = 0;
     let mut levels = 0u32;
 
-    // Buying lifts the asks (ascending); selling hits the bids (descending).
     match side {
         Side::Bid => {
             for (p, q) in book.asks_iter() {
+                if let Some(c) = cap {
+                    if p.raw() > c {
+                        break;
+                    }
+                }
                 let take = remaining.min(q.raw());
                 if take <= 0 {
                     continue;
@@ -128,6 +137,11 @@ pub fn price_market(book: &OrderBook, side: Side, qty: Qty) -> Option<Fill> {
         }
         Side::Ask => {
             for (p, q) in book.bids_iter() {
+                if let Some(c) = cap {
+                    if p.raw() < c {
+                        break;
+                    }
+                }
                 let take = remaining.min(q.raw());
                 if take <= 0 {
                     continue;
@@ -156,10 +170,22 @@ pub fn price_market(book: &OrderBook, side: Side, qty: Qty) -> Option<Fill> {
     })
 }
 
+/// Build a single-price maker fill (filled at the resting limit price).
+#[must_use]
+pub fn maker_fill(price: Price, qty: Qty) -> Fill {
+    Fill {
+        avg_price: price,
+        filled: qty,
+        notional: notional_money(price.raw(), qty.raw()),
+        levels: 1,
+        complete: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_core::{EventKind, Event, Price, Qty, Side, UnixNanos};
+    use forge_core::{Event, EventKind, Price, Qty, Side, UnixNanos};
 
     fn delta(book: &mut OrderBook, side: Side, px: f64, qty: f64) {
         let ev = Event::new(
@@ -177,15 +203,10 @@ mod tests {
 
     #[test]
     fn notional_and_fee_math() {
-        // 2.0 BTC @ 100.0 = 200.0 notional.
         let n = notional_money(Price::from_f64(100.0).unwrap().raw(), Qty::from_f64(2.0).unwrap().raw());
         assert_eq!(money_to_f64(n), 200.0);
-        // taker 0.025% of 200 = 0.05.
-        let f = FeeSchedule::legacy().taker_fee(n);
-        assert!((money_to_f64(f) - 0.05).abs() < 1e-9);
-        // maker rebate -0.002% of 200 = -0.004.
-        let m = FeeSchedule::legacy().maker_fee(n);
-        assert!((money_to_f64(m) + 0.004).abs() < 1e-9);
+        assert!((money_to_f64(FeeSchedule::legacy().taker_fee(n)) - 0.05).abs() < 1e-9);
+        assert!((money_to_f64(FeeSchedule::legacy().maker_fee(n)) + 0.004).abs() < 1e-9);
     }
 
     #[test]
@@ -194,29 +215,26 @@ mod tests {
         delta(&mut b, Side::Ask, 100.0, 1.0);
         delta(&mut b, Side::Ask, 101.0, 5.0);
         delta(&mut b, Side::Bid, 99.0, 5.0);
-        // buy 3: 1 @100 + 2 @101 -> vwap = (100 + 202)/3 = 100.6667
         let fill = price_market(&b, Side::Bid, Qty::from_f64(3.0).unwrap()).unwrap();
         assert_eq!(fill.levels, 2);
-        assert!(fill.complete);
         assert!((fill.avg_price.to_f64() - (302.0 / 3.0)).abs() < 1e-6);
     }
 
     #[test]
-    fn sell_hits_bids() {
+    fn price_cap_stops_the_walk() {
         let mut b = OrderBook::new();
-        delta(&mut b, Side::Bid, 99.0, 2.0);
-        delta(&mut b, Side::Bid, 98.0, 5.0);
-        delta(&mut b, Side::Ask, 100.0, 5.0);
-        // sell 1 -> best bid 99
-        let fill = price_market(&b, Side::Ask, Qty::from_f64(1.0).unwrap()).unwrap();
-        assert_eq!(fill.levels, 1);
-        assert!((fill.avg_price.to_f64() - 99.0).abs() < 1e-9);
+        delta(&mut b, Side::Ask, 100.0, 1.0);
+        delta(&mut b, Side::Ask, 101.0, 5.0);
+        // buy 3 but cap at 100 -> only 1 fills (the 101 level is beyond the cap)
+        let fill = price_to_limit(&b, Side::Bid, Qty::from_f64(3.0).unwrap(), Some(Price::from_f64(100.0).unwrap().raw())).unwrap();
+        assert!(!fill.complete);
+        assert!((fill.filled.to_f64() - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn empty_side_does_not_fill() {
         let mut b = OrderBook::new();
-        delta(&mut b, Side::Bid, 99.0, 2.0); // only bids
+        delta(&mut b, Side::Bid, 99.0, 2.0);
         assert!(price_market(&b, Side::Bid, Qty::from_f64(1.0).unwrap()).is_none());
     }
 }

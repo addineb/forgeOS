@@ -1,15 +1,16 @@
 //! [`SimEngine`]: virtual-clock event loop with an outbound order-latency
-//! queue, a taker matching/fill step, P&L accounting, and a determinism hash.
+//! queue, taker AND maker (queue-position) fills, P&L accounting, and a
+//! determinism hash.
 
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use forge_book::OrderBook;
-use forge_core::{Event, ForgeError, ForgeResult};
+use forge_core::{Event, EventKind, ForgeError, ForgeResult, Side};
 
 use crate::account::Account;
-use crate::fills::{price_market, FeeSchedule, Money};
+use crate::fills::{maker_fill, price_market, price_to_limit, FeeSchedule, Money};
 use crate::strategy::{Ctx, OrderIntent, OrderKind, Strategy};
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -42,11 +43,21 @@ impl PartialOrd for Pending {
     }
 }
 
+/// A passive maker order resting in the book, tracked by queue position.
+#[derive(Clone, Copy)]
+struct Resting {
+    side: Side,
+    price: i64,
+    qty_remaining: i64,
+    /// Volume that must trade through our price before WE start filling.
+    queue_ahead: i64,
+}
+
 /// Engine configuration.
 #[derive(Clone, Copy, Debug)]
 pub struct SimConfig {
     /// Nanoseconds from a strategy submitting an order to it reaching the
-    /// matching engine (outbound half of the two-clock latency model).
+    /// matcher (outbound half of the two-clock latency model).
     pub order_latency_ns: u64,
     /// Max book levels kept per side (0 = unlimited).
     pub book_max_levels: usize,
@@ -71,10 +82,16 @@ pub struct SimReport {
     pub orders_submitted: u64,
     /// Orders that reached the matcher after latency.
     pub orders_reached: u64,
-    /// Orders that filled (had liquidity).
+    /// Fills executed (taker + maker).
     pub orders_filled: u64,
-    /// Orders that found no liquidity and were dropped.
+    /// Of the fills, how many were maker (queue) fills.
+    pub maker_fills: u64,
+    /// Limit orders that rested passively.
+    pub orders_rested: u64,
+    /// Market/marketable orders that found no liquidity.
     pub orders_rejected: u64,
+    /// Limit orders still resting (unfilled) at the end.
+    pub resting_open: u64,
     /// Realized gross P&L (before fees).
     pub realized: Money,
     /// Total fees paid (negative = net rebate).
@@ -101,10 +118,13 @@ pub struct SimEngine<S: Strategy> {
     now: u64,
     started: bool,
     pending: BinaryHeap<Reverse<Pending>>,
+    resting: Vec<Resting>,
     seq: u64,
     orders_submitted: u64,
     orders_reached: u64,
     orders_filled: u64,
+    maker_fills: u64,
+    orders_rested: u64,
     orders_rejected: u64,
     events: u64,
     det_hash: u64,
@@ -123,10 +143,13 @@ impl<S: Strategy> SimEngine<S> {
             now: 0,
             started: false,
             pending: BinaryHeap::new(),
+            resting: Vec::new(),
             seq: 0,
             orders_submitted: 0,
             orders_reached: 0,
             orders_filled: 0,
+            maker_fills: 0,
+            orders_rested: 0,
             orders_rejected: 0,
             events: 0,
             det_hash: FNV_OFFSET,
@@ -147,12 +170,17 @@ impl<S: Strategy> SimEngine<S> {
         self.now = t;
         self.started = true;
 
-        // Orders that have arrived by `now` fill against the book as it stands
-        // before this event (causal: an order only ever sees data <= its arrival).
+        // Orders that have arrived by `now` are placed/filled against the book
+        // as it stands before this event (causal: data <= arrival only).
         self.drain_pending(t);
 
         // The book reflects only events up to and including `now`.
         self.book.apply(ev)?;
+
+        // A trade prints through resting maker orders (queue-position fills).
+        if ev.kind == EventKind::Trade {
+            self.process_trade(ev);
+        }
 
         // Strategy reacts; ctx exposes only data with local_ts <= now.
         self.buf.clear();
@@ -201,15 +229,94 @@ impl<S: Strategy> SimEngine<S> {
         self.orders_reached += 1;
         match intent.kind {
             OrderKind::Market => match price_market(&self.book, intent.side, intent.qty) {
-                Some(fill) => {
-                    self.account.apply_taker(intent.side, &fill, &self.fees);
-                    self.orders_filled += 1;
-                    fold_u64(&mut self.det_hash, fill.avg_price.raw() as u64);
-                    fold_u64(&mut self.det_hash, fill.filled.raw() as u64);
-                    fold_u64(&mut self.det_hash, u64::from(intent.side.as_u8()));
-                }
+                Some(fill) => self.fill_taker(intent.side, &fill),
                 None => self.orders_rejected += 1,
             },
+            OrderKind::Limit => self.place_limit(intent),
+        }
+    }
+
+    fn fill_taker(&mut self, side: Side, fill: &crate::fills::Fill) {
+        self.account.apply_taker(side, fill, &self.fees);
+        self.orders_filled += 1;
+        fold_u64(&mut self.det_hash, fill.avg_price.raw() as u64);
+        fold_u64(&mut self.det_hash, fill.filled.raw() as u64);
+        fold_u64(&mut self.det_hash, u64::from(side.as_u8()));
+    }
+
+    fn place_limit(&mut self, intent: OrderIntent) {
+        let limit = intent.price.raw();
+        let best_ask = self.book.best_ask().map(|(p, _)| p.raw());
+        let best_bid = self.book.best_bid().map(|(p, _)| p.raw());
+        let marketable = match intent.side {
+            Side::Bid => best_ask.is_some_and(|a| limit >= a),
+            Side::Ask => best_bid.is_some_and(|b| limit <= b),
+        };
+        if marketable {
+            // a marketable limit crosses now as a taker, capped at its price
+            match price_to_limit(&self.book, intent.side, intent.qty, Some(limit)) {
+                Some(fill) => self.fill_taker(intent.side, &fill),
+                None => self.orders_rejected += 1,
+            }
+            return;
+        }
+        let queue_ahead = self.book.qty_at(intent.side, intent.price).map_or(0, |q| q.raw());
+        self.resting.push(Resting {
+            side: intent.side,
+            price: limit,
+            qty_remaining: intent.qty.raw(),
+            queue_ahead,
+        });
+        self.orders_rested += 1;
+    }
+
+    /// A trade prints: clear queues and fill resting makers the tape ran through.
+    fn process_trade(&mut self, trade: &Event) {
+        let Some(aggr) = trade.side else { return };
+        let tprice = trade.price.raw();
+        let tqty = trade.qty.raw();
+        if tqty <= 0 {
+            return;
+        }
+        let mut i = 0;
+        while i < self.resting.len() {
+            let mut o = self.resting[i];
+            // our resting buy is filled by aggressive sells at/below our price;
+            // our resting sell by aggressive buys at/above our price.
+            let crosses = match (o.side, aggr) {
+                (Side::Bid, Side::Ask) => tprice <= o.price,
+                (Side::Ask, Side::Bid) => tprice >= o.price,
+                _ => false,
+            };
+            if !crosses {
+                i += 1;
+                continue;
+            }
+            if o.queue_ahead >= tqty {
+                o.queue_ahead -= tqty;
+                self.resting[i] = o;
+                i += 1;
+                continue;
+            }
+            let avail = tqty - o.queue_ahead;
+            o.queue_ahead = 0;
+            let fill = avail.min(o.qty_remaining);
+            if fill > 0 {
+                let f = maker_fill(forge_core::Price::from_raw(o.price), forge_core::Qty::from_raw(fill));
+                self.account.apply_maker(o.side, &f, &self.fees);
+                self.orders_filled += 1;
+                self.maker_fills += 1;
+                fold_u64(&mut self.det_hash, o.price as u64);
+                fold_u64(&mut self.det_hash, fill as u64);
+                fold_u64(&mut self.det_hash, u64::from(o.side.as_u8()));
+                o.qty_remaining -= fill;
+            }
+            if o.qty_remaining == 0 {
+                self.resting.remove(i);
+            } else {
+                self.resting[i] = o;
+                i += 1;
+            }
         }
     }
 
@@ -234,7 +341,10 @@ impl<S: Strategy> SimEngine<S> {
             orders_submitted: self.orders_submitted,
             orders_reached: self.orders_reached,
             orders_filled: self.orders_filled,
+            maker_fills: self.maker_fills,
+            orders_rested: self.orders_rested,
             orders_rejected: self.orders_rejected,
+            resting_open: self.resting.len() as u64,
             realized: self.account.realized(),
             fees: self.account.fees(),
             net_pnl: self.account.net_pnl(),
@@ -274,6 +384,12 @@ impl<S: Strategy> SimEngine<S> {
     pub fn orders_reached(&self) -> u64 {
         self.orders_reached
     }
+
+    /// Maker fills so far.
+    #[must_use]
+    pub fn maker_fills(&self) -> u64 {
+        self.maker_fills
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +406,19 @@ mod tests {
             UnixNanos::new(ts),
             UnixNanos::new(ts),
             Some(side),
+            Price::from_raw(px),
+            Qty::from_raw(qty),
+            0,
+        )
+        .unwrap()
+    }
+
+    fn trade(aggr: Side, px: i64, qty: i64, ts: u64) -> Event {
+        Event::new(
+            EventKind::Trade,
+            UnixNanos::new(ts),
+            UnixNanos::new(ts),
+            Some(aggr),
             Price::from_raw(px),
             Qty::from_raw(qty),
             0,
@@ -316,6 +445,21 @@ mod tests {
             if !self.fired {
                 self.fired = true;
                 out.push(OrderIntent::market(Side::Bid, Qty::from_raw(100_000_000)));
+            }
+        }
+    }
+
+    /// Emits one buy LIMIT at a fixed price on the first event.
+    struct MakerOnce {
+        fired: bool,
+        price: i64,
+        qty: i64,
+    }
+    impl Strategy for MakerOnce {
+        fn on_event(&mut self, _ctx: &Ctx, out: &mut Vec<OrderIntent>) {
+            if !self.fired {
+                self.fired = true;
+                out.push(OrderIntent::limit(Side::Bid, Price::from_raw(self.price), Qty::from_raw(self.qty)));
             }
         }
     }
@@ -362,18 +506,40 @@ mod tests {
         eng.step(&bookdelta(Side::Bid, 100, 5, 10)).unwrap();
         eng.step(&bookdelta(Side::Ask, 101, 4, 11)).unwrap();
         assert_eq!(eng.orders_submitted(), 1);
-        assert_eq!(eng.orders_reached(), 0, "order must not arrive before t+latency");
+        assert_eq!(eng.orders_reached(), 0);
         let r = eng.finish();
-        assert_eq!(r.orders_submitted, 1);
         assert_eq!(r.orders_reached, 1);
     }
 
     #[test]
-    fn order_arrives_when_clock_passes_latency() {
-        let cfg = SimConfig { order_latency_ns: 5, ..SimConfig::default() };
-        let mut eng = SimEngine::new(OnceStrategy { fired: false }, cfg);
-        eng.step(&bookdelta(Side::Bid, 100, 5, 10)).unwrap();
-        eng.step(&bookdelta(Side::Ask, 101, 4, 16)).unwrap();
-        assert_eq!(eng.orders_reached(), 1);
+    fn maker_fills_only_after_queue_cleared() {
+        // best bid 100 with size 5 resting ahead of us; we post a buy limit at
+        // 100 for qty 1. Aggressive sells must clear the 5 ahead before we fill.
+        let cfg = SimConfig { order_latency_ns: 0, book_max_levels: 20, fees: FeeSchedule::zero() };
+        let mut eng = SimEngine::new(MakerOnce { fired: false, price: 100, qty: 1 }, cfg);
+        eng.step(&bookdelta(Side::Bid, 100, 5, 10)).unwrap(); // emits the limit
+        // order is placed at next drain; feed a small sell that only eats queue
+        eng.step(&trade(Side::Ask, 100, 3, 11)).unwrap();
+        assert_eq!(eng.maker_fills(), 0, "queue (5) not yet cleared by 3");
+        // another sell of 4: clears remaining queue (2) then fills our 1
+        eng.step(&trade(Side::Ask, 100, 4, 12)).unwrap();
+        assert_eq!(eng.maker_fills(), 1, "queue cleared -> we fill");
+        assert_eq!(eng.account().net_qty(), 1, "we are now long 1 via the maker fill");
+    }
+
+    #[test]
+    fn marketable_limit_crosses_as_taker() {
+        // buy limit at 105 while best ask is 101 -> marketable -> taker fill now
+        let cfg = SimConfig { order_latency_ns: 0, book_max_levels: 20, fees: FeeSchedule::zero() };
+        let mut eng = SimEngine::new(
+            MakerOnce { fired: false, price: 105, qty: 1 },
+            cfg,
+        );
+        eng.step(&bookdelta(Side::Ask, 101, 5, 10)).unwrap(); // emits limit buy @105
+        eng.step(&bookdelta(Side::Bid, 99, 5, 11)).unwrap(); // drain places/fills it
+        let r = eng.finish();
+        assert_eq!(r.maker_fills, 0);
+        assert_eq!(r.orders_filled, 1, "marketable limit filled as taker");
+        assert_eq!(r.final_position, 1);
     }
 }

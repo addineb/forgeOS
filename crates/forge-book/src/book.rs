@@ -217,6 +217,17 @@ impl OrderBook {
             .map(|(&p, &q)| (Price::from_raw(p), Qty::from_raw(q)))
     }
 
+    /// Resting quantity at an exact price on `side`, if any. Used to measure the
+    /// queue ahead of a new maker order.
+    #[must_use]
+    pub fn qty_at(&self, side: Side, price: Price) -> Option<Qty> {
+        let book = match side {
+            Side::Bid => &self.bids,
+            Side::Ask => &self.asks,
+        };
+        book.get(&price.raw()).map(|&q| Qty::from_raw(q))
+    }
+
     /// Number of bid price levels.
     #[must_use]
     pub fn bid_levels(&self) -> usize {

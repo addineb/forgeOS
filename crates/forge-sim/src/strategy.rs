@@ -26,6 +26,9 @@ pub struct Ctx<'a> {
 pub enum OrderKind {
     /// Cross the spread now: buy lifts the ask, sell hits the bid (taker).
     Market,
+    /// Rest passively at `price` and fill only when the tape trades through it
+    /// and clears the queue ahead (maker). A marketable limit crosses now.
+    Limit,
 }
 
 /// An order a strategy wants to send. `side` is OUR side: `Bid` = buy, `Ask` =
@@ -47,6 +50,12 @@ impl OrderIntent {
     #[must_use]
     pub fn market(side: Side, qty: Qty) -> Self {
         Self { side, kind: OrderKind::Market, price: Price::ZERO, qty }
+    }
+
+    /// A limit (maker) order resting at `price`.
+    #[must_use]
+    pub fn limit(side: Side, price: Price, qty: Qty) -> Self {
+        Self { side, kind: OrderKind::Limit, price, qty }
     }
 }
 
