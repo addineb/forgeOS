@@ -37,6 +37,11 @@ actionable backlog. Check items off as they land.
   in CONTEXT (conditioning), HARD-TO-COMPUTE signals, or FORCED FLOW (liqs /
   funding / stops). Ranked hit-list + plan: docs/research/edge-directions.md.
 - Plan: finish testing current bots, then pivot to type B/C theses.
+- Chart-trigger x orderflow-confirm (trader method 1): chart pattern = TRIGGER,
+  orderflow = real/fake CONFIRM filter. Real-time-only trigger (no lookahead).
+  Full plan in docs/research/edge-directions.md.
+- [ ] Book/tape VISUALIZER (PROMOTED - the unlock): render book+tape around a
+      timestamp so the trader sees what the engine sees + can label setups.
 
 ## Strategy harnessing (port onto the execution shell - each ~1 day now)
 - [ ] Real-vs-fake wall classification (executed-vs-cancelled from the trade

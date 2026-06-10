@@ -53,3 +53,37 @@ not speed.
    funding/basis (whichever data is easiest to add).
 3. Revisit this note whenever picking the next thesis; upgrade the ranking as we
    learn what the data says.
+
+## Chart-trigger x orderflow-confirm (trader method 1 - HIGH PRIORITY)
+The trader's discretionary edge has two sources: (1) CHART patterns he recognises,
+(2) ORDERFLOW patterns he sees directly. Plan for (1): use the chart pattern as a
+TRIGGER (where to look) and the orderflow as the CONFIRMATION / filter (is THIS
+instance real or a fakeout?). The edge = "trade the pattern ONLY when the orderflow
+backs it." Uncrowded, because nobody pairs HIS specific pattern with our orderflow
+read.
+
+Why it is testable: the pattern auto-generates labelled instances and the outcome
+is measurable, so we get a hard number:
+  pattern-alone win% / expectancy   vs   pattern + orderflow-filter win% / expectancy
+FALSIFY: if the orderflow filter does not lift win%/expectancy over enough
+instances, the confirmation is noise -> kill it.
+
+NO-LOOKAHEAD RULE (do not break):
+- The trigger must be detectable in REAL TIME, using only price with timestamp
+  <= now. Example: liquidity grab = "prior high X; price traded above X and is now
+  back below X" (all known now) - LEGAL. "price spiked then reversed 1%" needs the
+  future drop to know - LOOKAHEAD, banned.
+- INPUTS to the decision (pattern + orderflow) = past-only (<= now).
+- OUTCOME (P&L) is the future thing we SCORE, never an input. That is allowed.
+- Test for any pattern: "could I compute this using only data <= now?" If it needs
+  a future bar, it is lookahead (the bug that faked the old engine's 100% win).
+
+Build needs:
+- A small REAL-TIME price-pattern detector (new; we only have orderflow signals).
+- Orderflow features at the trigger (mostly built: OFI, CVD, imbalance, wall-flow/
+  spoof, absorption).
+- The comparison harness (pattern-only vs pattern+filter), reusing the sweep gates.
+- First candidate pattern: liquidity grab / stop-run of a prior swing (crisp to
+  code; pulled-vs-eaten orderflow separates real from fake).
+- Pairs with: the book/tape VISUALIZER (promote it - it is the unlock) and the
+  idea-transfer workflow (docs/legacy/idea-transfer-workflow.md).
