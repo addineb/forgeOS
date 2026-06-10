@@ -11,10 +11,18 @@ use forge_data::ForgeReader;
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
-    let path = args.next().ok_or("usage: forge-book-replay <path.forge> [progress_every]")?;
+    let path = args
+        .next()
+        .ok_or("usage: forge-book-replay <path.forge> [max_levels_per_side]")?;
+    // Default depth cap = 20, matching Binance depth20 and the wall bots'
+    // bookLevels: 20. Pass 0 for an unlimited book.
+    let max_levels: usize = match args.next() {
+        Some(s) => s.parse().map_err(|e| format!("bad max_levels: {e}"))?,
+        None => 20,
+    };
 
     let reader = ForgeReader::open(&path).map_err(|e| format!("open {path}: {e}"))?;
-    let mut book = OrderBook::new();
+    let mut book = OrderBook::with_max_levels(max_levels);
     let mut decoded: u64 = 0;
     for rec in reader.records() {
         let ev = rec.to_event().map_err(|e| format!("decode at #{decoded}: {e}"))?;
@@ -26,6 +34,8 @@ fn run() -> Result<(), String> {
     println!("events          {decoded}");
     println!("level mutations {}", book.applied());
     println!("crossed trims   {}", book.crossed_trims());
+    println!("evicted (cap)   {}", book.evicted());
+    println!("max levels/side {}", book.max_levels());
     println!("bid levels      {}", book.bid_levels());
     println!("ask levels      {}", book.ask_levels());
     match (book.best_bid(), book.best_ask()) {
