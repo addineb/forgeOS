@@ -7,13 +7,10 @@ type: map
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
 ## 2026-06-10
-- DATA PROVIDER CHOSEN (commit, no churn): TARDIS.DEV - one normalized feed
-  covering granular L2 + trades + funding + OI + liquidations across spot+perp on
-  all major venues (incl. Hyperliquid). Lets us test any exchange combo for lag
-  without re-plumbing. Validate once on the FREE monthly sample (HL L2 density +
-  liq/funding fields) THEN commit. Cheaper fallbacks (Coinalyze free / Crypto
-  Lake) only if cost blocks. Rationale: never stitch multiple providers - that
-  inconsistency is a first-engine failure mode. See [[data-apis]].
+- DATA PROVIDER: NOT decided. Tardis.dev is the most complete but ~$300/mo =
+  RULED OUT for a EUR500 account. Leaning toward a FREE own stack (Coinalyze
+  free + Hyperliquid S3 free + Binance/Bitget archives + self-captured multi-venue
+  L2 on the box). Trader decides; nothing committed. See [[data-apis]].
 - CCT (Cloud Craft Terminal) evaluated -> REJECTED for engine: look-only
   terminal, NO data export/API ("No API Key Required"), closed proprietary
   signals = the dead-indicator trap. Useful at most as personal eyes.

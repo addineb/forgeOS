@@ -4,22 +4,18 @@ type: note
 ---
 # Data APIs - raw feeds for the lag/basis engine + forced-flow
 
-## >>> CHOSEN PROVIDER (commit, do NOT churn): TARDIS.DEV <<<
-One source for ALL specs in ONE normalized schema -> no multi-provider stitching
-(the inconsistency that rots an engine).
-- Venues: Binance spot+perp, Bybit, OKX, Hyperliquid, Deribit, Coinbase, Kraken...
-  -> test any exchange COMBINATION for lag by just changing the symbol list.
-- Data types (same schema): granular incremental L2 book (full depth), trades,
-  quotes, funding + open interest (derivative ticker), LIQUIDATIONS.
-- Spot + perps together (needed for honest basis).
-- Historical download + replay; exchange-native or normalized.
-- Tradeoff: priciest option (per-exchange paid). Accepted for completeness +
-  never-change. Cheaper fallbacks only if cost blocks: Coinalyze (free, but NO
-  granular L2), Crypto Lake (cheap parquet, thinner on liq/quotes).
-- COMMIT GATE (not churn - foundation check): pull Tardis FREE first-day-of-month
-  sample, confirm (a) Hyperliquid L2 is dense, (b) liquidations + funding fields
-  are present, (c) the venue combos we want exist. THEN commit permanently and
-  build the lag clone engine to ingest Tardis normalized data as the ONE feed.
+## STATUS: NOT DECIDED yet. Budget reality = ~EUR 500 account -> data spend ~$0.
+- Tardis.dev = most COMPLETE (all specs, one schema, all venues) BUT ~$300/mo
+  -> RULED OUT on cost (60% of the account/mo for data is absurd).
+- No single CHEAP provider covers all specs. So the leaning is a FREE OWN STACK:
+  * Coinalyze API (FREE) -> funding / liquidations / OI / basis (aggregated).
+  * Hyperliquid S3 (FREE) -> HL L2 history (may revive basis-reversion).
+  * Binance/Bitget free archives -> historical backfill.
+  * SELF-CAPTURE multi-venue L2 on the box (FREE) -> ongoing aggregated granular
+    L2 (forward-only; we already have the converter + .forge pipeline).
+- Tradeoff of free stack: more engineering + forward-only for live-captured L2.
+- Crypto Lake = cheap paid fallback for specific historical L2 slices if needed.
+- DECISION IS THE TRADER'S. Nothing committed. Pick when ready.
 
 
 DECISION: the lag/basis-reversion CLONE engine (its own git branch) will consume
