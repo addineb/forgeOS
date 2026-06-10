@@ -32,6 +32,12 @@ actionable backlog. Check items off as they land.
       to test "momentum dies in chop". Running in tmux (hunt2); read on done.
 - [ ] Validate + commit the ledger feature once the box is free.
 
+## Edge approach (READ before picking the next thesis)
+- Public indicators used plainly = no edge (OFI/wall/CVD confirmed). Edge lives
+  in CONTEXT (conditioning), HARD-TO-COMPUTE signals, or FORCED FLOW (liqs /
+  funding / stops). Ranked hit-list + plan: docs/research/edge-directions.md.
+- Plan: finish testing current bots, then pivot to type B/C theses.
+
 ## Strategy harnessing (port onto the execution shell - each ~1 day now)
 - [ ] Real-vs-fake wall classification (executed-vs-cancelled from the trade
       stream). The legacy open-thread; likely the biggest edge.
