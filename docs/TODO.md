@@ -27,10 +27,18 @@ actionable backlog. Check items off as they land.
 - [x] Results ledger: `--out <dir>` writes a per-run scorecard CSV + appends a
       summary row to ledger.csv (tracked verdict history, not grepped logs).
 
-## Now (active)
-- [ ] Re-hunt (corrected thresholds): wall + CVD slow/fast, plus regime-gated OFI
-      to test "momentum dies in chop". Running in tmux (hunt2); read on done.
-- [ ] Validate + commit the ledger feature once the box is free.
+## Now (active - ordered, one step at a time)
+- [x] Public-indicator hunts done (OFI/wall/CVD + regime-gate): all no-edge.
+- [ ] 1. LEAD-LAG (venue lag) bot: Binance signal -> Hyperliquid execution with
+      honest latency. FIRST STEP: confirm HL quote data is in/alignable with the
+      .forge stream (it is a separate venue feed) before building.
+- [ ] 2. BRAIN -> STRATEGY engine: annotator/visualizer + chart-trigger x
+      orderflow harness. Spec: docs/research/annotator-visualizer.md. Phase A
+      (label-note convention, ~zero build) first; Phase B (book/tape viewer) when
+      an idea needs the orderflow truth-view.
+- Pending validation (built, not yet compiled on box): absorption bot.
+- Wall-flow hunt finishing on its own; NO new hunts started (hunting paused).
+- Paused roster: liquidity-sweep, LVN (resume after the above).
 
 ## Edge approach (READ before picking the next thesis)
 - Public indicators used plainly = no edge (OFI/wall/CVD confirmed). Edge lives
