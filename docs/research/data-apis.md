@@ -67,3 +67,37 @@ backfill + one cheap paid API for forced-flow.
 - Verify HL S3 L2 snapshot cadence (could re-open basis-reversion immediately).
 - Price-check CoinGlass tier (liq history + L2) and 0xarchive.
 - Build a small multi-venue L2 websocket recorder on the box (free capture).
+
+## ROUND 2 - cheapest options with all the specs
+### Granular L2 history (multi-venue), cheap
+- Crypto Lake (crypto-lake.com): historical ORDER BOOK (20 levels/side) + tick
+  trades + OHLCV + OI + funding; 10 exchanges, top tokens; delivered as PARQUET
+  on S3 (our format). Pay-per-use / relatively affordable. STRONG cheap candidate
+  for granular L2 + funding/OI in one. (verify current pricing)
+- Databento (databento.com): usage-based $/GB, ~$125 free credit, MBO/L3
+  nanosecond. BUT crypto venue coverage is limited (built for futures/equities) -
+  check if it covers our crypto venues before counting on it.
+- 0xarchive.io: L2/L4 + liq + funding, parquet/REST (pricing unverified).
+- Tardis.dev: free first-day-of-month samples; paid full history.
+- Kuru.io: FREE daily L2 parquet snapshots on S3 (but Kuru = one DEX, niche).
+
+### Forced-flow (liquidations / funding / OI / BASIS) - cheap/FREE
+- Coinalyze (coinalyze.net): aggregated OI, FUNDING, LIQUIDATIONS, long/short,
+  and BASIS across many exchanges, with an API. Free/generous-free tier (verify
+  limits). CHEAPEST path to forced-flow + basis - start here at $0. Data is
+  aggregated/candle-level, not tick L2.
+- CoinGlass (~$35/mo): more granular liq history + heatmaps + funding + OI + L2/L3.
+- Velo (velodata.app): clean per-exchange funding/OI/liquidations + premium/BASIS
+  (incl. 3m annualised basis for BTC/ETH); API $199/mo - good but not cheap.
+
+## REVISED cheapest stack (covers all specs)
+1. FORCED-FLOW + BASIS, now, $0: Coinalyze API (funding/OI/liq/basis aggregated).
+   Lets us study liquidation-cascade + basis context immediately for free.
+2. HL execution-venue L2: Hyperliquid S3 (FREE) - check density (may revive the
+   basis-reversion pulse with proper data).
+3. GRANULAR multi-venue L2 history: Crypto Lake (cheap parquet) as primary; Tardis
+   free samples + Binance/Bitget free archives for validation; self-capture on the
+   box for ongoing aggregated L2.
+4. Only pay for CoinGlass / Velo / Databento if a specific gap demands it.
+Net: we can start the forced-flow + basis research for ~$0 (Coinalyze + HL S3 +
+Binance archives), and add cheap Crypto Lake for granular L2 only when needed.
