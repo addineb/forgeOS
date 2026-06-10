@@ -120,3 +120,23 @@ Bet reversion of dev (HL rich -> short HL), hold until dev sign flips.
 ## Status
 PROMISING (first pulse). Pre-study only. Not validated. High priority to build
 honestly because nothing else has shown a pulse.
+---
+# POST-MORTEM (2026-06-11): two wrong explanations in one morning - logged so we never repeat
+1. WRONG verdict: "basis-reversion is dead / no edge." Cause: a divide-by-1e6 bug in
+   basis_restudy.py - Binance trade_time is MILLISECONDS but I divided it as if it
+   were nanoseconds, freezing the Binance leg to one price (tested HL-vs-its-own-mean).
+   CHD scales differ: trade_time/event_time = ms, received_time = ns. Confused them.
+2. WRONG explanation: "the earlier pulse was an artifact of thin hlquote sparsity."
+   FALSE - the original lag_study*.py used correct, consistent ms timestamps and DID
+   show the pulse. The pulse was never the artifact; my divide bug was.
+
+BLAST RADIUS: only the basis/lag/cascade PYTHON pre-studies. The orderflow hunts
+(OFI/wall/CVD/wallflow/absorption, ~15k cfgs, 0 promote) run via the RUST engine fed
+by chd-to-parquet.py, which scales timestamps CORRECTLY (trade_time/event_time as-is
+ms; received_time //1e6). Engine also passes null-edge + det-hash -> data path proven
+clean. So those verdicts stand; only the morning basis "kill" was corrupted.
+
+NOT 100% CERTAIN the fix = a tradeable edge: the corrected study proves the SIGNAL
+exists (out-of-sample positive, knob-bite, momentum-mirror, spread-survives) but NOT
+that it is CAPTURABLE under real latency / adverse selection / impact. That is the
+engine build + gates job. Trust nothing until it survives engine-grade fills + paper.
