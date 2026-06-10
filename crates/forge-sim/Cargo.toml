@@ -15,3 +15,7 @@ forge-data = { path = "../forge-data" }
 [[bin]]
 name = "forge-sim-replay"
 path = "src/bin/replay.rs"
+
+[[bin]]
+name = "forge-nulledge"
+path = "src/bin/nulledge.rs"

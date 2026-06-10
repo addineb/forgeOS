@@ -7,7 +7,7 @@
 use std::process::ExitCode;
 
 use forge_data::ForgeReader;
-use forge_sim::{NoopStrategy, SimConfig, SimEngine};
+use forge_sim::{FeeSchedule, NoopStrategy, SimConfig, SimEngine};
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -24,7 +24,7 @@ fn run() -> Result<(), String> {
     };
 
     let reader = ForgeReader::open(&path).map_err(|e| format!("open {path}: {e}"))?;
-    let cfg = SimConfig { order_latency_ns, book_max_levels };
+    let cfg = SimConfig { order_latency_ns, book_max_levels, fees: FeeSchedule::legacy() };
     let mut engine = SimEngine::new(NoopStrategy, cfg);
     for (decoded, rec) in reader.records().iter().enumerate() {
         let ev = rec.to_event().map_err(|e| format!("decode at #{decoded}: {e}"))?;
