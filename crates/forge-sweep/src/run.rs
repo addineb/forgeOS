@@ -268,7 +268,7 @@ where
 mod tests {
     use super::*;
     use forge_core::{EventKind, Price, Qty, Side, UnixNanos};
-    use forge_strategy::{MomentumConfig, OfiMomentum, Signal};
+    use forge_strategy::{MomentumConfig, OfiMomentum, RegimeFilter, Signal};
 
     struct Rng(u64);
     impl Rng {
@@ -323,6 +323,7 @@ mod tests {
             signal: Signal::Real,
             seed: 1,
             fill_timeout_ns: 200_000_000,
+            regime_filter: vec![RegimeFilter::Any],
         })
     }
 

@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 
 use forge_core::{EventKind, Qty, Side};
-use forge_sim::{Ctx, EntrySignal, ExecConfig, ExecutionShell, OrderIntent, Strategy};
+use forge_sim::{Ctx, EntrySignal, ExecConfig, ExecutionShell, OrderIntent, RegimeFilter, Strategy};
 
 use crate::momentum::Signal;
 
@@ -87,6 +87,8 @@ pub struct CvdConfig {
     pub seed: u64,
     /// Fill timeout (ns).
     pub fill_timeout_ns: u64,
+    /// Only enter in this market regime (Any = no gate).
+    pub regime_filter: RegimeFilter,
 }
 
 impl Default for CvdConfig {
@@ -104,6 +106,7 @@ impl Default for CvdConfig {
             signal: Signal::Real,
             seed: 1,
             fill_timeout_ns: 200_000_000,
+            regime_filter: RegimeFilter::Any,
         }
     }
 }
@@ -176,6 +179,7 @@ impl CvdBot {
             sl_bps: cfg.sl_bps,
             use_limit: cfg.use_limit,
             fill_timeout_ns: cfg.fill_timeout_ns,
+            regime_filter: cfg.regime_filter,
         };
         Self(ExecutionShell::new(sig, exec))
     }

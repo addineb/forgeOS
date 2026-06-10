@@ -9,10 +9,9 @@ mod cvd;
 mod imbalance;
 mod momentum;
 mod ofi;
-mod regime;
 
 pub use cvd::{Cvd, CvdBot, CvdConfig, CvdSignal};
 pub use imbalance::{ImbalanceConfig, ObiBot, ObiSignal};
 pub use momentum::{MomentumConfig, OfiMomentum, OfiSignal, Signal};
 pub use ofi::Ofi;
-pub use regime::{EfficiencyRatio, Regime, RegimeConfig};
+pub use forge_sim::{EfficiencyRatio, Regime, RegimeConfig, RegimeFilter};

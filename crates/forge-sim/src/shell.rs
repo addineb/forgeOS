@@ -15,6 +15,7 @@
 
 use forge_core::{Qty, Side};
 
+use crate::regime::{EfficiencyRatio, Regime, RegimeConfig, RegimeFilter};
 use crate::strategy::{Ctx, OrderIntent, Strategy};
 
 /// A bot's signal: the only part each thesis writes.
@@ -43,6 +44,8 @@ pub struct ExecConfig {
     pub use_limit: bool,
     /// Nanoseconds to wait for a fill before assuming it will not happen.
     pub fill_timeout_ns: u64,
+    /// Only enter in this market regime (Any = no gate). Exits are never gated.
+    pub regime_filter: RegimeFilter,
 }
 
 impl Default for ExecConfig {
@@ -55,9 +58,15 @@ impl Default for ExecConfig {
             sl_bps: 0.0,
             use_limit: false,
             fill_timeout_ns: 200_000_000,
+            regime_filter: RegimeFilter::Any,
         }
     }
 }
+
+/// How often (virtual ns) the shell samples mid to update its regime read.
+const REGIME_SAMPLE_NS: u64 = 1_000_000_000; // 1 s
+/// Classifier params for the entry gate.
+const REGIME_CFG: RegimeConfig = RegimeConfig { window: 32, hi: 0.5, lo: 0.2 };
 
 #[derive(Clone, Copy)]
 enum Phase {
@@ -72,12 +81,25 @@ pub struct ExecutionShell<S: EntrySignal> {
     cfg: ExecConfig,
     pending: Option<(i64, u64)>, // (position when an order was sent, deadline ns)
     phase: Phase,
+    er: EfficiencyRatio,
+    regime_started: bool,
+    regime_next: u64,
+    cur_regime: Regime,
 }
 
 impl<S: EntrySignal> ExecutionShell<S> {
     /// Build a shell around a signal.
     pub fn new(sig: S, cfg: ExecConfig) -> Self {
-        Self { sig, cfg, pending: None, phase: Phase::Flat { ready_at: 0 } }
+        Self {
+            sig,
+            cfg,
+            pending: None,
+            phase: Phase::Flat { ready_at: 0 },
+            er: EfficiencyRatio::new(REGIME_CFG.window),
+            regime_started: false,
+            regime_next: 0,
+            cur_regime: Regime::Neutral,
+        }
     }
 
     fn flatten(pos: i64) -> OrderIntent {
@@ -107,6 +129,25 @@ impl<S: EntrySignal> Strategy for ExecutionShell<S> {
             _ => None,
         };
 
+        // Update the regime read on a fixed time cadence (skipped when no gate).
+        if self.cfg.regime_filter != RegimeFilter::Any {
+            if !self.regime_started {
+                self.regime_next = now;
+                self.regime_started = true;
+            }
+            if now >= self.regime_next {
+                if let Some(m) = mid {
+                    self.er.observe(m);
+                }
+                if self.er.ready() {
+                    self.cur_regime = REGIME_CFG.classify(self.er.value());
+                }
+                while self.regime_next <= now {
+                    self.regime_next += REGIME_SAMPLE_NS;
+                }
+            }
+        }
+
         match self.phase {
             Phase::Open { entry_ts, dir, entry_mid } => {
                 let mut close = now.saturating_sub(entry_ts) >= self.cfg.hold_ns;
@@ -135,7 +176,7 @@ impl<S: EntrySignal> Strategy for ExecutionShell<S> {
                     self.phase = Phase::Flat { ready_at: now + self.cfg.cooldown_ns };
                 } else if now >= ready_at {
                     if let Some(m) = mid {
-                        if let Some(side) = self.sig.entry(ctx) {
+                        if let Some(side) = self.sig.entry(ctx).filter(|_| self.cfg.regime_filter.allows(self.cur_regime)) {
                             let intent = if self.cfg.use_limit {
                                 let px = match side {
                                     Side::Bid => ctx.book.best_bid().map(|(p, _)| p),

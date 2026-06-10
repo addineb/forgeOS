@@ -12,7 +12,7 @@ use forge_core::{Event, Qty};
 use forge_data::ForgeReader;
 use forge_metrics::{paper_run, PaperConfig};
 use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine};
-use forge_strategy::{ImbalanceConfig, MomentumConfig, ObiBot, OfiMomentum, Signal};
+use forge_strategy::{ImbalanceConfig, MomentumConfig, ObiBot, OfiMomentum, RegimeFilter, Signal};
 
 /// Parse a duration like `30s`, `5m`, `2h`, `250ms` (bare = ns) into nanoseconds.
 fn parse_dur(s: &str) -> Result<u64, String> {
@@ -132,14 +132,14 @@ fn run() -> Result<(), String> {
         "ofi" => {
             let c = MomentumConfig {
                 ofi_window: window, threshold, qty: q, hold_ns, cooldown_ns, tp_bps, sl_bps,
-                use_limit, signal: Signal::Real, seed: 1, fill_timeout_ns: 200_000_000,
+                use_limit, signal: Signal::Real, seed: 1, fill_timeout_ns: 200_000_000, regime_filter: RegimeFilter::Any,
             };
             collect_trips(&windows, || OfiMomentum::new(c), latency_ns)
         }
         "wall" => {
             let c = ImbalanceConfig {
                 top_n: topn, threshold, reversion, qty: q, hold_ns, cooldown_ns, tp_bps, sl_bps,
-                use_limit, signal: Signal::Real, seed: 1, fill_timeout_ns: 200_000_000,
+                use_limit, signal: Signal::Real, seed: 1, fill_timeout_ns: 200_000_000, regime_filter: RegimeFilter::Any,
             };
             collect_trips(&windows, || ObiBot::new(c), latency_ns)
         }

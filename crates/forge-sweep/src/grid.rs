@@ -1,7 +1,7 @@
 //! Cartesian-product expansion of a parameter grid into concrete configs.
 
 use forge_core::Qty;
-use forge_strategy::{CvdConfig, ImbalanceConfig, MomentumConfig, Signal};
+use forge_strategy::{CvdConfig, ImbalanceConfig, MomentumConfig, RegimeFilter, Signal};
 
 /// The swept knobs. Each vector is a set of values to try; the grid is their
 /// Cartesian product (deterministic order).
@@ -29,6 +29,8 @@ pub struct GridSpec {
     pub seed: u64,
     /// Fill timeout.
     pub fill_timeout_ns: u64,
+    /// Regime entry gate(s) to try (Any = no gate).
+    pub regime_filter: Vec<RegimeFilter>,
 }
 
 /// Expand the grid into concrete `MomentumConfig`s in a fixed, deterministic
@@ -43,19 +45,22 @@ pub fn expand(spec: &GridSpec) -> Vec<MomentumConfig> {
                     for &tp in &spec.tp_bps {
                         for &sl in &spec.sl_bps {
                             for &lim in &spec.use_limit {
-                                out.push(MomentumConfig {
-                                    ofi_window: w,
-                                    threshold: th,
-                                    qty: spec.qty,
-                                    hold_ns: h,
-                                    cooldown_ns: cd,
-                                    tp_bps: tp,
-                                    sl_bps: sl,
-                                    use_limit: lim,
-                                    signal: spec.signal,
-                                    seed: spec.seed,
-                                    fill_timeout_ns: spec.fill_timeout_ns,
-                                });
+                                for &rf in &spec.regime_filter {
+                                    out.push(MomentumConfig {
+                                        ofi_window: w,
+                                        threshold: th,
+                                        qty: spec.qty,
+                                        hold_ns: h,
+                                        cooldown_ns: cd,
+                                        tp_bps: tp,
+                                        sl_bps: sl,
+                                        use_limit: lim,
+                                        signal: spec.signal,
+                                        seed: spec.seed,
+                                        fill_timeout_ns: spec.fill_timeout_ns,
+                                        regime_filter: rf,
+                                    });
+                                }
                             }
                         }
                     }
@@ -93,6 +98,8 @@ pub struct ImbalanceGridSpec {
     pub seed: u64,
     /// Fill timeout.
     pub fill_timeout_ns: u64,
+    /// Regime entry gate(s) to try (Any = no gate).
+    pub regime_filter: Vec<RegimeFilter>,
 }
 
 /// Expand the imbalance grid into concrete configs (deterministic order).
@@ -107,20 +114,23 @@ pub fn expand_imbalance(spec: &ImbalanceGridSpec) -> Vec<ImbalanceConfig> {
                         for &tp in &spec.tp_bps {
                             for &sl in &spec.sl_bps {
                                 for &lim in &spec.use_limit {
-                                    out.push(ImbalanceConfig {
-                                        top_n: tn,
-                                        threshold: th,
-                                        reversion: rev,
-                                        qty: spec.qty,
-                                        hold_ns: h,
-                                        cooldown_ns: cd,
-                                        tp_bps: tp,
-                                        sl_bps: sl,
-                                        use_limit: lim,
-                                        signal: spec.signal,
-                                        seed: spec.seed,
-                                        fill_timeout_ns: spec.fill_timeout_ns,
-                                    });
+                                    for &rf in &spec.regime_filter {
+                                        out.push(ImbalanceConfig {
+                                            top_n: tn,
+                                            threshold: th,
+                                            reversion: rev,
+                                            qty: spec.qty,
+                                            hold_ns: h,
+                                            cooldown_ns: cd,
+                                            tp_bps: tp,
+                                            sl_bps: sl,
+                                            use_limit: lim,
+                                            signal: spec.signal,
+                                            seed: spec.seed,
+                                            fill_timeout_ns: spec.fill_timeout_ns,
+                                            regime_filter: rf,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -159,6 +169,8 @@ pub struct CvdGridSpec {
     pub seed: u64,
     /// Fill timeout.
     pub fill_timeout_ns: u64,
+    /// Regime entry gate(s) to try (Any = no gate).
+    pub regime_filter: Vec<RegimeFilter>,
 }
 
 /// Expand the CVD grid into concrete configs (deterministic order).
@@ -173,20 +185,23 @@ pub fn expand_cvd(spec: &CvdGridSpec) -> Vec<CvdConfig> {
                         for &tp in &spec.tp_bps {
                             for &sl in &spec.sl_bps {
                                 for &lim in &spec.use_limit {
-                                    out.push(CvdConfig {
-                                        window: w,
-                                        threshold: th,
-                                        reversion: rev,
-                                        qty: spec.qty,
-                                        hold_ns: h,
-                                        cooldown_ns: cd,
-                                        tp_bps: tp,
-                                        sl_bps: sl,
-                                        use_limit: lim,
-                                        signal: spec.signal,
-                                        seed: spec.seed,
-                                        fill_timeout_ns: spec.fill_timeout_ns,
-                                    });
+                                    for &rf in &spec.regime_filter {
+                                        out.push(CvdConfig {
+                                            window: w,
+                                            threshold: th,
+                                            reversion: rev,
+                                            qty: spec.qty,
+                                            hold_ns: h,
+                                            cooldown_ns: cd,
+                                            tp_bps: tp,
+                                            sl_bps: sl,
+                                            use_limit: lim,
+                                            signal: spec.signal,
+                                            seed: spec.seed,
+                                            fill_timeout_ns: spec.fill_timeout_ns,
+                                            regime_filter: rf,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -216,6 +231,7 @@ mod tests {
             signal: Signal::Real,
             seed: 1,
             fill_timeout_ns: 200_000_000,
+            regime_filter: vec![RegimeFilter::Any],
         };
         let g = expand(&spec);
         assert_eq!(g.len(), 12); // 2 windows x 3 thresholds x 2 use_limit

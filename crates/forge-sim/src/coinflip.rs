@@ -5,6 +5,7 @@
 
 use forge_core::{Qty, Side};
 
+use crate::regime::RegimeFilter;
 use crate::shell::{EntrySignal, ExecConfig, ExecutionShell};
 use crate::strategy::{Ctx, OrderIntent, Strategy};
 
@@ -48,6 +49,7 @@ impl Coinflip {
             sl_bps: 0.0,
             use_limit: false,
             fill_timeout_ns: 200_000_000,
+            regime_filter: RegimeFilter::Any,
         };
         Self(ExecutionShell::new(CoinSignal::new(seed), cfg))
     }

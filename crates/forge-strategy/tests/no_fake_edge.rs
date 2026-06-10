@@ -8,7 +8,7 @@
 
 use forge_core::{Event, EventKind, Price, Qty, Side, UnixNanos};
 use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine};
-use forge_strategy::{MomentumConfig, OfiMomentum, Signal};
+use forge_strategy::{MomentumConfig, OfiMomentum, RegimeFilter, Signal};
 
 struct Rng(u64);
 impl Rng {
@@ -84,6 +84,7 @@ fn cfg(signal: Signal) -> MomentumConfig {
         signal,
         seed: 7,
         fill_timeout_ns: 200_000_000,
+        regime_filter: RegimeFilter::Any,
     }
 }
 

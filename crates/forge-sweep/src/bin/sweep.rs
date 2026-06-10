@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use forge_core::{Event, Qty};
 use forge_data::ForgeReader;
 use forge_sim::FeeSchedule;
-use forge_strategy::{CvdBot, ObiBot, OfiMomentum, Signal};
+use forge_strategy::{CvdBot, ObiBot, OfiMomentum, RegimeFilter, Signal};
 use forge_sweep::{
     expand, expand_cvd, expand_imbalance, run_sweep, CvdGridSpec, GridSpec, ImbalanceGridSpec,
     SweepReport, Thresholds, Verdict,
@@ -76,6 +76,17 @@ fn parse_bools(s: &str) -> Result<Vec<bool>, String> {
         })
         .collect()
 }
+fn parse_regimes(s: &str) -> Result<Vec<RegimeFilter>, String> {
+    s.split(',')
+        .map(|x| match x.trim().to_lowercase().as_str() {
+            "any" => Ok(RegimeFilter::Any),
+            "trend" | "trending" => Ok(RegimeFilter::OnlyTrending),
+            "side" | "sideways" | "chop" => Ok(RegimeFilter::OnlySideways),
+            "neutral" | "neut" => Ok(RegimeFilter::OnlyNeutral),
+            other => Err(format!("bad regime `{other}` (any|trend|side|neutral)")),
+        })
+        .collect()
+}
 
 fn load_window(path: &str) -> Result<Vec<Event>, String> {
     let reader = ForgeReader::open(path).map_err(|e| format!("open {path}: {e}"))?;
@@ -132,9 +143,18 @@ fn run() -> Result<(), String> {
     let mut top: usize = 25;
     let mut qty = 0.01_f64;
 
+    // Pre-scan strategy so threshold axes match the signal's scale: OFI's
+    // normalised signal can exceed 1, but imbalance/CVD are bounded to [-1, 1],
+    // so they need sub-1 thresholds or the entry knob never bites (0 trips).
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let bounded = matches!(
+        argv.iter().position(|a| a == "--strategy").and_then(|p| argv.get(p + 1)).map(String::as_str),
+        Some("wall") | Some("cvd")
+    );
+
     // ofi axes
     let mut windows_ax = vec![20usize, 50, 100];
-    let mut thr_ax = vec![1.0, 1.5, 2.5];
+    let mut thr_ax = if bounded { vec![0.2, 0.4, 0.6] } else { vec![1.0, 1.5, 2.5] };
     // wall axes
     let mut topn_ax = vec![3usize, 5, 10];
     let mut rev_ax = vec![false, true];
@@ -144,15 +164,15 @@ fn run() -> Result<(), String> {
     let mut tp_ax = vec![0.0, 8.0];
     let mut sl_ax = vec![0.0, 8.0];
     let mut lim_ax = vec![false];
+    let mut reg_ax = vec![RegimeFilter::Any];
 
-    // Pre-scan for a preset so it can set base axes before explicit flags override.
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Preset sets base axes before explicit flags override (argv pre-scanned above).
     if let Some(pos) = argv.iter().position(|a| a == "--preset") {
         match argv.get(pos + 1).map(String::as_str) {
             Some("fast") => {
                 windows_ax = vec![20, 50, 100];
                 topn_ax = vec![3, 5, 10];
-                thr_ax = vec![1.0, 1.5, 2.0, 2.5];
+                thr_ax = if bounded { vec![0.1, 0.2, 0.3, 0.4, 0.5] } else { vec![1.0, 1.5, 2.0, 2.5] };
                 rev_ax = vec![false, true];
                 hold_ax = vec![1_000_000_000, 5_000_000_000, 15_000_000_000]; // 1s,5s,15s
                 cd_ax = vec![500_000_000, 2_000_000_000];                      // 0.5s,2s
@@ -162,7 +182,7 @@ fn run() -> Result<(), String> {
             Some("slow") => {
                 windows_ax = vec![100, 200, 400];
                 topn_ax = vec![5, 10, 20];
-                thr_ax = vec![2.0, 3.0, 4.0];
+                thr_ax = if bounded { vec![0.2, 0.35, 0.5] } else { vec![2.0, 3.0, 4.0] };
                 rev_ax = vec![false, true];
                 hold_ax = vec![300_000_000_000, 900_000_000_000, 1_800_000_000_000]; // 5m,15m,30m
                 cd_ax = vec![30_000_000_000, 120_000_000_000];                        // 30s,2m
@@ -196,6 +216,7 @@ fn run() -> Result<(), String> {
             "--tps" => tp_ax = parse_f64s(&val()?)?,
             "--sls" => sl_ax = parse_f64s(&val()?)?,
             "--limits" => lim_ax = parse_bools(&val()?)?,
+            "--regimes" => reg_ax = parse_regimes(&val()?)?,
             s if s.starts_with("--") => return Err(format!("unknown flag {s}")),
             s => paths.push(s.to_string()),
         }
@@ -219,34 +240,34 @@ fn run() -> Result<(), String> {
         "ofi" => {
             let grid = expand(&GridSpec {
                 ofi_window: windows_ax, threshold: thr_ax, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
-                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000,
+                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000, regime_filter: reg_ax,
             });
             eprintln!("ofi grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, OfiMomentum::new, sample_ns, fees, latency_ns, 20, th);
             print_report(&rep, signal, leverage, top, |c| {
-                format!("w={} thr={} hold={} cd={} tp={} sl={} lim={}", c.ofi_window, c.threshold, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit)
+                format!("w={} thr={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.ofi_window, c.threshold, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
             });
         }
         "wall" => {
             let grid = expand_imbalance(&ImbalanceGridSpec {
                 top_n: topn_ax, threshold: thr_ax, reversion: rev_ax, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
-                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000,
+                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000, regime_filter: reg_ax,
             });
             eprintln!("wall grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, ObiBot::new, sample_ns, fees, latency_ns, 20, th);
             print_report(&rep, signal, leverage, top, |c| {
-                format!("topN={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.top_n, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit)
+                format!("topN={} thr={} rev={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.top_n, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
             });
         }
         "cvd" => {
             let grid = expand_cvd(&CvdGridSpec {
                 window: windows_ax, threshold: thr_ax, reversion: rev_ax, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
-                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000,
+                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000, regime_filter: reg_ax,
             });
             eprintln!("cvd grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, CvdBot::new, sample_ns, fees, latency_ns, 20, th);
             print_report(&rep, signal, leverage, top, |c| {
-                format!("win={} thr={} rev={} hold={} cd={} tp={} sl={} lim={}", c.window, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit)
+                format!("win={} thr={} rev={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.window, c.threshold, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
             });
         }
         other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd)")),

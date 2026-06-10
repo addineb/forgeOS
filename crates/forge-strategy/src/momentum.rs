@@ -7,7 +7,7 @@
 
 use forge_core::Side;
 use forge_core::Qty;
-use forge_sim::{Ctx, EntrySignal, ExecConfig, ExecutionShell, OrderIntent, Strategy};
+use forge_sim::{Ctx, EntrySignal, ExecConfig, ExecutionShell, OrderIntent, RegimeFilter, Strategy};
 
 use crate::ofi::Ofi;
 
@@ -45,6 +45,8 @@ pub struct MomentumConfig {
     pub seed: u64,
     /// Nanoseconds to wait for a fill before assuming it will not happen.
     pub fill_timeout_ns: u64,
+    /// Only enter in this market regime (Any = no gate).
+    pub regime_filter: RegimeFilter,
 }
 
 impl Default for MomentumConfig {
@@ -61,6 +63,7 @@ impl Default for MomentumConfig {
             signal: Signal::Real,
             seed: 1,
             fill_timeout_ns: 200_000_000,
+            regime_filter: RegimeFilter::Any,
         }
     }
 }
@@ -128,6 +131,7 @@ impl OfiMomentum {
             sl_bps: cfg.sl_bps,
             use_limit: cfg.use_limit,
             fill_timeout_ns: cfg.fill_timeout_ns,
+            regime_filter: cfg.regime_filter,
         };
         Self(ExecutionShell::new(sig, exec))
     }

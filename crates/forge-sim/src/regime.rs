@@ -3,9 +3,10 @@
 //! mid-price samples). ER in [0, 1]: ~1 = clean directional move, ~0 = choppy
 //! back-and-forth.
 //!
-//! This is an ATTRIBUTION lens, not a trade gate: bots trade identically; the
-//! sweep uses the label to split each variant's P&L by regime, so we can see
-//! which variant earns its money in chop vs in trend.
+//! Two uses: (1) the sweep splits each variant's P&L by the regime in force
+//! (attribution); (2) the execution shell can GATE entries to a chosen regime
+//! via [`RegimeFilter`] (opt-in specialization). Pure std, no deps, so it lives
+//! here in the sim core and is re-exported by forge-strategy.
 
 use std::collections::VecDeque;
 
@@ -28,6 +29,33 @@ impl Regime {
             Regime::Trending => 0,
             Regime::Sideways => 1,
             Regime::Neutral => 2,
+        }
+    }
+}
+
+/// Entry gate by regime: which market state a bot may ENTER in. Exits are never
+/// gated (you always get to leave a position).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegimeFilter {
+    /// Trade in any regime (no gate) - the default.
+    Any,
+    /// Only enter when Trending.
+    OnlyTrending,
+    /// Only enter when Sideways/choppy.
+    OnlySideways,
+    /// Only enter in the Neutral middle.
+    OnlyNeutral,
+}
+
+impl RegimeFilter {
+    /// Does this filter permit entering in the given regime?
+    #[must_use]
+    pub fn allows(self, r: Regime) -> bool {
+        match self {
+            RegimeFilter::Any => true,
+            RegimeFilter::OnlyTrending => r == Regime::Trending,
+            RegimeFilter::OnlySideways => r == Regime::Sideways,
+            RegimeFilter::OnlyNeutral => r == Regime::Neutral,
         }
     }
 }
@@ -134,7 +162,6 @@ mod tests {
         let mut er = EfficiencyRatio::new(16);
         let base = 100_000_000i64;
         for i in 0..40 {
-            // oscillate +/- one tick: lots of path, ~zero net => ER ~ 0
             er.observe(base + if i % 2 == 0 { 1_000_000 } else { 0 });
         }
         assert!(er.ready());
@@ -148,7 +175,15 @@ mod tests {
         for i in 0..100 {
             er.observe(100_000_000 + i * 1_000_000);
         }
-        // only the last 4 deltas count; still a clean trend => ER == 1
         assert!((er.value() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn filter_gates_correctly() {
+        assert!(RegimeFilter::Any.allows(Regime::Sideways));
+        assert!(RegimeFilter::OnlyTrending.allows(Regime::Trending));
+        assert!(!RegimeFilter::OnlyTrending.allows(Regime::Sideways));
+        assert!(RegimeFilter::OnlySideways.allows(Regime::Sideways));
+        assert!(!RegimeFilter::OnlySideways.allows(Regime::Neutral));
     }
 }

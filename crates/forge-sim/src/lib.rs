@@ -15,6 +15,7 @@ mod account;
 mod coinflip;
 mod engine;
 mod fills;
+mod regime;
 mod shell;
 mod strategy;
 
@@ -22,5 +23,6 @@ pub use account::Account;
 pub use coinflip::Coinflip;
 pub use engine::{SimConfig, SimEngine, SimReport};
 pub use fills::{maker_fill, money_to_f64, price_market, price_to_limit, FeeSchedule, Fill, Money};
+pub use regime::{EfficiencyRatio, Regime, RegimeConfig, RegimeFilter};
 pub use shell::{EntrySignal, ExecConfig, ExecutionShell};
 pub use strategy::{Ctx, NoopStrategy, OrderIntent, OrderKind, Strategy};
