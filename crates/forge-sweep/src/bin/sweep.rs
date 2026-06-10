@@ -98,12 +98,14 @@ fn print_report<C: Debug>(rep: &SweepReport<C>, signal: Signal, leverage: f64, t
         None => println!("sweep PBO        n/a"),
     }
     println!();
-    println!("{:>4} {:>11} {:>7} {:>6} {:>9} {:>11} {:>6} {:>8}  knobs", "id", "net", "trips", "win%", "ret%/trip", "maxDD", "dsr", "verdict");
+    println!("regime split     trendN/sideN/neutN = net P&L earned while Trending/Sideways/Neutral (the specialization lens)");
+    println!("{:>4} {:>11} {:>7} {:>6} {:>9} {:>11} {:>9} {:>9} {:>9} {:>6} {:>8}  knobs", "id", "net", "trips", "win%", "ret%/trip", "maxDD", "trendN", "sideN", "neutN", "dsr", "verdict");
     for &i in order.iter().take(top) {
         let c = &rep.cells[i];
         println!(
-            "{:>4} {:>11.2} {:>7} {:>5.1}% {:>9.4} {:>11.2} {:>6.3} {:>8}  {}",
-            c.id, c.net, c.round_trips, c.win_rate * 100.0, c.avg_pct, c.max_dd, c.dsr,
+            "{:>4} {:>11.2} {:>7} {:>5.1}% {:>9.4} {:>11.2} {:>9.2} {:>9.2} {:>9.2} {:>6.3} {:>8}  {}",
+            c.id, c.net, c.round_trips, c.win_rate * 100.0, c.avg_pct, c.max_dd,
+            c.net_by_regime[0], c.net_by_regime[1], c.net_by_regime[2], c.dsr,
             format!("{:?}", c.verdict), knobs(&c.config)
         );
     }

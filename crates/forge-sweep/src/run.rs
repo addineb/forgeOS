@@ -4,7 +4,9 @@ use rayon::prelude::*;
 
 use forge_core::Event;
 use forge_metrics::{deflated_sharpe, pbo_cscv, sharpe, variance_of_sharpes};
+use forge_book::OrderBook;
 use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine, Strategy};
+use forge_strategy::{EfficiencyRatio, Regime, RegimeConfig};
 
 /// Tunable two-bar thresholds. Lenient to KEEP (park), strict to PROMOTE.
 #[derive(Clone, Copy, Debug)]
@@ -55,6 +57,9 @@ pub struct CellResult<C> {
     pub avg_pct: f64,
     /// Worst peak-to-trough equity drawdown across windows (quote units).
     pub max_dd: f64,
+    /// Net P&L attributed to the regime in force at each equity bucket:
+    /// `[Trending, Sideways, Neutral]` (quote units). Shows where a variant earns.
+    pub net_by_regime: [f64; 3],
     /// Sharpe of the per-bucket equity returns.
     pub sharpe: f64,
     /// Deflated Sharpe (probability of real edge given the trial count).
@@ -96,6 +101,39 @@ fn decide<C>(c: &CellResult<C>, sweep_pbo: Option<f64>, th: &Thresholds) -> Verd
     Verdict::Retire
 }
 
+/// Build a per-bucket regime label timeline for a window, sampled on the SAME
+/// `t >= next` crossing cadence the engine uses for its equity curve, so the
+/// timeline aligns index-for-index with each run's equity samples.
+fn regime_timeline(window: &[forge_core::Event], sample_ns: u64, rc: RegimeConfig) -> Vec<(u64, Regime)> {
+    let mut out = Vec::new();
+    if sample_ns == 0 {
+        return out;
+    }
+    let mut book = OrderBook::new();
+    let mut er = EfficiencyRatio::new(rc.window);
+    let mut started = false;
+    let mut next = 0u64;
+    for ev in window {
+        let _ = book.apply(ev);
+        let t = ev.local_ts.get();
+        if !started {
+            next = t;
+            started = true;
+        }
+        if t >= next {
+            if let Some(mid) = book.mid() {
+                er.observe(mid.raw());
+            }
+            let reg = if er.ready() { rc.classify(er.value()) } else { Regime::Neutral };
+            out.push((t, reg));
+            while next <= t {
+                next += sample_ns;
+            }
+        }
+    }
+    out
+}
+
 /// Run the full sweep. `configs` are the grid cells; `make` turns a config into
 /// a strategy. Generic over the config type and strategy, so any bot can be
 /// swept. Deterministic and identical at any thread count.
@@ -118,6 +156,10 @@ where
 {
     let n = configs.len();
 
+    let rc = RegimeConfig::default();
+    let timelines: Vec<Vec<(u64, Regime)>> =
+        windows.iter().map(|w| regime_timeline(w, sample_ns, rc)).collect();
+
     let mut cells: Vec<CellResult<C>> = (0..n)
         .into_par_iter()
         .map(|id| {
@@ -130,16 +172,21 @@ where
             let mut pct_sum = 0.0f64;
             let mut pct_count = 0u64;
             let mut max_dd = 0.0f64;
+            let mut net_by_regime = [0.0f64; 3];
 
-            for w in windows {
+            for (wi, w) in windows.iter().enumerate() {
                 let sim_cfg = SimConfig { order_latency_ns: latency_ns, book_max_levels: book_levels, fees };
                 let mut eng = SimEngine::new(make(cfg), sim_cfg);
                 eng.enable_equity_sampling(sample_ns);
                 eng.run(w.iter()).expect("monotonic event stream");
 
                 let curve = eng.equity_curve();
-                for pair in curve.windows(2) {
-                    returns.push(money_to_f64(pair[1].1 - pair[0].1));
+                let timeline = &timelines[wi];
+                for (i, pair) in curve.windows(2).enumerate() {
+                    let ret = money_to_f64(pair[1].1 - pair[0].1);
+                    returns.push(ret);
+                    let reg = timeline.get(i).map_or(Regime::Neutral, |&(_, r)| r);
+                    net_by_regime[reg.idx()] += ret;
                 }
                 let mut peak = i128::MIN;
                 for &(_, eq) in curve {
@@ -181,6 +228,7 @@ where
                 win_rate,
                 avg_pct,
                 max_dd,
+                net_by_regime,
                 sharpe: shp,
                 dsr: 0.0,
                 verdict: Verdict::Retire,
