@@ -7,10 +7,12 @@ type: map
 Append new decisions at the top with a date. The "why" matters as much as the what.
 
 ## 2026-06-10
-- DATA PROVIDER: NOT decided. Tardis.dev is the most complete but ~$300/mo =
-  RULED OUT for a EUR500 account. Leaning toward a FREE own stack (Coinalyze
-  free + Hyperliquid S3 free + Binance/Bitget archives + self-captured multi-venue
-  L2 on the box). Trader decides; nothing committed. See [[data-apis]].
+- DATA PROVIDER: DIRECTION SET = FREE OWN STACK (no monthly bill). Checked +
+  ruled out on cost: Tardis (~$300/mo), Kiyotaka (expensive; it is CCT's data
+  backend), CCT/TapeSurf (look-only terminals), CoinGecko (free but no L2).
+  Path: Coinalyze (free forced-flow/basis) + Hyperliquid S3 (free L2) + Binance/
+  Bitget archives + self-capture multi-venue L2 on the box. Covers the real leads
+  (basis-reversion + forced-flow) at $0. Do not re-litigate providers. [[data-apis]]
 - CCT (Cloud Craft Terminal) evaluated -> REJECTED for engine: look-only
   terminal, NO data export/API ("No API Key Required"), closed proprietary
   signals = the dead-indicator trap. Useful at most as personal eyes.

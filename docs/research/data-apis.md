@@ -4,7 +4,16 @@ type: note
 ---
 # Data APIs - raw feeds for the lag/basis engine + forced-flow
 
-## STATUS: NOT DECIDED yet. Budget reality = ~EUR 500 account -> data spend ~$0.
+## STATUS: DIRECTION SET = FREE OWN STACK. Paid feeds ruled out on cost (EUR500 acct).
+Providers checked + verdict (do not re-litigate):
+- Tardis.dev ~$300/mo - RULED OUT (most complete, fund-priced).
+- Kiyotaka (kiyotaka.ai) - expensive - RULED OUT. (Note: it is the DATA API behind
+  CCT; aggregated candles/OI/funding/liq/heatmap/volume-profile/TPO + kScript raw
+  book. Good product, wrong budget.)
+- CCT / TapeSurf(Okotoki) - LOOK-ONLY terminals ($35-999/mo), no data export - out.
+- CoinGecko - FREE but only price/OHLCV + funding-rate tickers, NO granular L2 / no
+  liq ticks. Keep as a free PRICE/FUNDING reference only.
+THE PATH (free, build-once, no monthly bill, covers the real leads):'
 - Tardis.dev = most COMPLETE (all specs, one schema, all venues) BUT ~$300/mo
   -> RULED OUT on cost (60% of the account/mo for data is absurd).
 - No single CHEAP provider covers all specs. So the leaning is a FREE OWN STACK:

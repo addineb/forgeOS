@@ -34,9 +34,10 @@ reproducible, coinflip loses on real data.
 - Tooling DONE: Obsidian vault (MOC + styled graph) + NotebookLM pack + this
   always-on memory + tools/sync-vault.ps1 (repo->vault). Vault at
   C:\Users\User\Desktop\obsidian\forgeos.
-- DATA: NOT decided. Tardis (complete) ruled out at ~$300/mo vs EUR500 account.
-  Leaning FREE own stack: Coinalyze (free) + Hyperliquid S3 (free) + Binance/
-  Bitget archives + self-captured multi-venue L2 on the box. Trader's call.
+- DATA: DIRECTION SET = FREE OWN STACK. All paid feeds ruled out on cost (Tardis
+  ~$300, Kiyotaka expensive, CCT/TapeSurf look-only, CoinGecko no L2). Path:
+  Coinalyze (free) + Hyperliquid S3 (free) + Binance/Bitget archives + self-capture
+  L2 on box. Covers basis-reversion + forced-flow at $0. Do not re-shop providers.
 - NEXT: BASIS-REVERSION on a git-branch "lag subspace" (engine copy) fed by
   Tardis. Touches engine -> explicit sign-off before building.
 
