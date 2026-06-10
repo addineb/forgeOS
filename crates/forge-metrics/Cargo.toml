@@ -1,0 +1,8 @@
+[package]
+name = "forge-metrics"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ForgeOS validation math: Sharpe, Deflated Sharpe, PBO (CSCV) - pure, tested."
+
+[dependencies]
