@@ -8,6 +8,7 @@ members = [
     "crates/forge-core",
     "crates/forge-data",
     "crates/forge-book",
+    "crates/forge-sim",
 ]
 
 [profile.release]

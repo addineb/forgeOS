@@ -1,0 +1,17 @@
+[package]
+name = "forge-sim"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ForgeOS deterministic replay core: virtual clock, event loop, two-clock latency."
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-book = { path = "../forge-book" }
+# used by the replay binary (reads a *.forge file); the library depends only on
+# forge-core + forge-book.
+forge-data = { path = "../forge-data" }
+
+[[bin]]
+name = "forge-sim-replay"
+path = "src/bin/replay.rs"
