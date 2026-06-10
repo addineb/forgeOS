@@ -14,10 +14,11 @@ use std::process::ExitCode;
 use forge_core::{Event, Qty};
 use forge_data::ForgeReader;
 use forge_sim::FeeSchedule;
-use forge_strategy::{CvdBot, ObiBot, OfiMomentum, RegimeFilter, Signal, WallFlowBot};
+use forge_strategy::{AbsorptionBot, CvdBot, ObiBot, OfiMomentum, RegimeFilter, Signal, WallFlowBot};
 use forge_sweep::{
-    expand, expand_cvd, expand_imbalance, expand_wallflow, run_sweep, CvdGridSpec, GridSpec,
-    ImbalanceGridSpec, SweepReport, Thresholds, Verdict, WallFlowGridSpec,
+    expand, expand_absorption, expand_cvd, expand_imbalance, expand_wallflow, run_sweep,
+    AbsorptionGridSpec, CvdGridSpec, GridSpec, ImbalanceGridSpec, SweepReport, Thresholds,
+    Verdict, WallFlowGridSpec,
 };
 
 fn parse_f64s(s: &str) -> Result<Vec<f64>, String> {
@@ -342,6 +343,22 @@ fn run() -> Result<(), String> {
                 write_outputs(&rep, dir, &format!("cvd-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
             }
         }
+        "absorption" => {
+            let grid = expand_absorption(&AbsorptionGridSpec {
+                window: windows_ax, min_vol: wallmin_ax, reversion: rev_ax, qty: q,
+                hold_ns: hold_ax, cooldown_ns: cd_ax, tp_bps: tp_ax, sl_bps: sl_ax,
+                use_limit: lim_ax, signal, seed: 1, fill_timeout_ns: 200_000_000, regime_filter: reg_ax,
+            });
+            eprintln!("absorption grid: {} configs x {} window(s)", grid.len(), windows.len());
+            let rep = run_sweep(&windows, &grid, AbsorptionBot::new, sample_ns, fees, latency_ns, 20, th);
+            let knobs = |c: &forge_strategy::AbsorptionConfig| {
+                format!("win={} minv={} rev={} hold={} cd={} tp={} sl={} lim={} reg={:?}", c.window, c.min_vol, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.use_limit, c.regime_filter)
+            };
+            print_report(&rep, signal, leverage, top, knobs);
+            if let Some(dir) = &out_dir {
+                write_outputs(&rep, dir, &format!("absorption-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
+            }
+        }
         "wallflow" => {
             let grid = expand_wallflow(&WallFlowGridSpec {
                 wall_min: wallmin_ax, window: windows_ax, cancel_ratio_min: thr_ax, reversion: rev_ax,
@@ -358,7 +375,7 @@ fn run() -> Result<(), String> {
                 write_outputs(&rep, dir, &format!("wallflow-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
             }
         }
-        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd|wallflow)")),
+        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd|wallflow|absorption)")),
     }
     Ok(())
 }
