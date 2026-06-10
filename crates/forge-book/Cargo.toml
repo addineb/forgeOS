@@ -1,0 +1,16 @@
+[package]
+name = "forge-book"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ForgeOS L2 order-book reconstruction: fold the diff stream into a live bid/ask book."
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+# used only by the replay binary (reads a *.forge file); the library itself
+# depends only on forge-core. Layering: forge-book sits above forge-data.
+forge-data = { path = "../forge-data" }
+
+[[bin]]
+name = "forge-book-replay"
+path = "src/bin/replay.rs"
