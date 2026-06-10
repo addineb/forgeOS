@@ -65,3 +65,7 @@ reproducible, coinflip loses on real data.
 - Build/test on the Hetzner box in tmux; commit small + push + verify each step.
 - File writes via execute_pwsh WriteAllText (no-BOM); heavy/box work detached in
   tmux (never block on ssh - it orphans).
+- BASIS update: survives spread (HL spread ~0.13bps); REAL fills+9bps fee = NET
+  +8.55bps/trade, ~9/day, positive all 6 days. Only unmodelled risks left = LATENCY/
+  adverse-selection + impact = the ENGINE's job. NEXT = lag-subspace engine build
+  (needs SIGN-OFF). Type C cascade study coded + bug-fixed, ready to run in parallel.

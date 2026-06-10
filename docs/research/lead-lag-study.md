@@ -1,3 +1,29 @@
+# UPDATE (2026-06-11): pulse SURVIVES spread haircut. Now blocked only on engine-grade fills.
+
+## Spread-aware multi-day result (6 days/7 months, pay real HL bid/ask + 9bps fee)
+HL BTC spread is tiny (~0.13bps = 1 tick on $78k). thr>8bps, ~2min hold:
+- REAL fills (enter at ask/bid, exit opposite) + 9bps fee: NET +8.55bps/trade,
+  ~9 trades/day, POSITIVE ALL 6 DAYS (+14.1,+15.5,+4.7,+12.6,+9.3,+3.2 bps).
+- Spread cost only ~0.35bps total (negligible - liquid, coarse $1 tick).
+- Funding negligible at 2min holds (1/240 of an 8h period).
+
+## What is PROVEN vs NOT (honest)
+PROVEN (python, dense correct data): a real, knob-biting, out-of-sample-consistent
+basis-reversion pulse at the >8bps stretch; survives spread + taker fees.
+NOT YET MODELLED (python cannot - this is the engine's job):
+1. LATENCY / adverse selection: study fills at the SAME snapshot dev crosses thr.
+   Real orders land ~hundreds of ms later (HL ~700ms structural lag per Arrakis) -
+   price moves against us in that gap. THE main risk. Engine two-clock models this.
+2. QUEUE / market impact / top-of-book depth for ~0.13 BTC (EUR500x20x) size.
+3. Statistical: 52 trades at thr>8 -> need more days for DSR/PBO.
+
+## Next step (NEEDS SIGN-OFF - touches the sacred engine)
+Build basis-reversion in a "lag subspace" = a BRANCH/COPY of the engine, with
+realistic HL latency + bid/ask fills + adverse selection, then run the full gates
+(null-edge, knob-bite, DSR/PBO, EUR500 paper). Only if it survives engine-grade
+fills is it trusted. Per project rule, engine work waits for explicit sign-off.
+
+---
 # !!! CORRECTION (2026-06-11, later same day): the KILL below was WRONG - my bug.
 
 The "KILLED on dense data" verdict directly below was produced by a TIMESTAMP BUG
