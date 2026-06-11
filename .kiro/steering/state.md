@@ -75,3 +75,12 @@ reproducible, coinflip loses on real data.
   (HL full-L2 -> correct delta stream) reconstructs IDENTICAL top-5 microprice
   (max|diff|=0.0 over 6539 snaps). NEXT: forge-data convert.rs hl_book stream ->
   *.forge; then BasisReversion strategy; then gates (null-edge/knob-bite/DSR/PBO/paper).
+
+- SUBSPACE COMPLETE (steps 1-6, branch lag-subspace): hlbook stream (verified
+  exact) + BasisReversion strategy + latency-ladder sweep + paper gate; build/clippy/
+  test green; engine core UNTOUCHED. ENGINE-GRADE VERDICT: basis edge is REAL
+  (shuffle control loses), degrades smoothly with latency (9bps@0ms -> 3bps@700ms),
+  lives in SIDEWAYS regime, PAPER GATE PASSES (EUR500/20x +5.7-7.8% @300ms). BUT
+  DSR~=0 -> 0 promote (too thin on 6 days). NOT trusted live. NEXT: many more days
+  for DSR/PBO power + sideways-only regime gate. (Fixed a fill_timeout<latency
+  order-flood artifact mid-run.)

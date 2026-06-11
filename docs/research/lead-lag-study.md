@@ -1,3 +1,39 @@
+# ENGINE-GRADE VERDICT (2026-06-11): REAL but UNPROVEN. Built in the lag-subspace.
+
+The basis-reversion strategy now runs inside the engine (branch lag-subspace) with
+realistic HL fills (taker, walks the book = spread+slippage), order latency, and
+adverse selection. 6 days x 8h windows (Dec..Jun). Result:
+
+## What it shows (clean latency ladder, fill_timeout fixed >= latency)
+Best configs (thr in bps on |dev|, reversion, depth-5 microprice vs Binance trades):
+- net-POSITIVE and degrades SMOOTHLY with order latency (no cliff):
+  thr=12/hold=3m: ~9.4bps/trade @0ms -> ~8 @300ms -> ~3.2 @700ms -> ~0 @1s (33 trips).
+  thr=8/hold=2m:  ~5.4bps/trade @0ms -> ~3.4 @300ms -> ~0.6 @700ms (117 trips).
+- Direction is REAL: the shuffled-direction control LOSES (PBO 0.84, net negative).
+- P&L concentrates in SIDEWAYS regime at every latency (reversion works in chop).
+- PAPER GATE PASSES: EUR500/20x/10% size @300ms latency -> +5.7% (thr12) / +7.8%
+  (thr8) over the 6 days, maxDD 1.4-4%, never ruined.
+
+## What it does NOT show (the honest brake)
+- PROMOTION GATE FAILS at every latency: DSR ~= 0.000, 0 promote / 0 park / all
+  retire. On 6 days and 33-117 trades, deflated-Sharpe says it is NOT statistically
+  distinguishable from luck. Paper-passing does NOT override this (project rule).
+- So: REAL signal, survives realistic latency, profitable on these days - but too
+  THIN / INFREQUENT to trust live on current data.
+
+## Why this is the OPPOSITE of pure lead-lag (and why it survived)
+Pure cross-venue lead-lag dies in a <700ms latency race (lag-avenues-study). Basis
+reversion holds for MINUTES, so 300-700ms execution latency only shaves the edge
+(9->3bps) rather than killing it. That is exactly why this lead is worth more data.
+
+## NEXT (decided): get statistical power
+The whole pipeline now exists (converter hlbook stage -> *.forge -> basis sweep ->
+paper). Re-run over MANY MORE DAYS (the 17 full days on the box, + pull more) so
+DSR/PBO have power to PROMOTE or RETIRE honestly. Also test a sideways-only regime
+gate (the edge lives there). Engine core stayed UNTOUCHED (work is data + strategy
++ sweep layers); the proven main engine is intact.
+
+---
 # UPDATE (2026-06-11): pulse SURVIVES spread haircut. Now blocked only on engine-grade fills.
 
 ## Spread-aware multi-day result (6 days/7 months, pay real HL bid/ask + 9bps fee)
