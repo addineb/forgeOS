@@ -222,3 +222,31 @@ collapse (ETH +283->+30%, t 7.95->3.29). Sign-alignment is least harmful (keeps 
 but still costs return/t without improving them. => the basis-reversion edge is a
 short-horizon microprice dislocation LARGELY ORTHOGONAL to the hourly funding rate;
 crowdedness is not the driver. Funding infra kept as an option, not a default.
+## SINGLE-VENUE REFERENCE BAKE-OFF (#5, 2026-06-11): OKX > Binance > Bybit
+Which single external spot best anchors the HL basis? 36d, thr20, revert-exit, 884ms.
+Basis sanity first (2026-06-07): all 3 refs align (BTC ~-3 to -5bps, ETH ~-5 to -6bps),
+no scale bug. Liquidity gap: Binance ~4.7M BTC trades/day vs OKX 430k, Bybit 739k.
+| BTC ref | n   | t    | RR   | paper | DD  |
+| Binance | 187 | 3.92 | 2.23 | +43   | 5.8 |
+| OKX     | 186 | 4.27 | 2.27 | +41   | 4.1 |
+| Bybit   | 193 | 3.90 | 2.19 | +43   | 4.8 |
+| ETH ref | n   | t    | RR   | paper | DD  |
+| Binance | 549 | 7.95 | 1.77 | +283  | 7.4 |
+| OKX     | 568 | 9.73 | 2.41 | +391  | 5.7 |
+| Bybit   | 575 | 5.63 | 1.54 | +289  | 14.6|
+
+SURPRISE (prediction was Binance-best): OKX is the BEST anchor despite ~1/10 the volume.
+ETH OKX is STRICTLY better than Binance - higher t (9.73 vs 7.95), RR (2.41 vs 1.77),
+return (+391 vs +283), AND lower DD (5.7 vs 7.4). BTC OKX marginally best. Bybit worst.
+
+ROBUSTNESS SPLIT (ETH, OKX vs Binance):
+- FEB 14d: OKX t=10.53/+384%/DD4.6 vs Binance t=8.21/+274%/DD7.4 -> OKX clearly better.
+- MAY-JUN 22d: both flat/insignificant (OKX t=0.28, Binance t=0.55) -> no edge either way.
+=> OKX's advantage is REAL but shown only in the VOLATILE Feb regime (the only window
+with edge to measure). Calm window can't corroborate. Single-volatile-period result.
+
+VERDICT: tentatively SWITCH default reference Binance->OKX (free venue swap, strictly
+better where edge exists, never worse). Needs a 2nd volatile period to confirm it
+replicates before fully trusting. Bybit EXCLUDED (worst). Explains why 3-venue
+aggregate failed: noisy Bybit diluted the clean OKX/Binance signal. UNTRIED aggregate =
+Binance+OKX only (drop Bybit) - possible follow-up, but OKX-alone already looks best.

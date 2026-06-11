@@ -172,3 +172,14 @@ reproducible, coinflip loses on real data.
   single-venue bake-off (Binance vs OKX vs Bybit anchor), aggregated-ref ON HYPE (thin-
   ref case), #3 cross-asset lead (BTC leads ETH). Best deployable stays: thr20+revert-
   exit, single Binance ref (ETH t~8/+283%, BTC t~3.9/+43%, edge concentrated in Feb).
+- SINGLE-VENUE BAKE-OFF (#5) DONE (2026-06-11): OKX > Binance > Bybit as the HL basis
+  anchor. 36d/thr20/884ms: ETH OKX t=9.73/+391%/DD5.7 STRICTLY beats Binance
+  t=7.95/+283%/DD7.4 (higher t+RR+return, LOWER DD) despite ~1/10 volume; BTC OKX
+  marginally best (t4.27 vs 3.92); Bybit worst (ETH DD14.6, EXCLUDE). Split: OKX's win
+  is from the VOLATILE FEB regime (t10.53 vs 8.21); May-Jun both flat (no edge to
+  compare). VERDICT: tentatively switch default ref Binance->OKX (free swap, strictly
+  better where edge exists), needs a 2nd volatile period to confirm. Explains agg failure
+  (noisy Bybit diluted). LAG-VENUE LIST now: #1 agg REJECTED, #2 funding REJECTED, #5
+  bake-off DONE (OKX best). STILL OPEN: agg-ref ON HYPE (thin-ref case), #3 cross-asset
+  lead (BTC leads ETH; needs small engine change). Best deployable: thr20+revert-exit,
+  OKX ref, ETH primary.
