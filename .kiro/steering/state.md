@@ -210,3 +210,11 @@ reproducible, coinflip loses on real data.
   across ref venues. ETH primary (t9.73 +391% DD5.7). Caveats unchanged (Feb-concentrated,
   idealized fills, 884ms assumed). NEXT options: confirm OKX/edge on a 2nd volatile period;
   re-check the rejected variances (vel/zscore/magsize) on OKX if wanted; or live-paper prep.
+- OKX PORTFOLIO (BTC+ETH, 36d, 884ms, revert-exit) computed (paper replica verified
+  exact vs hunt): thr20 20%-each EUR3468/+594%/DD7.6 (21 trades/day); thr20 10%-each
+  (TRUSTED, prudent) EUR1323/+165%/DD3.8; thr15 20%-each EUR4461/+792%/DD12.3 (46/day);
+  thr15 10%-each EUR1504/+201%/DD6.3. No ruin. Beats old Binance portfolio (2742/1177).
+  CAVEAT: sequential compounding, no concurrent-position cap -> trust 10%-each. CHD FEED
+  VENUES (probed): hyperliquid_futures[exec], okx_spot[best ref]+okx_futures, binance
+  spot+futures, bybit+bybit_spot, bitmex. NOT avail: coinbase/kraken/deribit/kucoin/
+  gateio/htx/mexc/bitget/dydx. 5 exchanges/8 feeds - covers the strategy fully.

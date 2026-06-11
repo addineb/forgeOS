@@ -312,3 +312,27 @@ FINDINGS:
 ## SETTLED BEST CONFIG: thr20 + revert-to-mean exit + OKX reference, NO confirm.
 ## (thr15 for more return/more drawdown.) Caveat unchanged: edge Feb-concentrated,
 ## idealized fills, 884ms assumed latency - needs a 2nd volatile period + live validation.
+## OKX PORTFOLIO (BTC+ETH) + VENUE INVENTORY (2026-06-11)
+Paper replica verified against hunt (ETH20 EUR2455/+391/DD5.7, BTC20 706/+41/4.1,
+ETH15 2636/+427/11.0, BTC15 846/+69/5.5 - exact match). Merged trips, sorted, paper_run
+math (bal += bal*risk*20*pct/100; 5% daily halt). NO ruin in any config.
+| OKX portfolio        | EUR500-> | return | DD    | trades/day |
+| thr15 20% each       | 4461     | +792%  | 12.3% | 46 |
+| thr20 20% each       | 3468     | +594%  | 7.6%  | 21 |
+| thr15 10% each       | 1504     | +201%  | 6.3%  | 46 |
+| thr20 10% each (prud)| 1323     | +165%  | 3.8%  | 21 |
+vs old Binance portfolio (2742 aggressive / 1177 prudent) -> OKX is a clear lift.
+CAVEAT (unchanged): paper compounds trips SEQUENTIALLY, does NOT model concurrent
+BTC+ETH open positions (20% each = 40% margin if simultaneous -> real concurrent DD
+higher). TRUSTED read = 10% each: EUR1323, DD3.8%. Idealized fills, 884ms, Feb-conc.
+
+## CHD DATA FEED - ACCESSIBLE VENUES (probed 2026-06-11, our key)
+- hyperliquid_futures (BTC etc.): book + trades + mark_price(funding) + open_interest [EXEC]
+- okx_spot (BTC-USDT): trades + orderbook  [BEST REFERENCE]
+- okx_futures (BTC-USDT-SWAP): perp
+- binance_spot / binance_futures (BTCUSDT): trades + book [most liquid]
+- bybit / bybit_spot (BTCUSDT): trades + book
+- bitmex (XBTUSD): trades
+NOT in plan (404): coinbase, kraken, deribit, kucoin, gateio, htx, mexc, bitget, dydx,
+hyperliquid_spot, okx_swap(use okx_futures). => 5 exchanges / 8 feeds; covers everything
+this strategy needs (HL execution + liquid spot refs).
