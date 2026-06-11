@@ -84,3 +84,10 @@ reproducible, coinflip loses on real data.
   DSR~=0 -> 0 promote (too thin on 6 days). NOT trusted live. NEXT: many more days
   for DSR/PBO power + sideways-only regime gate. (Fixed a fill_timeout<latency
   order-flood artifact mid-run.)
+
+- 13-DAY HUNT done: PBO 0.002 (OOS-stable), edge real @0ms (t~2.0-2.25) but DROPS
+  below significance @300ms latency (t~0.9-1.4). Paper +5.8-6.6%@300ms not trusted
+  (t~1). DSR gate mis-calibrated for sparse strategy (bucket-Sharpe~0.017) -> use
+  per-trade t-stat. VERDICT: promising+OOS-stable but UNPROVEN at realistic latency.
+  NEXT: more days (sqrt(N): ~26+ days to reach t~2 @300ms if edge holds) - CHD has
+  more HL days to pull. Viability hinges on execution latency (<150ms = t~2).

@@ -1,3 +1,37 @@
+# 13-DAY HIGH-POWER HUNT (2026-06-11): real at 0-latency, NOT significant at realistic latency.
+
+Expanded 6 -> 13 days (8h windows; 4 days had no HL data in CHD: Mar1, Apr1-3).
+~2x the trades. PBO 0.002-0.05 (EXCELLENT - winners survive out-of-sample).
+
+## Per-trade significance (the correct lens; equity-bucket DSR reads ~0 because the
+## strategy is flat ~95% of the time -> bucket-Sharpe ~0.017 -> DSR~0, mis-calibrated)
+@0ms latency (idealized):   thr8 n=236 +3.1bps t=2.25 ; thr10 n=118 +5.0bps t=2.04 ;
+                            thr12 n=69 +6.5bps t=1.96   (borderline significant, t~2)
+@300ms latency (realistic): thr12 n=65 +4.9bps t=1.38 ; thr10 n=112 +2.9bps t=1.13 ;
+                            thr8 n=225 +1.3bps t=0.88   (NOT significant, t~1)
+Paper gate "passes" (+5.8-6.6% @300ms) but with t~1 that is within noise - NOT trusted.
+
+## Honest verdict
+- The signal is REAL and OOS-consistent (PBO 0.002), edge concentrates in SIDEWAYS.
+- Latency does not just shave the edge, it pushes it BELOW significance: t 2.0->1.3
+  from 0->300ms. At realistic retail latency, 13 days is NOT enough to distinguish
+  it from luck.
+- Regime gate (sideways-only) did NOT help (fewer trades, lower net) - best traded
+  across all regimes.
+- DSR promotion gate is mis-calibrated for a sparse minutes-hold strategy; per-trade
+  t-stat is the right test and says "borderline, need more data".
+
+## What would settle it
+1. MORE DAYS: t scales with sqrt(N). thr12@300ms t=1.38 on 65 trades -> ~2x trades
+   (~26 days) reaches t~2 IF the mean edge holds; if it is noise, more days drives
+   t toward 0. This is the decisive test. (CHD has more HL days to pull.)
+2. LOWER EXECUTION LATENCY: at <150ms the edge is much healthier (t~2). Viability
+   hinges on how fast we can reach HL.
+3. Recalibrate the gate to trade-level stats for sparse strategies (engine task).
+
+## Status: PROMISING, OOS-stable, but UNPROVEN at realistic latency on 13 days. Not live.
+
+---
 # ENGINE-GRADE VERDICT (2026-06-11): REAL but UNPROVEN. Built in the lag-subspace.
 
 The basis-reversion strategy now runs inside the engine (branch lag-subspace) with
