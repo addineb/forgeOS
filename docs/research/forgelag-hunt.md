@@ -88,3 +88,15 @@ Win rate ~48% (coinflip); profit is from RR ~1.9 (wins ~2x losses) = positive ex
 ## dislocation variant (>=20bps, 3min hold, ~5-6 trades/day). t~2.4-3.0 = significant
 ## but borderline (vs t~5 at 300ms fantasy). Needs: more periods to firm up + live
 ## validation. The small/frequent version is NOT deployable (latency kills it).
+## IDEA MENU (latency is the binding constraint -> prioritise ideas that DON'T need speed)
+1. ANTICIPATE not react: trigger on basis VELOCITY (stretching fast), so our order
+   lands ~900ms later AT the extreme. Leads our own latency. [highest value]
+2. Z-SCORE trigger: threshold = k * recent basis-vol (not fixed bps) -> steady trade
+   frequency across calm/volatile regimes; may give thr10 frequency w/ thr20 survival.
+3. EXIT on revert-to-mean (not fixed time); asymmetric: tight stop if gap widens
+   (structural), let reverters run.
+4. CONDITION entry: funding regime (extreme funding = crowded = snaps back) and/or
+   book-pressure confirm (the Type A dead-indicator idea); time-of-day filter.
+5. REFERENCE leg: Binance FUTURES (perp-perp) vs spot; aggregated multi-venue VWAP.
+6. SIZE proportional to dislocation magnitude (more $ on fattest/highest-expectancy).
+Picks to spark: #1 (defeats latency) + #2 (restores frequency to latency-proof trades).
