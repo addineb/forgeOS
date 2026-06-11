@@ -154,6 +154,24 @@ fn run() -> Result<(), String> {
         other => return Err(format!("unknown --strategy `{other}` (ofi|wall|basis)")),
     };
 
+    // Per-trade significance (the appropriate test for a sparse, minutes-hold
+    // strategy; the equity-bucket DSR gate reads ~0 here because the curve is
+    // flat ~95% of the time). t-stat = mean/std * sqrt(n); |t| > ~2 ~ p<0.05.
+    let rets: Vec<f64> = trips.iter().map(|t| t.1).collect();
+    if rets.len() >= 2 {
+        let n = rets.len() as f64;
+        let mean = rets.iter().sum::<f64>() / n;
+        let var = rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n - 1.0);
+        let sd = var.sqrt();
+        let tstat = if sd > 0.0 { mean / sd * n.sqrt() } else { 0.0 };
+        let trade_sharpe = if sd > 0.0 { mean / sd } else { 0.0 };
+        let wins = rets.iter().filter(|r| **r > 0.0).count();
+        println!(
+            "per-trade       n={} mean={:.4}% std={:.4}% t-stat={:.2} trade-sharpe={:.3} win={:.1}%",
+            rets.len(), mean, sd, tstat, trade_sharpe, wins as f64 / n * 100.0
+        );
+    }
+
     let res = paper_run(&trips, &pcfg);
 
     println!("strategy        {strategy}");
