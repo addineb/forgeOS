@@ -250,3 +250,16 @@ better where edge exists, never worse). Needs a 2nd volatile period to confirm i
 replicates before fully trusting. Bybit EXCLUDED (worst). Explains why 3-venue
 aggregate failed: noisy Bybit diluted the clean OKX/Binance signal. UNTRIED aggregate =
 Binance+OKX only (drop Bybit) - possible follow-up, but OKX-alone already looks best.
+## AGGREGATION QUESTION CLOSED (2026-06-11): use OKX SINGLE reference, no aggregation
+Tested the only untried aggregate - Binance+OKX (drop noisy Bybit) - vs OKX-alone
+(36d, thr20, revert-exit, 884ms):
+| BTC OKX-alone   | n186 t4.27 RR2.27 +41% DD4.1 |
+| BTC Binance+OKX | n173 t4.34 RR2.52 +49% DD4.3 | (trivially better)
+| ETH OKX-alone   | n568 t9.73 RR2.41 +391% DD5.7 |
+| ETH Binance+OKX | n538 t7.60 RR1.77 +340% DD7.4 | (WORSE - Binance dilutes OKX)
+VERDICT: no aggregate reliably beats the single best venue. BTC Bin+OKX ~ tie; ETH
+OKX-alone clearly wins (adding Binance lowers t 9.73->7.60, raises DD). => FINAL:
+single OKX reference. Aggregation DEAD (3-way diluted by Bybit, 2-way hurts ETH).
+REFERENCE-VENUE RESEARCH COMPLETE: OKX is the anchor; strict upgrade over old Binance
+default; free (venue swap, no complexity). Caveat unchanged: edge is Feb-concentrated;
+OKX advantage shown in the one volatile window - confirm on a 2nd volatile period.

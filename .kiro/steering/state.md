@@ -183,3 +183,11 @@ reproducible, coinflip loses on real data.
   bake-off DONE (OKX best). STILL OPEN: agg-ref ON HYPE (thin-ref case), #3 cross-asset
   lead (BTC leads ETH; needs small engine change). Best deployable: thr20+revert-exit,
   OKX ref, ETH primary.
+- AGGREGATION CLOSED (2026-06-11): tested Binance+OKX (drop Bybit) vs OKX-alone. BTC
+  Bin+OKX ~tie (t4.34 vs 4.27); ETH OKX-alone WINS (t9.73 vs Bin+OKX 7.60, lower DD) -
+  adding Binance dilutes OKX. FINAL ANSWER on reference venue: use SINGLE OKX (strict
+  upgrade over old Binance default, free). No aggregation. REFERENCE-VENUE RESEARCH
+  COMPLETE. Lag-venue list: #1 agg REJECTED, #2 funding REJECTED, #5 ref-leg DONE (OKX).
+  Remaining lag ideas: agg-ref ON HYPE (thin-ref), #3 cross-asset lead (needs engine
+  change), confirm OKX on a 2nd volatile period. Best config: thr20+revert-exit+OKX ref,
+  ETH primary (Feb-concentrated edge).
