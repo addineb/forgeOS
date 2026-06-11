@@ -141,3 +141,10 @@ reproducible, coinflip loses on real data.
   BTC=diversifier (DD only 7.4->9.6 combined). CAVEAT: sequential compounding, doesn't
   model concurrent open positions -> prudent=10% each. lag-hunt --dumptrips added.
   Verified ETH/SOL basis sane + prices align (not a scale bug).
+
+- HYPE test (HL native token, 18d): WEAK. basis sane (-13bps) but only thr30+reversion
+  positive (t=2.29,+25%,DD5.6%); small thr negative, momentum negative. Causes: thin Bybit
+  ref (~10.9k vs BTC 480k trades) + HL likely LEADS its own token. RANKING: ETH>BTC>>SOL~HYPE.
+  LAG RESEARCH saved (docs/research/lag-improvements.md): top improvement = AGGREGATED
+  multi-venue ref (Binance+OKX+Bybit spot VWAP) - would de-noise HYPE + sharpen ETH/BTC;
+  also funding-condition + cross-asset(BTC) lead. NEXT build: aggregated reference.

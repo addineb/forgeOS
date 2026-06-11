@@ -155,3 +155,14 @@ largely independent). CAVEAT: portfolio paper compounds trips SEQUENTIALLY, does
 model concurrent open positions -> at 20% each, two simultaneous = 40%+ margin, real
 concurrent DD higher than shown. PRUDENT read = 10% each (+135%, DD 4.9%). Still
 backtest @884ms idealized fills. lag-hunt has --dumptrips for portfolio export.
+## HYPE (HL native token) test (18 days so far, @884ms real latency)
+Basis correctly computed (mean -13bps, prices align HL~$50 vs Bybit~$50). Edge WEAK:
+- Only thr30 + reversion positive: t=2.29, n=202 (~11/day), win 50.5%, RR 1.59, +25%, DD 5.6%.
+- All smaller thresholds NEGATIVE; momentum side strongly negative (t=-15..-86).
+Causes: (1) Bybit-spot HYPE reference THIN (~10.9k trades vs BTC ~480k) -> noisy anchor,
+small gaps = noise; (2) HL likely LEADS price discovery for its OWN token (basis
+persistently -13bps, reversion-to-external weak) = hypothesis partly confirmed.
+ASSET RANKING (884ms real latency): ETH(t~8) > BTC(t~4.8) >> SOL(t~2,DD28) ~ HYPE(t~2,thin).
+Edge is strongest where HL LAGS a LIQUID external spot; weak where ref is thin or HL leads.
+=> HYPE is the prime case for improvement #1 (AGGREGATED Bybit+OKX spot reference) to
+de-noise the anchor. Next build: aggregated multi-venue reference.
