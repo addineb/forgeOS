@@ -91,3 +91,11 @@ reproducible, coinflip loses on real data.
   per-trade t-stat. VERDICT: promising+OOS-stable but UNPROVEN at realistic latency.
   NEXT: more days (sqrt(N): ~26+ days to reach t~2 @300ms if edge holds) - CHD has
   more HL days to pull. Viability hinges on execution latency (<150ms = t~2).
+
+- FORGELAG ENGINE (branch forgelag, dedicated basis engine, null-edge passes):
+  22-CONSECUTIVE-DAY hunt on FRESH data = edge SIGNIFICANT at realistic latency.
+  per-trade t-stat: 300ms->t=4.95 (+5.7bps,742 trades), 500ms->3.31, 700ms->1.35,
+  1s->-2.44 (inverts). Shuffle control t=-6.70 (negative). LATENCY CLIFF: tradeable
+  only <~500ms exec to HL. Best lead by far. NEXT gates: robustness across OTHER
+  months (these 22d = one regime), multi-venue/aggregated ref, drawdown/ruin check,
+  real exec-latency measurement. docs/research/forgelag-hunt.md.
