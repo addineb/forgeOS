@@ -69,3 +69,9 @@ reproducible, coinflip loses on real data.
   +8.55bps/trade, ~9/day, positive all 6 days. Only unmodelled risks left = LATENCY/
   adverse-selection + impact = the ENGINE's job. NEXT = lag-subspace engine build
   (needs SIGN-OFF). Type C cascade study coded + bug-fixed, ready to run in parallel.
+
+- SUBSPACE BUILD (branch lag-subspace, signed off): data contract documented
+  (docs/research/subspace-design.md). Step 1 DONE+VERIFIED: converter hlbook stage
+  (HL full-L2 -> correct delta stream) reconstructs IDENTICAL top-5 microprice
+  (max|diff|=0.0 over 6539 snaps). NEXT: forge-data convert.rs hl_book stream ->
+  *.forge; then BasisReversion strategy; then gates (null-edge/knob-bite/DSR/PBO/paper).
