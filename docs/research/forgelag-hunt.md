@@ -47,3 +47,14 @@ robustness across periods + the latency-reality check.
   reversion when orderflow agrees / when the book isn't being run over). This is
   the trader-method-1 idea: structural trigger + orderflow confirm.
 - Gate order stays: prove HOLDS (OOS months + drawdown/ruin) FIRST, then expand.
+## OUT-OF-SAMPLE CONFIRMATION (2026-06-11): HOLDS on Feb (independent period)
+Feb 5-18 (14 days), fresh, SEPARATE from the May-Jun training block:
+- 300ms: thr10/2m t=4.77 (+4.3bps, 940 trades, win 53%, no ruin) - SAME significance
+  as May-Jun (t=4.95). 0ms t=6.22; 500ms t=3.98.
+- Two INDEPENDENT periods now significant at realistic latency + shuffle control
+  negative + no ruin => edge is NOT a one-regime artifact.
+- Feb more volatile: maxDD 18-26% (vs May-Jun 4.5%), still no ruin. Win 51-53%
+  (wins on win-size, not hit-rate).
+VERDICT: validated across periods. Strongest result in the project. Now justified
+to expand (venues / variances / dead-indicator conditioning) + measure REAL exec
+latency to HL (the deploy make-or-break) + consider live paper.

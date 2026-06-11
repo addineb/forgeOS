@@ -99,3 +99,8 @@ reproducible, coinflip loses on real data.
   only <~500ms exec to HL. Best lead by far. NEXT gates: robustness across OTHER
   months (these 22d = one regime), multi-venue/aggregated ref, drawdown/ruin check,
   real exec-latency measurement. docs/research/forgelag-hunt.md.
+
+- OOS CONFIRMED: basis edge HOLDS on Feb (14d, independent of May-Jun): 300ms
+  t=4.77 vs May-Jun t=4.95. Two independent periods significant + shuffle negative
+  + no ruin. Validated across regimes - strongest result yet. NEXT: expand
+  (venues/variances/dead-indicator confirm) + measure REAL HL exec latency + live paper.
