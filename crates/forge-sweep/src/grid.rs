@@ -1,7 +1,7 @@
 //! Cartesian-product expansion of a parameter grid into concrete configs.
 
 use forge_core::Qty;
-use forge_strategy::{AbsorptionConfig, CvdConfig, ImbalanceConfig, MomentumConfig, RegimeFilter, Signal, WallFlowConfig};
+use forge_strategy::{AbsorptionConfig, BasisConfig, CvdConfig, ImbalanceConfig, MomentumConfig, RegimeFilter, Signal, WallFlowConfig};
 
 /// The swept knobs. Each vector is a set of values to try; the grid is their
 /// Cartesian product (deterministic order).
@@ -360,6 +360,84 @@ pub fn expand_absorption(spec: &AbsorptionGridSpec) -> Vec<AbsorptionConfig> {
     out
 }
 
+/// Grid for the basis-reversion (spot-perp) bot.
+#[derive(Clone, Debug)]
+pub struct BasisGridSpec {
+    /// Microprice depth (levels per side).
+    pub top_n: Vec<usize>,
+    /// |dev| thresholds in bps.
+    pub threshold_bps: Vec<f64>,
+    /// Rolling baseline lengths (samples).
+    pub window: Vec<usize>,
+    /// Reversion (true, the thesis) vs momentum control (false).
+    pub reversion: Vec<bool>,
+    /// Gap-sample cadence (ns) for the baseline (fixed, not an axis).
+    pub sample_ns: u64,
+    /// Trade size.
+    pub qty: Qty,
+    /// Hold durations (nanoseconds).
+    pub hold_ns: Vec<u64>,
+    /// Cooldowns (nanoseconds).
+    pub cooldown_ns: Vec<u64>,
+    /// Take-profit bps.
+    pub tp_bps: Vec<f64>,
+    /// Stop-loss bps.
+    pub sl_bps: Vec<f64>,
+    /// Market vs limit entry.
+    pub use_limit: Vec<bool>,
+    /// Direction source.
+    pub signal: Signal,
+    /// Seed.
+    pub seed: u64,
+    /// Fill timeout.
+    pub fill_timeout_ns: u64,
+    /// Regime entry gate(s).
+    pub regime_filter: Vec<RegimeFilter>,
+}
+
+/// Expand the basis grid into concrete configs (deterministic order).
+#[must_use]
+pub fn expand_basis(spec: &BasisGridSpec) -> Vec<BasisConfig> {
+    let mut out = Vec::new();
+    for &tn in &spec.top_n {
+        for &th in &spec.threshold_bps {
+            for &win in &spec.window {
+                for &rev in &spec.reversion {
+                    for &h in &spec.hold_ns {
+                        for &cd in &spec.cooldown_ns {
+                            for &tp in &spec.tp_bps {
+                                for &sl in &spec.sl_bps {
+                                    for &lim in &spec.use_limit {
+                                        for &rf in &spec.regime_filter {
+                                            out.push(BasisConfig {
+                                                top_n: tn,
+                                                threshold_bps: th,
+                                                window: win,
+                                                sample_ns: spec.sample_ns,
+                                                reversion: rev,
+                                                qty: spec.qty,
+                                                hold_ns: h,
+                                                cooldown_ns: cd,
+                                                tp_bps: tp,
+                                                sl_bps: sl,
+                                                use_limit: lim,
+                                                signal: spec.signal,
+                                                seed: spec.seed,
+                                                fill_timeout_ns: spec.fill_timeout_ns,
+                                                regime_filter: rf,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
 #[cfg(test)]
 mod tests {
     use super::*;

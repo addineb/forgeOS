@@ -28,11 +28,13 @@ pub struct Streams {
     pub book_delta: bool,
     /// Hyperliquid top-of-book quotes (emitted as paired bid/ask events).
     pub hlquote: bool,
+    /// Hyperliquid full-depth book deltas (the lag-subspace HL book).
+    pub hl_book: bool,
 }
 
 impl Default for Streams {
     fn default() -> Self {
-        Self { trade: true, book_delta: true, hlquote: true }
+        Self { trade: true, book_delta: true, hlquote: true, hl_book: false }
     }
 }
 
@@ -264,6 +266,12 @@ pub fn convert(cfg: &ConvertConfig) -> Result<StreamMeta, DataError> {
             let p = stream_dir(cfg, &cfg.coin, "hlquote").join(format!("{hh}.parquet"));
             if p.exists() {
                 push_hlquote(&p, lat, &mut events)?;
+            }
+        }
+        if cfg.streams.hl_book {
+            let p = stream_dir(cfg, &cfg.coin, "hlbook").join(format!("{hh}.parquet"));
+            if p.exists() {
+                push_book_delta(&p, lat, &mut events)?;
             }
         }
     }

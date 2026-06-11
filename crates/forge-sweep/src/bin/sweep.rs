@@ -14,10 +14,10 @@ use std::process::ExitCode;
 use forge_core::{Event, Qty};
 use forge_data::ForgeReader;
 use forge_sim::FeeSchedule;
-use forge_strategy::{AbsorptionBot, CvdBot, ObiBot, OfiMomentum, RegimeFilter, Signal, WallFlowBot};
+use forge_strategy::{AbsorptionBot, BasisBot, CvdBot, ObiBot, OfiMomentum, RegimeFilter, Signal, WallFlowBot};
 use forge_sweep::{
-    expand, expand_absorption, expand_cvd, expand_imbalance, expand_wallflow, run_sweep,
-    AbsorptionGridSpec, CvdGridSpec, GridSpec, ImbalanceGridSpec, SweepReport, Thresholds,
+    expand, expand_absorption, expand_basis, expand_cvd, expand_imbalance, expand_wallflow, run_sweep,
+    AbsorptionGridSpec, BasisGridSpec, CvdGridSpec, GridSpec, ImbalanceGridSpec, SweepReport, Thresholds,
     Verdict, WallFlowGridSpec,
 };
 
@@ -375,7 +375,24 @@ fn run() -> Result<(), String> {
                 write_outputs(&rep, dir, &format!("wallflow-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
             }
         }
-        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd|wallflow|absorption)")),
+        "basis" => {
+            let grid = expand_basis(&BasisGridSpec {
+                top_n: topn_ax, threshold_bps: thr_ax, window: windows_ax, reversion: rev_ax,
+                sample_ns: 500_000_000, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
+                tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1,
+                fill_timeout_ns: 200_000_000, regime_filter: reg_ax,
+            });
+            eprintln!("basis grid: {} configs x {} window(s)", grid.len(), windows.len());
+            let rep = run_sweep(&windows, &grid, BasisBot::new, sample_ns, fees, latency_ns, 20, th);
+            let knobs = |c: &forge_strategy::BasisConfig| {
+                format!("topN={} thr={}bps win={} rev={} hold={} cd={} tp={} sl={} reg={:?}", c.top_n, c.threshold_bps, c.window, c.reversion, fmt_dur(c.hold_ns), fmt_dur(c.cooldown_ns), c.tp_bps, c.sl_bps, c.regime_filter)
+            };
+            print_report(&rep, signal, leverage, top, knobs);
+            if let Some(dir) = &out_dir {
+                write_outputs(&rep, dir, &format!("basis-{preset_name}"), knobs).map_err(|e| format!("write outputs: {e}"))?;
+            }
+        }
+        other => return Err(format!("unknown --strategy `{other}` (use ofi|wall|cvd|wallflow|absorption|basis)")),
     }
     Ok(())
 }

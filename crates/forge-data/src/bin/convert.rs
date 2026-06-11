@@ -25,7 +25,7 @@ optional:
   --symbol <S>             Binance symbol key (default BTCUSDT)
   --coin <C>               Hyperliquid coin key (default BTC)
   --hours <list|all>       comma list of HH or `all` (default all)
-  --streams <list>         subset of trade,bookDelta,hlquote (default all)
+  --streams <list>         subset of trade,bookDelta,hlquote,hlbook (default all)
   --verify                 read the output back and check count/monotonicity/checksum
 "
     .to_string()
@@ -81,7 +81,7 @@ fn parse() -> Result<Cli, String> {
     let streams = match streams_arg {
         None => Streams::default(),
         Some(list) => {
-            let mut s = Streams { trade: false, book_delta: false, hlquote: false };
+            let mut s = Streams { trade: false, book_delta: false, hlquote: false, hl_book: false };
             for part in list.split(',') {
                 match part.trim() {
                     "trade" => s.trade = true,
