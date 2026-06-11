@@ -432,3 +432,19 @@ Stop-loss FAILED, regime REDUNDANT. FRONTIER (the real choice):
 - min DD + strong return: thr19+regime(lb6/b12) +410% DD4.6 (EUR2550)
 Regime infra kept (optional). NEXT real DD/trust lever = 2nd volatile period (is the edge/DD
 stable out-of-sample?) + real HL latency. No more knob-tuning - it is overfitting from here.
+## *** OUT-OF-SAMPLE VALIDATION #2: Nov-Dec 2025 (61d) - EDGE REPLICATES (2026-06-11) ***
+Pulled a fully INDEPENDENT 61-day block (2025-11-01..12-31, HL book+trades+funding+OKX ref,
+BTC+ETH) - separate from training (Feb + May-Jun 2026). OKX ref, revert-exit, 884ms:
+| config            | TRAINING (Feb+MayJun 36d) | OOS (Nov-Dec25 61d)        |
+| ETH thr16         | t9.35 +521% DD10.0 win55   | t13.31 +542% DD4.2 win62.5 |
+| ETH thr19         | t10.13 +453% DD5.0 win60   | t11.64 +343% DD4.5 win66.7 |
+| ETH thr16 SHUFFLE | (neg)                     | t-13.38 -85% win30.7 (ctrl PASSES) |
+| BTC thr15         | t5.04 +69% DD5.5          | t3.35 +37% DD4.4 win57.4   |
+| BTC thr16         | t5.19 +67% DD5.6          | t3.32 +35% DD3.8 win61.2   |
+VERDICT: edge REPLICATES on independent data. ETH STRONGER OOS (t13.31 vs 9.35, +542% match,
+DD LOWER 4.2 vs 10, win 62.5 vs 55). Shuffle decisively NEGATIVE OOS (t-13.38) = direction
+carries real info, no fake edge. BTC holds (weaker t~3.3 but significant + positive + low DD).
+=> TWO independent periods both significant + shuffle negative both + no ruin = edge is REAL
+and REGIME-ROBUST, NOT a Feb artifact. The 10% training DD was the bad-luck case; OOS DD only
+4.2%. FEB-CONCENTRATION DOUBT LARGELY RESOLVED. Only big caveat LEFT = 884ms ASSUMED latency +
+idealized fills. Edge validated; remaining gate is pure EXECUTION (real HL fill latency, live).

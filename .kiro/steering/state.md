@@ -249,3 +249,12 @@ reproducible, coinflip loses on real data.
   +453%/DD5.0 (EUR2765,t10.13); min-DD thr19+regime(lb6/b12) +410%/DD4.6 (EUR2550). Regime
   infra kept optional. STOP knob-tuning = overfitting from here. NEXT = 2nd volatile period
   (OOS stability of edge AND drawdown) + real HL latency measurement. User keeps thr16 for profit.
+- *** OOS VALIDATION Nov-Dec 2025 (61d independent) = EDGE REPLICATES (2026-06-11) ***
+  Pulled 61d Nov-Dec 2025 (HL book+trades+funding+OKX ref, BTC+ETH; disk 29G/150G). OKX ref,
+  revert-exit, 884ms: ETH thr16 OOS t13.31/+542%/DD4.2/win62.5 (vs train t9.35/+521/DD10) =
+  STRONGER OOS, LOWER DD. ETH thr19 OOS t11.64/+343/DD4.5. SHUFFLE ctrl OOS t-13.38/-85% =
+  no fake edge. BTC thr15 OOS t3.35/+37, thr16 t3.32/+35 (holds, weaker but significant).
+  => TWO independent periods significant + shuffle negative both + no ruin = edge REAL +
+  REGIME-ROBUST, NOT Feb artifact. 10% training DD was bad-luck case (OOS only 4.2%).
+  FEB-CONCENTRATION DOUBT RESOLVED. LAST big gate = real HL execution latency (884ms assumed,
+  idealized fills). Edge validated; next = measure live fill latency / tiny funded HL order.
