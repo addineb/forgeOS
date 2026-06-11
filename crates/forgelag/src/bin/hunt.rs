@@ -87,6 +87,7 @@ fn run() -> Result<(), String> {
     let mut confimb = 0.2_f64;
     let mut magsize = false;
     let mut magcap = 4.0_f64;
+    let mut dumptrips: Option<String> = None;
 
     let mut depths = vec![5usize];
     let mut thr_ax = vec![8.0, 10.0, 12.0];
@@ -127,6 +128,7 @@ fn run() -> Result<(), String> {
             "--confimb" => confimb = val()?.parse().map_err(|e| format!("confimb: {e}"))?,
             "--magsize" => magsize = true,
             "--magcap" => magcap = val()?.parse().map_err(|e| format!("magcap: {e}"))?,
+            "--dumptrips" => dumptrips = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
     }
@@ -269,6 +271,14 @@ fn run() -> Result<(), String> {
         println!("{:>6} {:>8.4} {:>6.2} {:>5.1}% {:>8.4} {:>8.4} {:>5.2} {:>8.1} {:>7.1}  {}", r.n, r.mean, r.t, r.win, r.avg_w, r.avg_l, r.rr, r.paper, r.maxdd, r.knobs);
     }
     println!("(t-stat is the significance test for this sparse strategy; |t|>~2 ~ p<0.05)");
+    if let Some(path) = &dumptrips {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path).map_err(|e| format!("dumptrips: {e}"))?;
+        for (ts, r) in &agg[0] {
+            writeln!(f, "{ts},{r}").map_err(|e| format!("dumptrips write: {e}"))?;
+        }
+        eprintln!("dumped {} trips (cell 0) to {path}", agg[0].len());
+    }
     Ok(())
 }
 

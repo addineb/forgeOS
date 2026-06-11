@@ -135,3 +135,9 @@ reproducible, coinflip loses on real data.
   thr15 +353% (~2265) DD12.8%. vs BTC thr20 +43%. ETH thinner on HL -> bigger gaps +
   more trades. BREADTH = the euro-scaling lever. SOL downloading (test next). Data now:
   BTC+ETH 36d full each; SOL pending. Best ETH config: thr20+revert-exit.
+
+- SOL weak (t=2.16, DD28%, exclude). PORTFOLIO BTC+ETH (36d,884ms,revert-exit thr20):
+  20% each = +448% (EUR500->2742) DD9.6%; 10% each = +135% (->1177) DD4.9%. ETH=engine,
+  BTC=diversifier (DD only 7.4->9.6 combined). CAVEAT: sequential compounding, doesn't
+  model concurrent open positions -> prudent=10% each. lag-hunt --dumptrips added.
+  Verified ETH/SOL basis sane + prices align (not a scale bug).

@@ -141,3 +141,17 @@ lags Binance more) + higher per-trade edge + higher win. Sanity-checked: +283% =
 frequency x edge x 20x compounding (not a bug).
 => BREADTH is the real euro-scaling lever. Best ETH: thr20+revert-exit (t~8, +283%, DD7%).
 SOL pending (downloading). NEXT: run SOL; consider a multi-asset portfolio (BTC+ETH+SOL).
+## SOL: weak/risky (basis sane -7bps, prices align). Best thr15 t=2.16 +78% but DD 27.8%.
+## SOL too volatile -> directional noise swamps reversion at latency. Exclude (or tiny weight).
+
+## CROSS-ASSET + PORTFOLIO (36d, 884ms real latency, revert-exit thr20, no confirm)
+| asset | trades | return | maxDD | EUR500-> |
+| BTC   |  187   |  +43%  |  4.8% |  715 |
+| ETH   |  549   | +283%  |  7.4% | 1915 |
+| BTC+ETH 20% each | 736 | +448% | 9.6% | ~2742 |
+| BTC+ETH 10% each | 736 | +135% | 4.9% | ~1177 |
+ETH is the engine; BTC adds diversification (DD rises only 7.4->9.6 combined = trades
+largely independent). CAVEAT: portfolio paper compounds trips SEQUENTIALLY, does NOT
+model concurrent open positions -> at 20% each, two simultaneous = 40%+ margin, real
+concurrent DD higher than shown. PRUDENT read = 10% each (+135%, DD 4.9%). Still
+backtest @884ms idealized fills. lag-hunt has --dumptrips for portfolio export.
