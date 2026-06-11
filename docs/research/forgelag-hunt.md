@@ -357,3 +357,39 @@ liquid but USDT key collides w/ binance; likely same thinness issue, low priorit
 binance_spot/futures, bybit_spot/bybit(fut), okx_spot/futures, kraken_spot/kraken_derivatives,
 bitget_spot/futures, hyperliquid_spot/futures, bitmex, lighter, aster_futures.
 NOT covered: coinbase, deribit. (15 exchange-feeds; we use HL exec + OKX-spot reference.)
+## THRESHOLD CLIFF MAP (full sweep thr5-25, OKX ref, revert-exit, 36d, 884ms) 2026-06-11
+EUR500-> = 500*(1+paper/100). Frontier: lower thr = more trades = more profit + higher DD.
+ETH:
+| thr | t     | paper% | DD%  | EUR500-> |
+| 25  | 8.12  | +214   | 5.9  | 1571 |
+| 23  | 9.10  | +281   | 4.9  | 1904 |  <- ETH lowest DD
+| 20  | 9.73  | +391   | 5.7  | 2455 |
+| 19  | 10.13 | +453   | 5.0  | 2765 |  <- ETH BEST BALANCE (top t, low DD)
+| 18  | 9.81  | +458   | 6.4  | 2790 |
+| 17  | 9.44  | +504   | 9.0  | 3020 |
+| 16  | 9.35  | +521   | 10.0 | 3105 |  <- ETH MAX PROFIT
+| 15  | 8.30  | +427   | 11.0 | 2635 |
+| 14  | 7.15  | +350   | 14.1 | 2250 |
+| 13  | 6.36  | +291   | 21.3 | -    |
+| 12  | 6.03  | +280   | 26.4 | -    |
+| 10  | 0.56  | +45    | 50.5 | (cliff) |
+| 8   |-10.97 | -61    | 75.7 | (NEGATIVE) |
+| 5   |-71.29 | -85    | 85.0 | (wipeout, win 14%) |
+BTC:
+| thr | t    | paper% | DD% | EUR500-> |
+| 24  | 3.95 | +33    | 3.0 | 665 |  <- BTC lowest DD
+| 20  | 4.27 | +41    | 4.1 | 705 |
+| 17  | 4.94 | +59    | 4.8 | 795 |
+| 16  | 5.19 | +67    | 5.6 | 835 |  <- BTC BEST BALANCE (top t)
+| 15  | 5.04 | +69    | 5.5 | 845 |  <- BTC MAX PROFIT
+| 12  | 2.73 | +37    | 12.8| (degrading) |
+| 8   |-9.73 | -59    | 70  | (NEGATIVE) |
+
+PER-ASSET OPTIMA (SAVED):
+- ETH: max-profit thr16 (EUR3105/+521/DD10); min-DD thr23 (DD4.9/+281); BEST thr19 (t10.13/+453/DD5.0).
+- BTC: max-profit thr15 (EUR845/+69); min-DD thr24 (DD3.0/+33); BEST thr16 (t5.19/+67/DD5.6).
+WHY: latency cliff in threshold form - small gaps (<~12bps) revert faster than 884ms exec
+-> we arrive after reversion = adverse selection (thr5 win=14%, -85%). Viable band thr15-20+;
+the 16-19 ETH / 15-17 BTC plateau is the robust signal (NOT the exact decimal = overfitting).
+NEW DEFAULTS: ETH thr19 (was 20), BTC thr16 (was 20) - both beat old thr20 on profit, t, AND
+(ETH) drawdown. CAVEAT: one 36d sample, plateau not peak, Feb-concentrated, idealized fills.

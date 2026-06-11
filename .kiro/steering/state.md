@@ -226,3 +226,11 @@ reproducible, coinflip loses on real data.
   binance/bybit/okx/kraken/bitget (spot+fut), hyperliquid, bitmex, lighter, aster. NO
   coinbase/deribit. SETTLED STACK: HL exec + OKX-spot ref + thr20(or15) revert-exit, ETH
   primary. OKX portfolio: EUR3468 aggr / 1323 prudent (user runs aggressive).
+- THRESHOLD CLIFF MAP done (thr5-25, OKX, revert-exit, 36d, 884ms). Frontier: lower thr =
+  more profit + more DD; <12bps = latency cliff (negative, thr5 = -85% win14%). PER-ASSET
+  OPTIMA: ETH max-profit thr16 (EUR3105/+521/DD10), min-DD thr23 (DD4.9), BEST thr19
+  (t10.13/+453%/DD5.0). BTC max-profit thr15 (EUR845/+69), min-DD thr24 (DD3.0), BEST thr16
+  (t5.19/+67/DD5.6). NEW DEFAULTS: ETH thr19, BTC thr16 (beat old thr20 on profit+t+DD).
+  Robust band = ETH 16-19 / BTC 15-17 (plateau, not exact decimal = overfit risk).
+  NEXT: re-run BTC+ETH portfolio at per-asset optima (ETH~17-19, BTC~16) - should beat
+  EUR3468. Then 2nd-volatile-period confirm + real HL latency. Each asset has its own thr.
