@@ -159,12 +159,17 @@ pub struct BasisConfig {
     pub sample_ns: u64,
     /// true = fade the stretch (reversion); false = momentum control.
     pub reversion: bool,
+    /// Randomize entry DIRECTION (no-fake-edge control); same trigger cadence.
+    pub shuffle: bool,
+    /// Seed for the shuffle control.
+    pub seed: u64,
 }
 
 /// Basis-reversion direction signal: fade large deviations of the HL microprice
 /// from its recent basis vs the reference price.
 pub struct BasisSignal {
     cfg: BasisConfig,
+    rng: u64,
     ring: Vec<f64>,
     pos: usize,
     sum: f64,
@@ -179,6 +184,7 @@ impl BasisSignal {
     pub fn new(cfg: BasisConfig) -> Self {
         Self {
             cfg: BasisConfig { top_n: cfg.top_n.max(1), window: cfg.window.max(1), sample_ns: cfg.sample_ns.max(1), ..cfg },
+            rng: cfg.seed | 1,
             ring: Vec::new(),
             pos: 0,
             sum: 0.0,
@@ -200,6 +206,14 @@ impl BasisSignal {
             return Some((bb + ba) / 2.0);
         }
         Some((bb * aq + ba * bq) / tot)
+    }
+    fn coin(&mut self) -> bool {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng = x;
+        (x.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33) & 1 == 1
     }
     fn push_sample(&mut self, g: f64) {
         if self.ring.len() < self.cfg.window {
@@ -245,7 +259,10 @@ impl LagSignal for BasisSignal {
             return None;
         }
         let rich = dev > 0.0;
-        let long = if self.cfg.reversion { !rich } else { rich };
+        let mut long = if self.cfg.reversion { !rich } else { rich };
+        if self.cfg.shuffle {
+            long = self.coin();
+        }
         Some(if long { Side::Bid } else { Side::Ask })
     }
 }

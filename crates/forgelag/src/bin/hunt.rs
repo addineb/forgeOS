@@ -1,0 +1,233 @@
+//! `lag-hunt` - sweep basis-reversion variants across many days at a given
+//! ORDER LATENCY. Judged on the PER-TRADE t-stat (the correct lens for a sparse
+//! minutes-hold strategy) + an EUR-account paper result + a shuffle control.
+//! Memory-efficient: one day in memory at a time; configs run in parallel
+//! within each day, then the window is dropped.
+//!
+//!   lag-hunt --root /root/chd/fresh/ticks --dates 2026-05-20,... \
+//!     --latency-ns 300000000 --depths 5 --thresholds 8,10,12 --windows 500 \
+//!     --reversions true --holds 2m,3m --cooldowns 30s [--shuffle]
+
+use std::process::ExitCode;
+
+use forge_core::Qty;
+use forge_metrics::{paper_run, PaperConfig};
+use rayon::prelude::*;
+
+use forgelag::{
+    load_window, BasisConfig, BasisSignal, FeeSchedule, FeedConfig, LagConfig, LagEngine, Managed,
+    ManagedConfig,
+};
+
+fn parse_f64s(s: &str) -> Result<Vec<f64>, String> {
+    s.split(',').map(|x| x.trim().parse().map_err(|e| format!("bad number `{x}`: {e}"))).collect()
+}
+fn parse_usizes(s: &str) -> Result<Vec<usize>, String> {
+    s.split(',').map(|x| x.trim().parse().map_err(|e| format!("bad int `{x}`: {e}"))).collect()
+}
+fn parse_bools(s: &str) -> Result<Vec<bool>, String> {
+    s.split(',').map(|x| match x.trim() { "true" | "1" => Ok(true), "false" | "0" => Ok(false), o => Err(format!("bad bool `{o}`")) }).collect()
+}
+fn parse_dur(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num, mult): (&str, u64) = if let Some(p) = s.strip_suffix("ms") { (p, 1_000_000) }
+        else if let Some(p) = s.strip_suffix("us") { (p, 1_000) }
+        else if let Some(p) = s.strip_suffix("ns") { (p, 1) }
+        else if let Some(p) = s.strip_suffix('h') { (p, 3_600_000_000_000) }
+        else if let Some(p) = s.strip_suffix('m') { (p, 60_000_000_000) }
+        else if let Some(p) = s.strip_suffix('s') { (p, 1_000_000_000) }
+        else { (s, 1) };
+    let v: f64 = num.trim().parse().map_err(|e| format!("bad duration `{s}`: {e}"))?;
+    if !v.is_finite() || v < 0.0 { return Err(format!("bad duration `{s}`")); }
+    Ok((v * mult as f64) as u64)
+}
+fn parse_durs(s: &str) -> Result<Vec<u64>, String> {
+    s.split(',').map(parse_dur).collect()
+}
+fn fmt_dur(ns: u64) -> String {
+    if ns >= 60_000_000_000 && ns.is_multiple_of(60_000_000_000) { format!("{}m", ns / 60_000_000_000) }
+    else if ns >= 1_000_000_000 && ns.is_multiple_of(1_000_000_000) { format!("{}s", ns / 1_000_000_000) }
+    else { format!("{}ms", ns / 1_000_000) }
+}
+
+#[derive(Clone, Copy)]
+struct Cell {
+    basis: BasisConfig,
+    managed: ManagedConfig,
+    depth: usize,
+    thr: f64,
+    win: usize,
+    rev: bool,
+    hold: u64,
+}
+
+#[allow(clippy::too_many_lines)]
+fn run() -> Result<(), String> {
+    let mut root = "/root/chd/fresh/ticks".to_string();
+    let mut coin = "BTC".to_string();
+    let mut symbol = "BTCUSDT".to_string();
+    let mut dates: Vec<String> = Vec::new();
+    let mut hours_arg = "all".to_string();
+    let mut latency_ns: u64 = 300_000_000;
+    let mut qty = 0.01_f64;
+    let mut shuffle = false;
+    let mut top = 16usize;
+
+    let mut depths = vec![5usize];
+    let mut thr_ax = vec![8.0, 10.0, 12.0];
+    let mut win_ax = vec![500usize];
+    let mut rev_ax = vec![true];
+    let mut hold_ax = vec![120_000_000_000u64, 180_000_000_000];
+    let mut cd_ax = vec![30_000_000_000u64];
+
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        let mut val = || args.next().ok_or_else(|| format!("missing value after {a}"));
+        match a.as_str() {
+            "--root" => root = val()?,
+            "--coin" => coin = val()?,
+            "--symbol" => symbol = val()?,
+            "--dates" => dates = val()?.split(',').map(|s| s.trim().to_string()).collect(),
+            "--hours" => hours_arg = val()?,
+            "--latency-ns" => latency_ns = val()?.parse().map_err(|e| format!("latency: {e}"))?,
+            "--qty" => qty = val()?.parse().map_err(|e| format!("qty: {e}"))?,
+            "--depths" => depths = parse_usizes(&val()?)?,
+            "--thresholds" => thr_ax = parse_f64s(&val()?)?,
+            "--windows" => win_ax = parse_usizes(&val()?)?,
+            "--reversions" => rev_ax = parse_bools(&val()?)?,
+            "--holds" => hold_ax = parse_durs(&val()?)?,
+            "--cooldowns" => cd_ax = parse_durs(&val()?)?,
+            "--shuffle" => shuffle = true,
+            "--top" => top = val()?.parse().map_err(|e| format!("top: {e}"))?,
+            other => return Err(format!("unknown arg {other}")),
+        }
+    }
+    if dates.is_empty() {
+        return Err("missing --dates (comma list)".into());
+    }
+    let hours: Vec<String> = if hours_arg == "all" {
+        (0..24).map(|h| format!("{h:02}")).collect()
+    } else {
+        hours_arg.split(',').map(|s| s.trim().to_string()).collect()
+    };
+    let q = Qty::from_f64(qty).map_err(|e| format!("qty: {e}"))?;
+
+    let mut cells: Vec<Cell> = Vec::new();
+    for &d in &depths {
+        for &th in &thr_ax {
+            for &w in &win_ax {
+                for &rv in &rev_ax {
+                    for &h in &hold_ax {
+                        for &cd in &cd_ax {
+                            cells.push(Cell {
+                                basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1 },
+                                managed: ManagedConfig { qty: q, hold_ns: h, cooldown_ns: cd, tp_bps: 0.0, sl_bps: 0.0, fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000) },
+                                depth: d, thr: th, win: w, rev: rv, hold: h,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!("hunt: {} configs x {} days  latency={}ms  shuffle={}", cells.len(), dates.len(), latency_ns / 1_000_000, shuffle);
+    let mut agg: Vec<Vec<(u64, f64)>> = vec![Vec::new(); cells.len()];
+    let mut days_used = 0usize;
+    for d in &dates {
+        let cfg = FeedConfig {
+            root: root.clone().into(),
+            coin: coin.clone(),
+            symbol: symbol.clone(),
+            date: d.clone(),
+            hours: hours.clone(),
+            exec_latency_ns: 0,
+            ref_latency_ns: 0,
+        };
+        let evs = match load_window(&cfg) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("  skip {d}: {e}");
+                continue;
+            }
+        };
+        if evs.is_empty() {
+            eprintln!("  skip {d}: empty");
+            continue;
+        }
+        let per: Vec<Vec<(u64, f64)>> = cells
+            .par_iter()
+            .map(|c| {
+                let sig = BasisSignal::new(c.basis);
+                let strat = Managed::new(sig, c.managed);
+                let mut eng = LagEngine::new(strat, LagConfig { order_latency_ns: latency_ns, exec_book_levels: 20, fees: FeeSchedule::legacy() });
+                eng.run(evs.iter()).expect("monotonic stream");
+                eng.finish().trip_returns
+            })
+            .collect();
+        for (i, p) in per.iter().enumerate() {
+            agg[i].extend(p);
+        }
+        days_used += 1;
+        eprintln!("  {d}: {} events", evs.len());
+    }
+
+    // EUR500 / 20x / 20% size / 5% daily-loss-limit (the standing policy = the default).
+    let pcfg = PaperConfig::default();
+
+    struct Row {
+        n: usize,
+        mean: f64,
+        sd: f64,
+        t: f64,
+        win: f64,
+        net: f64,
+        paper: f64,
+        knobs: String,
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    for (i, c) in cells.iter().enumerate() {
+        let rets: Vec<f64> = agg[i].iter().map(|x| x.1).collect();
+        let n = rets.len();
+        if n == 0 {
+            continue;
+        }
+        let mean = rets.iter().sum::<f64>() / n as f64;
+        let sd = if n >= 2 {
+            (rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0)).sqrt()
+        } else {
+            0.0
+        };
+        let t = if sd > 0.0 { mean / sd * (n as f64).sqrt() } else { 0.0 };
+        let win = rets.iter().filter(|r| **r > 0.0).count() as f64 / n as f64 * 100.0;
+        let net = rets.iter().sum::<f64>();
+        let mut trips = agg[i].clone();
+        trips.sort_by_key(|x| x.0);
+        let paper = paper_run(&trips, &pcfg).return_pct;
+        rows.push(Row {
+            n, mean, sd, t, win, net, paper,
+            knobs: format!("d={} thr={}bps win={} rev={} hold={}", c.depth, c.thr, c.win, c.rev, fmt_dur(c.hold)),
+        });
+    }
+    rows.sort_by(|a, b| b.t.abs().partial_cmp(&a.t.abs()).unwrap_or(std::cmp::Ordering::Equal));
+
+    println!("days used        {days_used}/{}", dates.len());
+    println!("order latency    {}ms", latency_ns / 1_000_000);
+    println!("mode             {}", if shuffle { "SHUFFLE control (direction randomized)" } else { "REAL basis-reversion" });
+    println!("{:>6} {:>9} {:>9} {:>7} {:>6} {:>10} {:>9}  knobs", "n", "mean%", "std%", "t-stat", "win%", "net%sum", "paper%");
+    for r in rows.iter().take(top) {
+        println!("{:>6} {:>9.4} {:>9.4} {:>7.2} {:>5.1}% {:>10.3} {:>9.2}  {}", r.n, r.mean, r.sd, r.t, r.win, r.net, r.paper, r.knobs);
+    }
+    println!("(t-stat is the significance test for this sparse strategy; |t|>~2 ~ p<0.05)");
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{e}");
+            ExitCode::FAILURE
+        }
+    }
+}

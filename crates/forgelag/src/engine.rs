@@ -102,8 +102,8 @@ pub struct LagReport {
     pub net_pnl: f64,
     /// Final signed position (raw qty).
     pub final_position: i64,
-    /// Per-round-trip return in PERCENT of entry notional (the honest sample).
-    pub trip_returns_pct: Vec<f64>,
+    /// Per-round-trip (close_ts_ns, return_pct of entry notional) - the honest sample.
+    pub trip_returns: Vec<(u64, f64)>,
 }
 
 /// The lag replay engine. One engine = one deterministic single-threaded sim.
@@ -247,10 +247,11 @@ impl<S: LagStrategy> LagEngine<S> {
         self.drain_pending(u64::MAX);
         let tp = self.acct.trip_pnls();
         let tn = self.acct.trip_notionals();
-        let mut trip_returns_pct = Vec::with_capacity(tp.len());
-        for (pnl, notl) in tp.iter().zip(tn.iter()) {
-            if *notl > 0 {
-                trip_returns_pct.push(money_to_f64(*pnl) / money_to_f64(*notl) * 100.0);
+        let tc = self.acct.trip_close_ts();
+        let mut trip_returns = Vec::with_capacity(tp.len());
+        for i in 0..tp.len() {
+            if tn[i] > 0 {
+                trip_returns.push((tc[i], money_to_f64(tp[i]) / money_to_f64(tn[i]) * 100.0));
             }
         }
         LagReport {
@@ -261,7 +262,7 @@ impl<S: LagStrategy> LagEngine<S> {
             round_trips: self.acct.round_trips(),
             net_pnl: money_to_f64(self.acct.net_pnl()),
             final_position: self.acct.net_qty(),
-            trip_returns_pct,
+            trip_returns,
         }
     }
 }
