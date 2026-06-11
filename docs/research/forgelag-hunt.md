@@ -130,3 +130,14 @@ Next: magnitude SIZING (#6, weight fattest gaps -> boost euro), ref-leg swap (#5
 ## the big-dislocation bucket trades are similar size so weighting barely redistributes,
 ## and bigger orders eat a touch more slippage. REJECTED. Euro is FREQUENCY-capped, not
 ## sizing-capped. Real scaling levers = breadth (multi-asset) + ref-leg (#5), not sizing.
+## MULTI-ASSET (#breadth): ETH is MUCH STRONGER than BTC (2026-06-11, @884ms real latency, 36d)
+Same config (spot ref, revert-to-mean exit), HL-ETH-perp vs Binance-ETH-spot:
+- thr20, no confirm: t=7.95, n=549 (~15/day), win 62%, RR 1.77, paper +283% (EUR500->~1915), DD 7.4%.
+- thr15: t=6.97, n=1191 (~33/day), win 54%, +353% (~2265), DD 12.8%.
+- thr30: t=5.12, win 66%, +122%, DD 10.2%.
+- + book confirm: slightly LOWERS return (thr20 +205%) - same quality/euro tradeoff as BTC.
+vs BTC thr20 (t=4.81, +43%): ETH ~6-8x the return - more dislocations (thinner on HL,
+lags Binance more) + higher per-trade edge + higher win. Sanity-checked: +283% =
+frequency x edge x 20x compounding (not a bug).
+=> BREADTH is the real euro-scaling lever. Best ETH: thr20+revert-exit (t~8, +283%, DD7%).
+SOL pending (downloading). NEXT: run SOL; consider a multi-asset portfolio (BTC+ETH+SOL).

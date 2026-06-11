@@ -129,3 +129,9 @@ reproducible, coinflip loses on real data.
   imbalance indicator validated AS A CONFIRM (method-1). Quality win not return boost.
   BEST CONFIG: big-dislocation(>=20bps)+revert-exit+book-confirm. NEXT: magnitude
   sizing (#6) to lift euro, ref-leg swap (#5).
+
+- MULTI-ASSET: ETH FAR STRONGER than BTC for the basis edge. @884ms real latency,
+  36d, revert-exit no-confirm: thr20 t=7.95 +283% (EUR500->1915) win62% DD7.4% ~15/day;
+  thr15 +353% (~2265) DD12.8%. vs BTC thr20 +43%. ETH thinner on HL -> bigger gaps +
+  more trades. BREADTH = the euro-scaling lever. SOL downloading (test next). Data now:
+  BTC+ETH 36d full each; SOL pending. Best ETH config: thr20+revert-exit.
