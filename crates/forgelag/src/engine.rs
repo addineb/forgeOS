@@ -1,22 +1,21 @@
 //! The basis/lag sim: replay a merged multi-venue [`LagEvent`] stream on a
 //! virtual clock, maintain the EXECUTION book (HL) and the REFERENCE price
-//! (Binance), apply an outbound ORDER LATENCY (orders submitted at T reach the
-//! matcher at `T + order_latency` and are priced against the exec book AS IT
-//! STANDS THEN = adverse selection), take liquidity on the exec book (real
-//! spread + slippage), and record per-round-trip P&L. Reuses the proven
-//! `forge-sim` fill/account math and the `forge-book` order book.
+//! (Binance), apply an outbound ORDER LATENCY, and execute either TAKER market
+//! orders (cross the spread, walk the book = slippage) or MAKER limit orders
+//! (rest in the book, fill only when HL's own tape trades through them after
+//! clearing the queue ahead = adverse selection). Records per-round-trip P&L.
+//! Reuses the proven `forge-sim` fill/account math and `forge-book` order book.
 
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
 use forge_book::OrderBook;
-use forge_core::{Event, EventKind, Qty, Side, UnixNanos};
-use forge_sim::{money_to_f64, price_market, Account, FeeSchedule};
+use forge_core::{Event, EventKind, Price, Qty, Side, UnixNanos};
+use forge_sim::{maker_fill, money_to_f64, price_market, price_to_limit, Account, FeeSchedule};
 
 use crate::feed::{LagEvent, LagKind, Role};
 
-/// Read-only context handed to a strategy on each event. Exposes only data at
-/// or before `now` (no-lookahead by construction).
+/// Read-only context handed to a strategy on each event (no-lookahead).
 pub struct LagCtx<'a> {
     /// Virtual clock (ns) = `event.local_ts`.
     pub now: u64,
@@ -28,19 +27,43 @@ pub struct LagCtx<'a> {
     pub position_qty: i64,
 }
 
-/// A market (taker) order on the execution venue. `side` is OUR side
-/// (`Bid` = buy, `Ask` = sell).
+/// How an order executes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LagOrderKind {
+    /// Cross the spread now (taker).
+    Market,
+    /// Rest at `price`; fill only when the HL tape trades through it (maker).
+    Limit,
+}
+
+/// An order on the execution venue. `side` is OUR side (`Bid` = buy).
 #[derive(Clone, Copy, Debug)]
 pub struct LagOrder {
     /// Buy (bid) or sell (ask).
     pub side: Side,
+    /// Execution style.
+    pub kind: LagOrderKind,
+    /// Limit price (unused for `Market`).
+    pub price: Price,
     /// Quantity.
     pub qty: Qty,
+}
+impl LagOrder {
+    /// A market (taker) order.
+    #[must_use]
+    pub fn market(side: Side, qty: Qty) -> Self {
+        Self { side, kind: LagOrderKind::Market, price: Price::ZERO, qty }
+    }
+    /// A limit (maker) order resting at `price`.
+    #[must_use]
+    pub fn limit(side: Side, price: Price, qty: Qty) -> Self {
+        Self { side, kind: LagOrderKind::Limit, price, qty }
+    }
 }
 
 /// A basis/lag strategy: pure reaction to `(exec_book, ref_px, position, now)`.
 pub trait LagStrategy {
-    /// Called once per event after it is applied; push taker orders into `out`.
+    /// Called once per event after it is applied; push orders into `out`.
     fn on_event(&mut self, ctx: &LagCtx, out: &mut Vec<LagOrder>);
 }
 
@@ -54,7 +77,6 @@ pub struct LagConfig {
     /// Fee schedule applied to fills.
     pub fees: FeeSchedule,
 }
-
 impl Default for LagConfig {
     fn default() -> Self {
         Self { order_latency_ns: 0, exec_book_levels: 20, fees: FeeSchedule::legacy() }
@@ -65,8 +87,7 @@ impl Default for LagConfig {
 struct Pending {
     arrival: u64,
     seq: u64,
-    side_u8: u8, // 1 = Bid, 2 = Ask
-    qty_raw: i64,
+    order: LagOrder,
 }
 impl PartialEq for Pending {
     fn eq(&self, o: &Self) -> bool {
@@ -85,6 +106,14 @@ impl PartialOrd for Pending {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Resting {
+    side: Side,
+    price: i64,
+    qty_remaining: i64,
+    queue_ahead: i64,
+}
+
 /// Summary of a completed lag replay.
 #[derive(Clone, Debug)]
 pub struct LagReport {
@@ -92,8 +121,12 @@ pub struct LagReport {
     pub events: u64,
     /// Orders the strategy submitted.
     pub orders_submitted: u64,
-    /// Orders filled (taker).
+    /// Orders filled (taker + maker).
     pub orders_filled: u64,
+    /// Of the fills, how many were maker (queue) fills.
+    pub maker_fills: u64,
+    /// Limit orders that rested passively.
+    pub orders_rested: u64,
     /// Orders that found no liquidity.
     pub orders_rejected: u64,
     /// Completed round trips.
@@ -102,7 +135,7 @@ pub struct LagReport {
     pub net_pnl: f64,
     /// Final signed position (raw qty).
     pub final_position: i64,
-    /// Per-round-trip (close_ts_ns, return_pct of entry notional) - the honest sample.
+    /// Per-round-trip (close_ts_ns, return_pct of entry notional).
     pub trip_returns: Vec<(u64, f64)>,
 }
 
@@ -117,10 +150,13 @@ pub struct LagEngine<S: LagStrategy> {
     now: u64,
     started: bool,
     pending: BinaryHeap<Reverse<Pending>>,
+    resting: Vec<Resting>,
     seq: u64,
     buf: Vec<LagOrder>,
     orders_submitted: u64,
     orders_filled: u64,
+    maker_fills: u64,
+    orders_rested: u64,
     orders_rejected: u64,
     events: u64,
 }
@@ -138,24 +174,50 @@ impl<S: LagStrategy> LagEngine<S> {
             now: 0,
             started: false,
             pending: BinaryHeap::new(),
+            resting: Vec::new(),
             seq: 0,
             buf: Vec::new(),
             orders_submitted: 0,
             orders_filled: 0,
+            maker_fills: 0,
+            orders_rested: 0,
             orders_rejected: 0,
             events: 0,
         }
     }
 
-    fn execute(&mut self, p: Pending) {
-        let side = if p.side_u8 == 1 { Side::Bid } else { Side::Ask };
-        let qty = Qty::from_raw(p.qty_raw);
-        match price_market(&self.book, side, qty) {
-            Some(fill) => {
-                self.acct.apply_taker(side, &fill, &self.fees, self.now);
-                self.orders_filled += 1;
+    fn fill_taker(&mut self, side: Side, fill: &forge_sim::Fill) {
+        self.acct.apply_taker(side, fill, &self.fees, self.now);
+        self.orders_filled += 1;
+    }
+
+    fn place_limit(&mut self, order: LagOrder) {
+        let limit = order.price.raw();
+        let best_ask = self.book.best_ask().map(|(p, _)| p.raw());
+        let best_bid = self.book.best_bid().map(|(p, _)| p.raw());
+        let marketable = match order.side {
+            Side::Bid => best_ask.is_some_and(|a| limit >= a),
+            Side::Ask => best_bid.is_some_and(|b| limit <= b),
+        };
+        if marketable {
+            match price_to_limit(&self.book, order.side, order.qty, Some(limit)) {
+                Some(fill) => self.fill_taker(order.side, &fill),
+                None => self.orders_rejected += 1,
             }
-            None => self.orders_rejected += 1,
+            return;
+        }
+        let queue_ahead = self.book.qty_at(order.side, order.price).map_or(0, |q| q.raw());
+        self.resting.push(Resting { side: order.side, price: limit, qty_remaining: order.qty.raw(), queue_ahead });
+        self.orders_rested += 1;
+    }
+
+    fn execute(&mut self, order: LagOrder) {
+        match order.kind {
+            LagOrderKind::Market => match price_market(&self.book, order.side, order.qty) {
+                Some(fill) => self.fill_taker(order.side, &fill),
+                None => self.orders_rejected += 1,
+            },
+            LagOrderKind::Limit => self.place_limit(order),
         }
     }
 
@@ -163,9 +225,51 @@ impl<S: LagStrategy> LagEngine<S> {
         while let Some(top) = self.pending.peek() {
             if top.0.arrival <= now {
                 let Reverse(p) = self.pending.pop().expect("peek implies pop");
-                self.execute(p);
+                self.execute(p.order);
             } else {
                 break;
+            }
+        }
+    }
+
+    /// An HL trade prints: fill resting makers the tape ran through (queue first).
+    fn process_trade(&mut self, aggr: Side, tprice: i64, tqty: i64) {
+        if tqty <= 0 {
+            return;
+        }
+        let mut i = 0;
+        while i < self.resting.len() {
+            let mut o = self.resting[i];
+            let crosses = match (o.side, aggr) {
+                (Side::Bid, Side::Ask) => tprice <= o.price,
+                (Side::Ask, Side::Bid) => tprice >= o.price,
+                _ => false,
+            };
+            if !crosses {
+                i += 1;
+                continue;
+            }
+            if o.queue_ahead >= tqty {
+                o.queue_ahead -= tqty;
+                self.resting[i] = o;
+                i += 1;
+                continue;
+            }
+            let avail = tqty - o.queue_ahead;
+            o.queue_ahead = 0;
+            let fill = avail.min(o.qty_remaining);
+            if fill > 0 {
+                let f = maker_fill(Price::from_raw(o.price), Qty::from_raw(fill));
+                self.acct.apply_maker(o.side, &f, &self.fees, self.now);
+                self.orders_filled += 1;
+                self.maker_fills += 1;
+                o.qty_remaining -= fill;
+            }
+            if o.qty_remaining == 0 {
+                self.resting.remove(i);
+            } else {
+                self.resting[i] = o;
+                i += 1;
             }
         }
     }
@@ -198,10 +302,15 @@ impl<S: LagStrategy> LagEngine<S> {
                 .map_err(|e| format!("{e}"))?;
                 self.book.apply(&e).map_err(|e| format!("{e}"))?;
             }
+            (Role::Exec, LagKind::Trade) => {
+                if let Some(aggr) = ev.side {
+                    self.process_trade(aggr, ev.price.raw(), ev.qty.raw());
+                }
+            }
             (Role::Reference, LagKind::Trade) => {
                 self.ref_px = ev.price.to_f64();
             }
-            _ => {}
+            (Role::Reference, LagKind::BookDelta) => {}
         }
 
         self.buf.clear();
@@ -216,12 +325,9 @@ impl<S: LagStrategy> LagEngine<S> {
         }
 
         for idx in 0..self.buf.len() {
-            let o = self.buf[idx];
-            let arrival = t
-                .checked_add(self.order_latency_ns)
-                .ok_or("order arrival overflow")?;
-            let side_u8 = if o.side == Side::Bid { 1 } else { 2 };
-            self.pending.push(Reverse(Pending { arrival, seq: self.seq, side_u8, qty_raw: o.qty.raw() }));
+            let order = self.buf[idx];
+            let arrival = t.checked_add(self.order_latency_ns).ok_or("order arrival overflow")?;
+            self.pending.push(Reverse(Pending { arrival, seq: self.seq, order }));
             self.seq += 1;
             self.orders_submitted += 1;
         }
@@ -258,6 +364,8 @@ impl<S: LagStrategy> LagEngine<S> {
             events: self.events,
             orders_submitted: self.orders_submitted,
             orders_filled: self.orders_filled,
+            maker_fills: self.maker_fills,
+            orders_rested: self.orders_rested,
             orders_rejected: self.orders_rejected,
             round_trips: self.acct.round_trips(),
             net_pnl: money_to_f64(self.acct.net_pnl()),

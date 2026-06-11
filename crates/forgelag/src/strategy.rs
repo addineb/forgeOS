@@ -30,6 +30,8 @@ pub struct ManagedConfig {
     pub sl_bps: f64,
     /// Ns to wait for a fill before assuming none (MUST exceed order latency).
     pub fill_timeout_ns: u64,
+    /// Enter with a LIMIT (maker) at touch instead of MARKET (taker). Exits stay market.
+    pub use_limit: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -54,7 +56,7 @@ impl<S: LagSignal> Managed<S> {
 
     fn flatten(pos: i64) -> LagOrder {
         let side = if pos > 0 { Side::Ask } else { Side::Bid };
-        LagOrder { side, qty: Qty::from_raw(pos.unsigned_abs() as i64) }
+        LagOrder::market(side, Qty::from_raw(pos.unsigned_abs() as i64))
     }
 }
 
@@ -106,7 +108,19 @@ impl<S: LagSignal> LagStrategy for Managed<S> {
                 } else if now >= ready_at {
                     if let Some(m) = mid {
                         if let Some(side) = self.sig.entry(ctx) {
-                            out.push(LagOrder { side, qty: self.cfg.qty });
+                            let intent = if self.cfg.use_limit {
+                                let px = match side {
+                                    Side::Bid => ctx.exec_book.best_bid().map(|(p, _)| p),
+                                    Side::Ask => ctx.exec_book.best_ask().map(|(p, _)| p),
+                                };
+                                match px {
+                                    Some(p) => LagOrder::limit(side, p, self.cfg.qty),
+                                    None => return,
+                                }
+                            } else {
+                                LagOrder::market(side, self.cfg.qty)
+                            };
+                            out.push(intent);
                             self.pending = Some((pos, now + self.cfg.fill_timeout_ns));
                             self.phase = Phase::Open {
                                 entry_ts: now,

@@ -152,7 +152,7 @@ fn push_hlbook(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), Str
     Ok(())
 }
 
-fn push_trades(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), String> {
+fn push_trades(path: &Path, lat: u64, role: Role, out: &mut Vec<LagEvent>) -> Result<(), String> {
     for b in read_batches(path)? {
         let ts = col_i64(&b, "ts")?;
         let price = col_f64(&b, "price")?;
@@ -163,7 +163,7 @@ fn push_trades(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), Str
             // buyer-maker => taker is the seller => aggressor Ask.
             let s = if ibm.value(i) { Side::Ask } else { Side::Bid };
             out.push(LagEvent {
-                role: Role::Reference,
+                role,
                 kind: LagKind::Trade,
                 exch_ts: exch,
                 local_ts: exch.saturating_add(lat),
@@ -199,7 +199,12 @@ pub fn load_window(cfg: &FeedConfig) -> Result<Vec<LagEvent>, String> {
             .join(&cfg.date)
             .join(format!("{hh}.parquet"));
         if rf.exists() {
-            push_trades(&rf, cfg.ref_latency_ns, &mut evs)?;
+            push_trades(&rf, cfg.ref_latency_ns, Role::Reference, &mut evs)?;
+        }
+        // EXEC venue (HL) trades -> needed to fill resting maker orders (queue model).
+        let ex_tr = cfg.root.join(&cfg.coin).join("trade").join(&cfg.date).join(format!("{hh}.parquet"));
+        if ex_tr.exists() {
+            push_trades(&ex_tr, cfg.exec_latency_ns, Role::Exec, &mut evs)?;
         }
     }
     evs.sort_by(|a, b| {

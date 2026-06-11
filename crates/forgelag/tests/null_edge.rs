@@ -73,6 +73,7 @@ fn coinflip_loses_with_spread_and_fees() {
         tp_bps: 0.0,
         sl_bps: 0.0,
         fill_timeout_ns: 200_000_000,
+        use_limit: false,
     };
     let strat = Managed::new(CoinSignal::new(99), cfg);
     let mut eng = LagEngine::new(

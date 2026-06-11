@@ -59,6 +59,7 @@ struct Cell {
     win: usize,
     rev: bool,
     hold: u64,
+    lim: bool,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -79,6 +80,7 @@ fn run() -> Result<(), String> {
     let mut rev_ax = vec![true];
     let mut hold_ax = vec![120_000_000_000u64, 180_000_000_000];
     let mut cd_ax = vec![30_000_000_000u64];
+    let mut lim_ax = vec![false];
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -97,6 +99,7 @@ fn run() -> Result<(), String> {
             "--reversions" => rev_ax = parse_bools(&val()?)?,
             "--holds" => hold_ax = parse_durs(&val()?)?,
             "--cooldowns" => cd_ax = parse_durs(&val()?)?,
+            "--limits" => lim_ax = parse_bools(&val()?)?,
             "--shuffle" => shuffle = true,
             "--top" => top = val()?.parse().map_err(|e| format!("top: {e}"))?,
             other => return Err(format!("unknown arg {other}")),
@@ -119,11 +122,13 @@ fn run() -> Result<(), String> {
                 for &rv in &rev_ax {
                     for &h in &hold_ax {
                         for &cd in &cd_ax {
-                            cells.push(Cell {
-                                basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1 },
-                                managed: ManagedConfig { qty: q, hold_ns: h, cooldown_ns: cd, tp_bps: 0.0, sl_bps: 0.0, fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000) },
-                                depth: d, thr: th, win: w, rev: rv, hold: h,
-                            });
+                            for &lim in &lim_ax {
+                                cells.push(Cell {
+                                    basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1 },
+                                    managed: ManagedConfig { qty: q, hold_ns: h, cooldown_ns: cd, tp_bps: 0.0, sl_bps: 0.0, fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000), use_limit: lim },
+                                    depth: d, thr: th, win: w, rev: rv, hold: h, lim,
+                                });
+                            }
                         }
                     }
                 }
@@ -180,9 +185,11 @@ fn run() -> Result<(), String> {
         mean: f64,
         t: f64,
         win: f64,
+        avg_w: f64,
+        avg_l: f64,
+        rr: f64,
         paper: f64,
         maxdd: f64,
-        ruined: bool,
         knobs: String,
     }
     let mut rows: Vec<Row> = Vec::new();
@@ -200,12 +207,17 @@ fn run() -> Result<(), String> {
         };
         let t = if sd > 0.0 { mean / sd * (n as f64).sqrt() } else { 0.0 };
         let win = rets.iter().filter(|r| **r > 0.0).count() as f64 / n as f64 * 100.0;
+        let wv: Vec<f64> = rets.iter().filter(|r| **r > 0.0).copied().collect();
+        let lv: Vec<f64> = rets.iter().filter(|r| **r < 0.0).copied().collect();
+        let avg_w = if wv.is_empty() { 0.0 } else { wv.iter().sum::<f64>() / wv.len() as f64 };
+        let avg_l = if lv.is_empty() { 0.0 } else { lv.iter().sum::<f64>() / lv.len() as f64 };
+        let rr = if avg_l < 0.0 { avg_w / -avg_l } else { 0.0 };
         let mut trips = agg[i].clone();
         trips.sort_by_key(|x| x.0);
         let pr = paper_run(&trips, &pcfg);
         rows.push(Row {
-            n, mean, t, win, paper: pr.return_pct, maxdd: pr.max_drawdown_pct, ruined: pr.ruined,
-            knobs: format!("d={} thr={}bps win={} rev={} hold={}", c.depth, c.thr, c.win, c.rev, fmt_dur(c.hold)),
+            n, mean, t, win, avg_w, avg_l, rr, paper: pr.return_pct, maxdd: pr.max_drawdown_pct,
+            knobs: format!("d={} thr={}bps win={} rev={} hold={} lim={}", c.depth, c.thr, c.win, c.rev, fmt_dur(c.hold), c.lim),
         });
     }
     rows.sort_by(|a, b| b.t.abs().partial_cmp(&a.t.abs()).unwrap_or(std::cmp::Ordering::Equal));
@@ -213,9 +225,9 @@ fn run() -> Result<(), String> {
     println!("days used        {days_used}/{}", dates.len());
     println!("order latency    {}ms", latency_ns / 1_000_000);
     println!("mode             {}", if shuffle { "SHUFFLE control (direction randomized)" } else { "REAL basis-reversion" });
-    println!("{:>6} {:>9} {:>7} {:>6} {:>9} {:>8} {:>5}  knobs", "n", "mean%", "t-stat", "win%", "paper%", "maxDD%", "ruin");
+    println!("{:>6} {:>8} {:>6} {:>6} {:>8} {:>8} {:>5} {:>8} {:>7}  knobs", "n", "mean%", "t-stat", "win%", "avgW%", "avgL%", "RR", "paper%", "maxDD%");
     for r in rows.iter().take(top) {
-        println!("{:>6} {:>9.4} {:>7.2} {:>5.1}% {:>9.1} {:>8.1} {:>5}  {}", r.n, r.mean, r.t, r.win, r.paper, r.maxdd, if r.ruined {"YES"} else {"no"}, r.knobs);
+        println!("{:>6} {:>8.4} {:>6.2} {:>5.1}% {:>8.4} {:>8.4} {:>5.2} {:>8.1} {:>7.1}  {}", r.n, r.mean, r.t, r.win, r.avg_w, r.avg_l, r.rr, r.paper, r.maxdd, r.knobs);
     }
     println!("(t-stat is the significance test for this sparse strategy; |t|>~2 ~ p<0.05)");
     Ok(())
