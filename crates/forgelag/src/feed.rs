@@ -22,6 +22,9 @@ pub enum Role {
     Exec,
     /// A reference / fair-value venue (Binance, OKX, ...).
     Reference,
+    /// A cross-asset LEAD venue (e.g. BTC predicting an alt) - NOT traded and NOT part
+    /// of fair value; only its recent return conditions entries.
+    Lead,
 }
 
 impl Role {
@@ -30,6 +33,7 @@ impl Role {
         match self {
             Role::Exec => 0,
             Role::Reference => 1,
+            Role::Lead => 2,
         }
     }
 }
@@ -77,6 +81,8 @@ pub struct FeedConfig {
     pub coin: String,
     /// Reference symbol key (trade dir), e.g. `BTCUSDT`.
     pub ref_symbols: Vec<String>,
+    /// Cross-asset lead symbol keys (trade dir), e.g. `BTCUSDT`; empty = disabled.
+    pub lead_symbols: Vec<String>,
     /// Date partition.
     pub date: String,
     /// Hours to load (`["00",...]`).
@@ -228,6 +234,12 @@ pub fn load_window(cfg: &FeedConfig) -> Result<Vec<LagEvent>, String> {
             let rf = cfg.root.join(sym).join("trade").join(&cfg.date).join(format!("{hh}.parquet"));
             if rf.exists() {
                 push_trades(&rf, cfg.ref_latency_ns, Role::Reference, i as u8, &mut evs)?;
+            }
+        }
+        for sym in &cfg.lead_symbols {
+            let lf = cfg.root.join(sym).join("trade").join(&cfg.date).join(format!("{hh}.parquet"));
+            if lf.exists() {
+                push_trades(&lf, cfg.ref_latency_ns, Role::Lead, 0, &mut evs)?;
             }
         }
         // EXEC venue (HL) trades -> needed to fill resting maker orders (queue model).

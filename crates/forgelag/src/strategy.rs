@@ -222,6 +222,14 @@ pub struct BasisConfig {
     /// Require funding sign to support the reversion (long needs negative funding,
     /// short needs positive) = the crowded side being unwound.
     pub fund_align: bool,
+    /// Cross-asset LEAD filter: skip the reversion when the lead asset (BTC) just
+    /// moved the SAME direction as the dislocation (the gap is likely a real
+    /// lead-follow, not idiosyncratic noise).
+    pub xlead: bool,
+    /// Min |lead return| (bps) over the lookback to count as a real lead move.
+    pub xlead_bps: f64,
+    /// Lead-return lookback in samples.
+    pub xlead_lookback: usize,
 }
 
 /// Basis-reversion direction signal: fade large deviations of the HL microprice
@@ -240,6 +248,7 @@ pub struct BasisSignal {
     cur_dev: f64,
     dev_hist: Vec<f64>,
     have_dev: bool,
+    lead_hist: Vec<f64>,
 }
 impl BasisSignal {
     /// New basis signal.
@@ -259,6 +268,7 @@ impl BasisSignal {
             cur_dev: 0.0,
             dev_hist: Vec::new(),
             have_dev: false,
+            lead_hist: Vec::new(),
         }
     }
     fn micro(&self, ctx: &LagCtx) -> Option<f64> {
@@ -328,6 +338,7 @@ impl LagSignal for BasisSignal {
                 self.cur_dev = self.cur_gap - base;
                 self.have_dev = self.ring.len() >= 20;
                 self.dev_hist.push(self.cur_dev);
+                self.lead_hist.push(ctx.lead_px);
                 self.push_sample(self.cur_gap);
                 while self.next_sample <= ctx.now {
                     self.next_sample += self.cfg.sample_ns;
@@ -363,6 +374,19 @@ impl LagSignal for BasisSignal {
             let agree = if long { imb >= self.cfg.confirm_imb } else { imb <= -self.cfg.confirm_imb };
             if !agree {
                 return None;
+            }
+        }
+        if self.cfg.xlead {
+            let n = self.lead_hist.len();
+            if n > self.cfg.xlead_lookback {
+                let p_now = self.lead_hist[n - 1];
+                let p_old = self.lead_hist[n - 1 - self.cfg.xlead_lookback];
+                if p_old > 0.0 && p_now > 0.0 {
+                    let lead_ret = (p_now - p_old) / p_old * 10_000.0;
+                    if lead_ret.abs() >= self.cfg.xlead_bps && lead_ret.signum() == dev.signum() {
+                        return None;
+                    }
+                }
             }
         }
         if self.cfg.fund_gate && ctx.funding.abs() < self.cfg.fund_min {

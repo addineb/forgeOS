@@ -17,7 +17,7 @@ SSRN lead-lag microstructure, ml4trading/OneKey funding arb, Hyperliquid docs.
 2. FUNDING-CONDITIONING [TESTED 2026-06-11: REJECTED for BTC/ETH - quality-for-frequency trade, cuts ~80% of trades, t/return collapse; edge is orthogonal to hourly funding. See [[forgelag-hunt]]]. Extreme funding -> predictable mean-reversion (ml4trading,
    OneKey). Our basis IS funding-driven. ADD: gate/boost entries on funding extremes.
    HL funding settles hourly (easy pull).
-3. CROSS-ASSET LEAD. SSRN: one asset's trades+imbalance predict another's midpoint;
+3. CROSS-ASSET LEAD [TESTED 2026-06-11: REJECTED - filtering ETH reversion on BTC lead lowers t + raises DD; gaps revert regardless of BTC. See [[forgelag-hunt]]]. SSRN: one asset's trades+imbalance predict another's midpoint;
    BTC leads alts. ADD: condition ETH/alt basis on BTC move.
 4. VALIDATION: atlas confirms microprice + book imbalance are THE top short-horizon
    features = exactly what forgelag already uses. Core is well-founded.

@@ -191,3 +191,14 @@ reproducible, coinflip loses on real data.
   Remaining lag ideas: agg-ref ON HYPE (thin-ref), #3 cross-asset lead (needs engine
   change), confirm OKX on a 2nd volatile period. Best config: thr20+revert-exit+OKX ref,
   ETH primary (Feb-concentrated edge).
+- CROSS-ASSET LEAD (#3) = TESTED + REJECTED (2026-06-11). Added non-traded LEAD channel
+  (feed Role::Lead, engine lead_px, BasisConfig xlead/xlead_bps/xlead_lookback; hunt
+  --leadsym/--xlead/--xleadbps/--xleadlb). clippy+null-edge green. Filter skips ETH
+  reversion when BTC moved same dir as the gap. 36d/thr20/OKX-ref/884ms: every variant
+  WORSE (t 9.73->~8, +391->291-335%, DD 5.7->7.7-10.3). Gaps revert regardless of BTC;
+  edge is HL-vs-its-own-spot. Lead channel kept as infra, unused.
+  *** LAG-VENUE RESEARCH COMPLETE: #1 agg, #2 funding, #3 cross-asset ALL REJECTED;
+  #5 bake-off DONE. ONE win = OKX reference swap (free, strict upgrade). All conditioning
+  failed - clean reversion resists extra knobs. ***
+  NEXT (user req): re-validate the variance settings (revert-to-mean exit, book-confirm,
+  fixed-hold vs revert) on OKX data (they were validated on Binance; OKX is now default).

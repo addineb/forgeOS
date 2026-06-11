@@ -41,6 +41,7 @@ fn run() -> Result<(), String> {
         root,
         coin,
         ref_symbols: vec![symbol],
+        lead_symbols: Vec::new(),
         date: date.clone(),
         hours,
         exec_latency_ns: 0,

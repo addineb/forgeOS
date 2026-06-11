@@ -263,3 +263,26 @@ single OKX reference. Aggregation DEAD (3-way diluted by Bybit, 2-way hurts ETH)
 REFERENCE-VENUE RESEARCH COMPLETE: OKX is the anchor; strict upgrade over old Binance
 default; free (venue swap, no complexity). Caveat unchanged: edge is Feb-concentrated;
 OKX advantage shown in the one volatile window - confirm on a 2nd volatile period.
+## CROSS-ASSET LEAD (#3) TESTED -> REJECTED (2026-06-11)
+Engine change: added a non-traded LEAD price channel (feed Role::Lead + lead_symbols,
+engine lead_px, LagCtx.lead_px) + BasisConfig xlead/xlead_bps/xlead_lookback knobs
+(hunt --leadsym --xlead --xleadbps --xleadlb). clippy+null-edge green. Filter SKIPS
+the reversion when the lead asset (BTC) moved the SAME direction as the ETH dislocation
+over the lookback (hypothesis: those gaps are real lead-follows, not noise -> won't revert).
+ETH, ref=OKX, lead=BTC/Binance, 36d, thr20, revert-exit, 884ms:
+| config         | n   | t    | RR   | paper | DD   |
+| baseline       | 568 | 9.73 | 2.41 | +391  | 5.7  |
+| bps1 lb20(10s) | 546 | 7.97 | 2.08 | +320  | 8.8  |
+| bps2 lb20      | 551 | 8.10 | 2.08 | +333  | 7.7  |
+| bps3 lb20      | 554 | 8.12 | 2.07 | +335  | 7.7  |
+| bps2 lb40(20s) | 535 | 7.78 | 2.09 | +291  | 10.3 |
+(short 2s windows barely fire - BTC rarely moves 5bps/2s; 10-20s windows bite.)
+VERDICT: REJECTED. Removing BTC-aligned trades LOWERS t (9.73->~8), cuts return, and
+RAISES drawdown - every config strictly worse. Those gaps revert fine; BTC's move is
+orthogonal. The basis edge is HL-perp lagging ITS OWN spot (catches up to ETH-spot
+regardless of BTC). Lead channel kept in engine as infra, not used.
+
+## LAG-VENUE RESEARCH COMPLETE: #1 agg REJECTED, #2 funding REJECTED, #3 cross-asset
+## REJECTED, #5 bake-off DONE (OKX best). The ONE win from the whole arc = OKX reference
+## swap (free, strict upgrade over Binance). All conditioning ideas failed - the edge is
+## a clean HL-vs-its-own-spot reversion that resists extra conditioning.
