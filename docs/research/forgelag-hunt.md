@@ -58,3 +58,15 @@ Feb 5-18 (14 days), fresh, SEPARATE from the May-Jun training block:
 VERDICT: validated across periods. Strongest result in the project. Now justified
 to expand (venues / variances / dead-indicator conditioning) + measure REAL exec
 latency to HL (the deploy make-or-break) + consider live paper.
+## MAKER (limit) entries TESTED -> FAIL (adverse selection). Edge is TAKER-ONLY.
+Added proper maker fills to forgelag (queue position, fill only when HL tape trades
+through; null-edge still passes). Re-ran market vs limit @ latency ladder (22d):
+- TAKER (lim=false): t=6.8/4.97/3.59/1.36 @ 0/300/500/700ms (as before, positive).
+- MAKER (lim=true): t=-8 to -11, win ~10%, NEGATIVE at EVERY latency.
+Why: resting a bid to "catch the dip" fills ONLY when price keeps trading through it
+(continuation) and misses the immediate bounces (the winners) = classic adverse
+selection on a reversion. Providing liquidity = being on the wrong side here.
+CONSEQUENCE: the edge REQUIRES crossing the spread (taker). Maker does NOT dodge the
+latency problem; latency is the binding constraint. No free lunch.
+REMAINING unknown = REAL taker signal->fill latency on HL (needs a tiny funded order
+to measure; REST read-proxy ~230ms floor + block finality puts us on the cliff edge).

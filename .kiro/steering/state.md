@@ -104,3 +104,9 @@ reproducible, coinflip loses on real data.
   t=4.77 vs May-Jun t=4.95. Two independent periods significant + shuffle negative
   + no ruin. Validated across regimes - strongest result yet. NEXT: expand
   (venues/variances/dead-indicator confirm) + measure REAL HL exec latency + live paper.
+
+- MAKER entries TESTED+REJECTED: limit entries lose hard (t=-8..-11, win ~10%) =
+  adverse selection (resting fills only on continuation, misses the bounce). Edge is
+  TAKER-ONLY -> latency is binding. forgelag now models maker fills (queue) + HL
+  trades feed; null-edge passes. NEXT real unknown = measure true taker signal->fill
+  latency on HL (tiny funded order); HL structural ~230ms floor puts us on the cliff.
