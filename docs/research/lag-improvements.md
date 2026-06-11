@@ -8,7 +8,7 @@ Sources: themicrostructurelab (cross-exchange fair value, arb study, alpha atlas
 SSRN lead-lag microstructure, ml4trading/OneKey funding arb, Hyperliquid docs.
 
 ## Ranked improvement candidates (untested unless noted)
-1. AGGREGATED MULTI-VENUE FAIR VALUE [TOP]. "Combining Multiple Orderbooks" study:
+1. AGGREGATED MULTI-VENUE FAIR VALUE [TOP -> TESTED 2026-06-11: REJECTED for BTC/ETH; t-stat flat-to-down vs single Binance, only adds drawdown. Kept as option for thin-ref assets (HYPE). See [[forgelag-hunt]]]. "Combining Multiple Orderbooks" study:
    a GLOBAL fair price from 6 exchanges predicts next move better than any single
    venue; cross-exchange dislocation carries info. We only tested single-venue refs
    (Binance spot > Binance futures). ADD: reference = VWAP/weighted mid across

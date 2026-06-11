@@ -148,3 +148,14 @@ reproducible, coinflip loses on real data.
   LAG RESEARCH saved (docs/research/lag-improvements.md): top improvement = AGGREGATED
   multi-venue ref (Binance+OKX+Bybit spot VWAP) - would de-noise HYPE + sharpen ETH/BTC;
   also funding-condition + cross-asset(BTC) lead. NEXT build: aggregated reference.
+
+- AGGREGATED REF (improvement #1) = TESTED + REJECTED for BTC/ETH (2026-06-11). Built
+  multi-venue ref in forgelag (mean of Binance+OKX+Bybit spot; --symbol CSV; clippy+
+  null-edge green). 36d head-to-head thr20/884ms: ETH agg t=7.88/+346%/DD12.3 vs single
+  t=7.95/+283%/DD7.4; BTC agg t=3.60 vs single 3.92. => NO edge gain (t flat-to-down),
+  only more drawdown. Single Binance ref stays default; agg kept as option for thin-ref
+  coins (HYPE). REPRODUCIBILITY: logged ETH +283% & BTC +43% reproduced EXACTLY on fresh
+  data = engine consistent (not drifting). REGIME-CONCENTRATION (real risk): edge is in
+  the FEB window - the 22d May-Jun window alone is weak (ETH thr20 +2.6% single/+11% agg,
+  BTC negative). Returns are lumpy/regime-dependent, NOT always-on. NEXT lead = Type C
+  forced-flow (liquidation cascades) per the untested high-value buckets.

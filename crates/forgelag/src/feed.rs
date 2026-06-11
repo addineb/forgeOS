@@ -60,6 +60,8 @@ pub struct LagEvent {
     pub price: Price,
     /// Fixed-point quantity (0 on a book-delta removal).
     pub qty: Qty,
+    /// Reference-venue index (0-based) for Reference trades; 0 for exec events.
+    pub src: u8,
 }
 
 /// A window-load request.
@@ -70,7 +72,7 @@ pub struct FeedConfig {
     /// Execution coin key (hlbook dir), e.g. `BTC`.
     pub coin: String,
     /// Reference symbol key (trade dir), e.g. `BTCUSDT`.
-    pub symbol: String,
+    pub ref_symbols: Vec<String>,
     /// Date partition.
     pub date: String,
     /// Hours to load (`["00",...]`).
@@ -146,13 +148,14 @@ fn push_hlbook(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), Str
                 side: Some(s),
                 price: Price::from_f64(price.value(i)).map_err(|e| format!("{e}"))?,
                 qty: Qty::from_f64(qty.value(i)).map_err(|e| format!("{e}"))?,
+                src: 0,
             });
         }
     }
     Ok(())
 }
 
-fn push_trades(path: &Path, lat: u64, role: Role, out: &mut Vec<LagEvent>) -> Result<(), String> {
+fn push_trades(path: &Path, lat: u64, role: Role, src: u8, out: &mut Vec<LagEvent>) -> Result<(), String> {
     for b in read_batches(path)? {
         let ts = col_i64(&b, "ts")?;
         let price = col_f64(&b, "price")?;
@@ -170,6 +173,7 @@ fn push_trades(path: &Path, lat: u64, role: Role, out: &mut Vec<LagEvent>) -> Re
                 side: Some(s),
                 price: Price::from_f64(price.value(i)).map_err(|e| format!("{e}"))?,
                 qty: Qty::from_f64(qty.value(i)).map_err(|e| format!("{e}"))?,
+                src,
             });
         }
     }
@@ -192,19 +196,16 @@ pub fn load_window(cfg: &FeedConfig) -> Result<Vec<LagEvent>, String> {
         if ex.exists() {
             push_hlbook(&ex, cfg.exec_latency_ns, &mut evs)?;
         }
-        let rf = cfg
-            .root
-            .join(&cfg.symbol)
-            .join("trade")
-            .join(&cfg.date)
-            .join(format!("{hh}.parquet"));
-        if rf.exists() {
-            push_trades(&rf, cfg.ref_latency_ns, Role::Reference, &mut evs)?;
+        for (i, sym) in cfg.ref_symbols.iter().enumerate() {
+            let rf = cfg.root.join(sym).join("trade").join(&cfg.date).join(format!("{hh}.parquet"));
+            if rf.exists() {
+                push_trades(&rf, cfg.ref_latency_ns, Role::Reference, i as u8, &mut evs)?;
+            }
         }
         // EXEC venue (HL) trades -> needed to fill resting maker orders (queue model).
         let ex_tr = cfg.root.join(&cfg.coin).join("trade").join(&cfg.date).join(format!("{hh}.parquet"));
         if ex_tr.exists() {
-            push_trades(&ex_tr, cfg.exec_latency_ns, Role::Exec, &mut evs)?;
+            push_trades(&ex_tr, cfg.exec_latency_ns, Role::Exec, 0, &mut evs)?;
         }
     }
     evs.sort_by(|a, b| {
@@ -212,6 +213,7 @@ pub fn load_window(cfg: &FeedConfig) -> Result<Vec<LagEvent>, String> {
             .cmp(&b.local_ts)
             .then(a.role.ord().cmp(&b.role.ord()))
             .then((a.kind as u8).cmp(&(b.kind as u8)))
+            .then(a.src.cmp(&b.src))
             .then(a.price.raw().cmp(&b.price.raw()))
     });
     Ok(evs)

@@ -171,7 +171,7 @@ fn run() -> Result<(), String> {
         let cfg = FeedConfig {
             root: root.clone().into(),
             coin: coin.clone(),
-            symbol: symbol.clone(),
+            ref_symbols: symbol.split(',').map(|s| s.trim().to_string()).collect(),
             date: d.clone(),
             hours: hours.clone(),
             exec_latency_ns: 0,

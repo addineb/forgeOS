@@ -145,6 +145,7 @@ pub struct LagReport {
 pub struct LagEngine<S: LagStrategy> {
     book: OrderBook,
     ref_px: f64,
+    ref_last: Vec<f64>,
     acct: Account,
     strat: S,
     fees: FeeSchedule,
@@ -169,6 +170,7 @@ impl<S: LagStrategy> LagEngine<S> {
         Self {
             book: OrderBook::with_max_levels(cfg.exec_book_levels),
             ref_px: 0.0,
+            ref_last: Vec::new(),
             acct: Account::new(),
             strat,
             fees: cfg.fees,
@@ -310,7 +312,13 @@ impl<S: LagStrategy> LagEngine<S> {
                 }
             }
             (Role::Reference, LagKind::Trade) => {
-                self.ref_px = ev.price.to_f64();
+                let i = ev.src as usize;
+                if self.ref_last.len() <= i {
+                    self.ref_last.resize(i + 1, 0.0);
+                }
+                self.ref_last[i] = ev.price.to_f64();
+                let (sum, cnt) = self.ref_last.iter().filter(|&&x| x > 0.0).fold((0.0, 0u32), |(s, c), &x| (s + x, c + 1));
+                self.ref_px = if cnt > 0 { sum / f64::from(cnt) } else { 0.0 };
             }
             (Role::Reference, LagKind::BookDelta) => {}
         }

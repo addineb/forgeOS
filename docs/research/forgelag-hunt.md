@@ -166,3 +166,33 @@ ASSET RANKING (884ms real latency): ETH(t~8) > BTC(t~4.8) >> SOL(t~2,DD28) ~ HYP
 Edge is strongest where HL LAGS a LIQUID external spot; weak where ref is thin or HL leads.
 => HYPE is the prime case for improvement #1 (AGGREGATED Bybit+OKX spot reference) to
 de-noise the anchor. Next build: aggregated multi-venue reference.
+## AGGREGATED MULTI-VENUE REFERENCE (#1) TESTED -> NOT WORTH ADOPTING (2026-06-11)
+Built aggregated ref support in forgelag (feed.rs per-venue `src` tag; engine.rs
+ref_px = mean of latest nonzero per-venue trade px; hunt --symbol takes a CSV
+`BTCUSDT,BTC-USDT,BTCUSDT_BYBIT`). Clippy clean, null-edge gate still passes.
+Downloaded OKX spot (BTC-USDT, ETH-USDT) + Bybit spot (BTCUSDT_BYBIT, ETHUSDT_BYBIT)
+trades, 36 days (Feb 5-18 + May20-Jun10), into /root/chd/fresh.
+
+Head-to-head, SAME data/config (thr20, revert-exit, 884ms), only the reference changed:
+| 36d thr20      | trades | t-stat | win% | RR  | paper% | maxDD% |
+| ETH single Bin |  549   | 7.95   | 62.3 |1.77 |  +283  |  7.4   |
+| ETH aggregated |  543   | 7.88   | 63.5 |1.79 |  +346  | 12.3   |
+| BTC single Bin |  187   | 3.92   | 53.5 |2.23 |  +43   |  5.8   |
+| BTC aggregated |  178   | 3.60   | 53.4 |2.09 |  +39   |  5.0   |
+
+VERDICT (honest skeptic): aggregation does NOT improve the EDGE. The t-stat (the metric
+that matters) is flat-to-down on both assets (ETH 7.88 vs 7.95; BTC 3.60 vs 3.92). On
+ETH it lifts return to +346% but ONLY by taking ~70% more drawdown (12.3 vs 7.4) - same
+significance, more risk. On BTC it is strictly worse. => single Binance spot reference is
+as good or better risk-adjusted. Aggregation kept as an OPTION (good for thin-ref assets
+like HYPE), NOT adopted as default. Research improvement #1 = REJECTED for BTC/ETH.
+
+REGIME-CONCENTRATION finding (the real takeaway): the +283% edge is concentrated in the
+Feb window. The 22-day May-Jun window ALONE is weak at 884ms: ETH thr20 only +2.6%
+(single) / +11% (aggregated, t=1.56), BTC negative. On the calm 22d window aggregation
+DID help every cell (de-noises a quiet ref), but that gain disappears once volatile Feb
+days dominate. => the edge is NOT always-on; it needs the volatile regime. Carry this as
+the honest risk: returns are lumpy and regime-dependent, not a steady printer.
+
+REPRODUCIBILITY CHECK (addresses trust): the logged ETH +283%/t=7.95 and BTC +43%
+REPRODUCED EXACTLY on fresh re-run -> engine is consistent across runs, not drifting.

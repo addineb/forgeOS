@@ -40,7 +40,7 @@ fn run() -> Result<(), String> {
     let cfg = FeedConfig {
         root,
         coin,
-        symbol,
+        ref_symbols: vec![symbol],
         date: date.clone(),
         hours,
         exec_latency_ns: 0,
