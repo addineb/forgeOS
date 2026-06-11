@@ -234,3 +234,11 @@ reproducible, coinflip loses on real data.
   Robust band = ETH 16-19 / BTC 15-17 (plateau, not exact decimal = overfit risk).
   NEXT: re-run BTC+ETH portfolio at per-asset optima (ETH~17-19, BTC~16) - should beat
   EUR3468. Then 2nd-volatile-period confirm + real HL latency. Each asset has its own thr.
+- SELECTED (MAX-PROFIT configs, 2026-06-11): ETH thr16 (+521%, EUR500->3105, DD10%) and
+  BTC thr15 (+69%, EUR500->845, DD5.5%), OKX ref, revert-exit, 884ms. These are the CHOSEN
+  profit configs. NEXT FOCUS = reduce the DRAWDOWN (esp ETH thr16's 10%) WITHOUT killing the
+  edge. Levers to try: (1) hard STOP-LOSS (cap the tail - DD is loser-sequence driven; sl_bps
+  exists in ManagedConfig, expose via hunt --sl); (2) asymmetric stop = bail fast if gap WIDENS
+  (structural move, not noise) but let reverters run; (3) vol/regime gate (skip the worst
+  volatile clusters); (4) shorter hold/tighter revert-exit. Keep ETH thr19 (DD5.0/+453) as the
+  low-DD alternative benchmark to beat.

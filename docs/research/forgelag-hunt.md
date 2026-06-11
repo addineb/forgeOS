@@ -393,3 +393,20 @@ WHY: latency cliff in threshold form - small gaps (<~12bps) revert faster than 8
 the 16-19 ETH / 15-17 BTC plateau is the robust signal (NOT the exact decimal = overfitting).
 NEW DEFAULTS: ETH thr19 (was 20), BTC thr16 (was 20) - both beat old thr20 on profit, t, AND
 (ETH) drawdown. CAVEAT: one 36d sample, plateau not peak, Feb-concentrated, idealized fills.
+## DRAWDOWN WORK #1: HARD STOP-LOSS TESTED -> FAILS (2026-06-11)
+Exposed --sl/--tp in hunt (ManagedConfig.sl_bps/tp_bps). Swept SL on ETH thr16 (OKX,
+revert-exit, 36d, 884ms):
+| ETH thr16 | t    | paper% | DD%  |
+| no stop   | 9.35 | +521   | 10.0 |
+| SL 10bps  | 8.38 | +433   | 10.0 |
+| SL 20bps  | 8.23 | +406   | 10.0 |
+| SL 30bps  | 7.71 | +395   | 14.1 |
+| SL 40bps  | 6.95 | +384   | 17.6 |
+VERDICT: stop-loss FAILS to cut DD and lowers return at every level; wide stops RAISE DD.
+Classic mean-reversion trap: the thesis is "moved too far, will snap back" so a stop sells
+at the adverse extreme right before reversion = converts winners to locked losses. The edge
+MUST ride through adverse moves. DD is intrinsic to the reversion. STOP-LOSS REJECTED.
+DD levers remaining: (1) just use thr19 (+453%/DD5.0 vs thr16 +521/DD10 - near-free fix);
+(2) TREND filter - skip fades when HL has strong directional momentum (the loss mechanism =
+structural trend, gap widens+stays, not noise). Must target TREND not raw VOL (profit is also
+Feb/volatile-concentrated). Building trend filter next.
