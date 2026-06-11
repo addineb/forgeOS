@@ -286,3 +286,29 @@ regardless of BTC). Lead channel kept in engine as infra, not used.
 ## REJECTED, #5 bake-off DONE (OKX best). The ONE win from the whole arc = OKX reference
 ## swap (free, strict upgrade over Binance). All conditioning ideas failed - the edge is
 ## a clean HL-vs-its-own-spot reversion that resists extra conditioning.
+## VARIANCE RE-TEST ON OKX (2026-06-11): revert-exit CONFIRMED, book-confirm FLIPS
+The variances were tuned on Binance; OKX is now default -> re-validated. 36d, 884ms.
+| ETH                       | n    | t    | win  | RR   | paper | DD   |
+| thr20 fixed-hold          | 303  | 0.31 | 48.5 | 1.12 | +12   | 23.1 |
+| thr20 revert-exit         | 568  | 9.73 | 60.7 | 2.41 | +391  | 5.7  |
+| thr20 revert-exit+confirm | 531  | 8.17 | 60.5 | 2.04 | +254  | 7.7  |
+| thr15 revert-exit         | 1202 | 8.30 | 51.8 | 2.04 | +427  | 11.0 |
+| BTC                       | n    | t    | win  | RR   | paper | DD   |
+| thr20 fixed-hold          | 107  | 0.10 | 44.9 | 1.27 | +17   | 12.1 |
+| thr20 revert-exit         | 186  | 4.27 | 53.8 | 2.27 | +41   | 4.1  |
+| thr20 revert-exit+confirm | 157  | 3.95 | 58.0 | 1.75 | +31   | 3.7  |
+| thr15 revert-exit         | 454  | 5.04 | 52.2 | 1.91 | +69   | 5.5  |
+
+FINDINGS:
+1. REVERT-TO-MEAN EXIT = CONFIRMED winner on OKX (decisive). Fixed-hold is a disaster
+   (t~0.1-0.3, DD 12-23% giving profit back). Core deployable choice transfers cleanly.
+2. BOOK-CONFIRM FLIPPED: was a quality win on Binance (BTC t 3.92->4.81); on OKX it HURTS
+   (ETH t 9.73->8.17, +391->254; BTC t 4.27->3.95). The confirm was compensating for
+   Binance's NOISIER reference; the cleaner OKX anchor makes it redundant -> just drops
+   good trades. DROP book-confirm with OKX. (Lesson: settings don't auto-transfer across
+   reference venues - re-validate.)
+3. thr15 = more euro (ETH +427, BTC +69) at higher DD; frequency/risk dial.
+
+## SETTLED BEST CONFIG: thr20 + revert-to-mean exit + OKX reference, NO confirm.
+## (thr15 for more return/more drawdown.) Caveat unchanged: edge Feb-concentrated,
+## idealized fills, 884ms assumed latency - needs a 2nd volatile period + live validation.

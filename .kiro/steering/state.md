@@ -202,3 +202,11 @@ reproducible, coinflip loses on real data.
   failed - clean reversion resists extra knobs. ***
   NEXT (user req): re-validate the variance settings (revert-to-mean exit, book-confirm,
   fixed-hold vs revert) on OKX data (they were validated on Binance; OKX is now default).
+- VARIANCE RE-TEST ON OKX done (2026-06-11): (1) REVERT-TO-MEAN EXIT confirmed winner
+  (fixed-hold disaster t~0.1-0.3 DD12-23%); (2) BOOK-CONFIRM FLIPPED - helped on Binance,
+  HURTS on OKX (ETH t9.73->8.17, BTC 4.27->3.95) - it was compensating for Binance noise;
+  drop it with OKX; (3) thr15 = more euro/more DD. SETTLED BEST: thr20 + revert-exit +
+  OKX ref, NO confirm (thr15 for more return). Lesson: settings don't auto-transfer
+  across ref venues. ETH primary (t9.73 +391% DD5.7). Caveats unchanged (Feb-concentrated,
+  idealized fills, 884ms assumed). NEXT options: confirm OKX/edge on a 2nd volatile period;
+  re-check the rejected variances (vel/zscore/magsize) on OKX if wanted; or live-paper prep.
