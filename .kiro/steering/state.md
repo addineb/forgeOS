@@ -275,3 +275,14 @@ reproducible, coinflip loses on real data.
   so only 1-2bp worth it - MODEL it in forgelag (cost+Xbp, latency-45ms*X) before paying live.
   BREADTH (later): test Lagshot-edge on Aster/Lighter perp vs spot (CHD has the data) = more
   venues, not a switch. NEXT = Tokyo box -> tiny live order -> MEASURE real fill-latency dist.
+- *** REAL HL LATENCY MEASURED (2026-06-11) - GATE GREEN ***. AWS Tokyo box (35.78.232.67,
+  t3-class, ap-northeast-1), live HL account, 20 tiny ETH taker IOC round-trips alternating
+  buy/sell (ended flat). TCP to HL = 2-4ms (confirmed Tokyo-adjacent). SIGNAL->FILL latency:
+  min690 p25 722 MEDIAN 766 p75 874 p90 1101 max1107 mean806 (ms). => REAL median 766ms is
+  UNDER the 884ms we VALIDATED Lagshot at (ETH t9-13). The make-or-break gate came back
+  FAVORABLE. No priority fees, no own node = baseline (upside levers remain). CAVEATS: n=20
+  single window (need bigger sample across hours/vol); p90 tail ~1.1s (edge weaker there);
+  measured LATENCY not FILL-PRICE/slippage (next check). Setup: ~/lagshot/measure.py +
+  venv + secret.env on box; spot->perp transfer needed (unified account had to be OFF);
+  agent/main = 0xE4Cde743 (test wallet, $13). NEXT: larger latency sample + slippage check
+  (compare real fill px vs expected) + then a live paper run of the actual Lagshot logic.
