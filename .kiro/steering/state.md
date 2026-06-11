@@ -263,3 +263,15 @@ reproducible, coinflip loses on real data.
   OKX-spot anchor, ETH primary (thr16 profit / thr19 risk-adj) + BTC diversifier, revert-to-
   mean exit, 884ms. Validated: null-edge + shuffle(neg x2) + OOS-replicates(Nov-Dec25, ETH
   t13.31/+542%/DD4.2). ONE open gate = real HL execution latency (live test). All else done.
+- LATENCY RESEARCH done (2026-06-11, docs/research/latency-research.md). KEY: HL validators
+  in Tokyo (AWS), 884ms round-trip is CONSENSUS/server-side dominated (net only 2-5ms).
+  #1 MOVE = put box in AWS TOKYO (ap-northeast-1) -> ~884ms = the latency we ALREADY VALIDATED
+  (vs Germany ~1080). Tokyo box alone = strong proven regime, no node needed for ETH.
+  DON'T switch to a faster venue: the LAG IS THE EDGE; faster venue = less lag = less edge.
+  SUB-884ms recipe (UPSIDE, not required): own non-validating node in Tokyo (32c/128GB/NVMe) +
+  local order book from node outputs + split_client_blocks (70-150ms faster reads) + ORDER
+  priority fee (~45ms faster PER 1bp, max 8bp, burned HYPE). Stacked -> plausibly ~400-600ms
+  (where t jumps: 500ms t3.31, 300ms t4.95). PRIORITY-FEE ECON: 45ms/1bp; our net edge ~5-8bps
+  so only 1-2bp worth it - MODEL it in forgelag (cost+Xbp, latency-45ms*X) before paying live.
+  BREADTH (later): test Lagshot-edge on Aster/Lighter perp vs spot (CHD has the data) = more
+  venues, not a switch. NEXT = Tokyo box -> tiny live order -> MEASURE real fill-latency dist.
