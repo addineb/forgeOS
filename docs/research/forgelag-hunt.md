@@ -37,3 +37,13 @@ information; no-fake-edge gate passes.
 
 ## Status: BEST LEAD BY FAR. Significant, direction-confirmed, engine-grade. Next =
 robustness across periods + the latency-reality check.
+## Planned expansions (ONLY after it holds OOS + drawdown is survivable)
+- Variances: z-score trigger (dev/rolling-std) vs bps; exits = revert-to-mean vs
+  fixed-hold vs TP/SL; baseline window/EWMA; microprice depth.
+- Venues: HL vs OKX / Bybit / Binance-futures; AGGREGATED multi-venue reference
+  (VWAP across venues) as fair value.
+- CONDITIONING with the "dead" indicators (Type A): OFI/CVD/imbalance were no-edge
+  ALONE, but may work as a CONFIRM/filter on the basis trigger (only fire the
+  reversion when orderflow agrees / when the book isn't being run over). This is
+  the trader-method-1 idea: structural trigger + orderflow confirm.
+- Gate order stays: prove HOLDS (OOS months + drawdown/ruin) FIRST, then expand.

@@ -178,11 +178,11 @@ fn run() -> Result<(), String> {
     struct Row {
         n: usize,
         mean: f64,
-        sd: f64,
         t: f64,
         win: f64,
-        net: f64,
         paper: f64,
+        maxdd: f64,
+        ruined: bool,
         knobs: String,
     }
     let mut rows: Vec<Row> = Vec::new();
@@ -200,12 +200,11 @@ fn run() -> Result<(), String> {
         };
         let t = if sd > 0.0 { mean / sd * (n as f64).sqrt() } else { 0.0 };
         let win = rets.iter().filter(|r| **r > 0.0).count() as f64 / n as f64 * 100.0;
-        let net = rets.iter().sum::<f64>();
         let mut trips = agg[i].clone();
         trips.sort_by_key(|x| x.0);
-        let paper = paper_run(&trips, &pcfg).return_pct;
+        let pr = paper_run(&trips, &pcfg);
         rows.push(Row {
-            n, mean, sd, t, win, net, paper,
+            n, mean, t, win, paper: pr.return_pct, maxdd: pr.max_drawdown_pct, ruined: pr.ruined,
             knobs: format!("d={} thr={}bps win={} rev={} hold={}", c.depth, c.thr, c.win, c.rev, fmt_dur(c.hold)),
         });
     }
@@ -214,9 +213,9 @@ fn run() -> Result<(), String> {
     println!("days used        {days_used}/{}", dates.len());
     println!("order latency    {}ms", latency_ns / 1_000_000);
     println!("mode             {}", if shuffle { "SHUFFLE control (direction randomized)" } else { "REAL basis-reversion" });
-    println!("{:>6} {:>9} {:>9} {:>7} {:>6} {:>10} {:>9}  knobs", "n", "mean%", "std%", "t-stat", "win%", "net%sum", "paper%");
+    println!("{:>6} {:>9} {:>7} {:>6} {:>9} {:>8} {:>5}  knobs", "n", "mean%", "t-stat", "win%", "paper%", "maxDD%", "ruin");
     for r in rows.iter().take(top) {
-        println!("{:>6} {:>9.4} {:>9.4} {:>7.2} {:>5.1}% {:>10.3} {:>9.2}  {}", r.n, r.mean, r.sd, r.t, r.win, r.net, r.paper, r.knobs);
+        println!("{:>6} {:>9.4} {:>7.2} {:>5.1}% {:>9.1} {:>8.1} {:>5}  {}", r.n, r.mean, r.t, r.win, r.paper, r.maxdd, if r.ruined {"YES"} else {"no"}, r.knobs);
     }
     println!("(t-stat is the significance test for this sparse strategy; |t|>~2 ~ p<0.05)");
     Ok(())
