@@ -410,3 +410,25 @@ DD levers remaining: (1) just use thr19 (+453%/DD5.0 vs thr16 +521/DD10 - near-f
 (2) TREND filter - skip fades when HL has strong directional momentum (the loss mechanism =
 structural trend, gap widens+stays, not noise). Must target TREND not raw VOL (profit is also
 Feb/volatile-concentrated). Building trend filter next.
+## DRAWDOWN WORK #2: REGIME FILTER (don't-fade-into-HL-trend) TESTED (2026-06-11)
+Built regime gate: skip a fade when HL has strong directional momentum over a lookback
+(structural continuation, not revertible noise). BasisConfig regime/regime_bps/regime_lookback;
+hunt --regime/--regimebps/--regimelb. clippy+null-edge green. Swept on ETH (OKX,36d,884ms):
+| ETH config                | t     | paper% | DD%  | EUR500-> |
+| thr16 raw (max profit)    | 9.35  | +521   | 10.0 | 3105 |
+| thr16 + regime(lb10/b10)  | 8.99  | +466   | 7.9  | 2830 |
+| thr17 raw                 | 9.44  | +504   | 9.0  | 3020 |
+| thr17 + regime(lb10/b10)  | 9.06  | +455   | 7.2  | 2775 |
+| thr19 raw                 | 10.13 | +453   | 5.0  | 2765 |
+| thr19 + regime(lb6/b12)   | 9.68  | +410   | 4.6  | 2550 |
+| thr19 + regime(lb10/b10)  | 9.54  | +398   | 6.8! | 2490 | (DD WORSE than raw)
+VERDICT: regime filter WORKS conceptually (cuts DD ~20% on high-DD configs thr16/17) BUT is
+REDUNDANT with the threshold dial - both control SELECTIVITY. It cuts DD only by cutting
+proportional return; never lower-DD-at-same-profit; on clean thr19 it can make DD WORSE.
+=> DD is largely INTRINSIC to the reversion edge; THRESHOLD is the one true dial.
+Stop-loss FAILED, regime REDUNDANT. FRONTIER (the real choice):
+- max profit: thr16 +521% DD10 (EUR3105)
+- best risk-adj: thr19 +453% DD5.0 (EUR2765, top t=10.13)
+- min DD + strong return: thr19+regime(lb6/b12) +410% DD4.6 (EUR2550)
+Regime infra kept (optional). NEXT real DD/trust lever = 2nd volatile period (is the edge/DD
+stable out-of-sample?) + real HL latency. No more knob-tuning - it is overfitting from here.

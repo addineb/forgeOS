@@ -242,3 +242,10 @@ reproducible, coinflip loses on real data.
   (structural move, not noise) but let reverters run; (3) vol/regime gate (skip the worst
   volatile clusters); (4) shorter hold/tighter revert-exit. Keep ETH thr19 (DD5.0/+453) as the
   low-DD alternative benchmark to beat.
+- DRAWDOWN WORK done (2026-06-11): stop-loss FAILED (mean-reversion needs to ride through);
+  REGIME filter (skip fade into HL trend) built+tested = WORKS but REDUNDANT with threshold
+  (cuts DD ~20% on thr16/17 only by cutting return; on thr19 can worsen DD). DD is INTRINSIC;
+  THRESHOLD is the dial. FRONTIER: max-profit thr16 +521%/DD10 (EUR3105); best risk-adj thr19
+  +453%/DD5.0 (EUR2765,t10.13); min-DD thr19+regime(lb6/b12) +410%/DD4.6 (EUR2550). Regime
+  infra kept optional. STOP knob-tuning = overfitting from here. NEXT = 2nd volatile period
+  (OOS stability of edge AND drawdown) + real HL latency measurement. User keeps thr16 for profit.

@@ -97,6 +97,9 @@ fn run() -> Result<(), String> {
     let mut xleadlb = 4usize;
     let mut tp = 0.0_f64;
     let mut sl = 0.0_f64;
+    let mut regime = false;
+    let mut regimebps = 8.0_f64;
+    let mut regimelb = 10usize;
 
     let mut depths = vec![5usize];
     let mut thr_ax = vec![8.0, 10.0, 12.0];
@@ -147,6 +150,9 @@ fn run() -> Result<(), String> {
             "--xleadlb" => xleadlb = val()?.parse().map_err(|e| format!("xleadlb: {e}"))?,
             "--tp" => tp = val()?.parse().map_err(|e| format!("tp: {e}"))?,
             "--sl" => sl = val()?.parse().map_err(|e| format!("sl: {e}"))?,
+            "--regime" => regime = true,
+            "--regimebps" => regimebps = val()?.parse().map_err(|e| format!("regimebps: {e}"))?,
+            "--regimelb" => regimelb = val()?.parse().map_err(|e| format!("regimelb: {e}"))?,
             other => return Err(format!("unknown arg {other}")),
         }
     }
@@ -169,7 +175,7 @@ fn run() -> Result<(), String> {
                         for &cd in &cd_ax {
                             for &lim in &lim_ax {
                                 cells.push(Cell {
-                                    basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1, vel_gate: velgate, vel_min_bps: velmin, vel_lookback: vellb, exit_revert: exitrevert, exit_bps: exitbps, zscore, z_k: zk, confirm, confirm_imb: confimb, mag_size: magsize, mag_cap: magcap, fund_gate: fundgate, fund_min: fundmin, fund_align: fundalign, xlead, xlead_bps: xleadbps, xlead_lookback: xleadlb },
+                                    basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1, vel_gate: velgate, vel_min_bps: velmin, vel_lookback: vellb, exit_revert: exitrevert, exit_bps: exitbps, zscore, z_k: zk, confirm, confirm_imb: confimb, mag_size: magsize, mag_cap: magcap, fund_gate: fundgate, fund_min: fundmin, fund_align: fundalign, xlead, xlead_bps: xleadbps, xlead_lookback: xleadlb, regime, regime_bps: regimebps, regime_lookback: regimelb },
                                     managed: ManagedConfig { qty: q, hold_ns: h, cooldown_ns: cd, tp_bps: tp, sl_bps: sl, fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000), use_limit: lim },
                                     depth: d, thr: th, win: w, rev: rv, hold: h, lim,
                                 });
@@ -289,6 +295,7 @@ fn run() -> Result<(), String> {
     println!("funding align    {}", if fundalign { "ON".to_string() } else { "off".to_string() });
     println!("cross-asset lead {}", if xlead { format!("ON (lead={leadsym} |ret|>={xleadbps}bps/{xleadlb}smp)") } else { "off".to_string() });
     println!("stop / take     SL={sl}bps TP={tp}bps (0=off)");
+    println!("regime filter   {}", if regime { format!("ON (skip fade vs |HL mom|>={regimebps}bps/{regimelb}smp)") } else { "off".to_string() });
     println!("{:>6} {:>8} {:>6} {:>6} {:>8} {:>8} {:>5} {:>8} {:>7}  knobs", "n", "mean%", "t-stat", "win%", "avgW%", "avgL%", "RR", "paper%", "maxDD%");
     for r in rows.iter().take(top) {
         println!("{:>6} {:>8.4} {:>6.2} {:>5.1}% {:>8.4} {:>8.4} {:>5.2} {:>8.1} {:>7.1}  {}", r.n, r.mean, r.t, r.win, r.avg_w, r.avg_l, r.rr, r.paper, r.maxdd, r.knobs);

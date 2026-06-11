@@ -230,6 +230,13 @@ pub struct BasisConfig {
     pub xlead_bps: f64,
     /// Lead-return lookback in samples.
     pub xlead_lookback: usize,
+    /// REGIME filter: skip a fade when HL has strong directional momentum (the
+    /// dislocation is likely a structural continuation, not revertible noise).
+    pub regime: bool,
+    /// Min |HL momentum| (bps) over the lookback to count as a strong trend.
+    pub regime_bps: f64,
+    /// HL-momentum lookback in samples.
+    pub regime_lookback: usize,
 }
 
 /// Basis-reversion direction signal: fade large deviations of the HL microprice
@@ -249,6 +256,8 @@ pub struct BasisSignal {
     dev_hist: Vec<f64>,
     have_dev: bool,
     lead_hist: Vec<f64>,
+    cur_micro: f64,
+    micro_hist: Vec<f64>,
 }
 impl BasisSignal {
     /// New basis signal.
@@ -269,6 +278,8 @@ impl BasisSignal {
             dev_hist: Vec::new(),
             have_dev: false,
             lead_hist: Vec::new(),
+            cur_micro: 0.0,
+            micro_hist: Vec::new(),
         }
     }
     fn micro(&self, ctx: &LagCtx) -> Option<f64> {
@@ -324,6 +335,7 @@ impl LagSignal for BasisSignal {
     fn observe(&mut self, ctx: &LagCtx) {
         if ctx.ref_px > 0.0 {
             if let Some(m) = self.micro(ctx) {
+                self.cur_micro = m;
                 self.cur_gap = (m - ctx.ref_px) / ctx.ref_px * 10_000.0;
                 self.have_gap = true;
             }
@@ -339,6 +351,7 @@ impl LagSignal for BasisSignal {
                 self.have_dev = self.ring.len() >= 20;
                 self.dev_hist.push(self.cur_dev);
                 self.lead_hist.push(ctx.lead_px);
+                self.micro_hist.push(self.cur_micro);
                 self.push_sample(self.cur_gap);
                 while self.next_sample <= ctx.now {
                     self.next_sample += self.cfg.sample_ns;
@@ -374,6 +387,19 @@ impl LagSignal for BasisSignal {
             let agree = if long { imb >= self.cfg.confirm_imb } else { imb <= -self.cfg.confirm_imb };
             if !agree {
                 return None;
+            }
+        }
+        if self.cfg.regime {
+            let n = self.micro_hist.len();
+            if n > self.cfg.regime_lookback {
+                let p_now = self.micro_hist[n - 1];
+                let p_old = self.micro_hist[n - 1 - self.cfg.regime_lookback];
+                if p_old > 0.0 {
+                    let mom = (p_now - p_old) / p_old * 10_000.0;
+                    if (long && mom <= -self.cfg.regime_bps) || (!long && mom >= self.cfg.regime_bps) {
+                        return None;
+                    }
+                }
             }
         }
         if self.cfg.xlead {
