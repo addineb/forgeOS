@@ -380,7 +380,9 @@ fn run() -> Result<(), String> {
                 top_n: topn_ax, threshold_bps: thr_ax, window: windows_ax, reversion: rev_ax,
                 sample_ns: 500_000_000, qty: q, hold_ns: hold_ax, cooldown_ns: cd_ax,
                 tp_bps: tp_ax, sl_bps: sl_ax, use_limit: lim_ax, signal, seed: 1,
-                fill_timeout_ns: 200_000_000, regime_filter: reg_ax,
+                // fill timeout MUST exceed order latency, else the shell re-fires
+                // exits while the first is in flight -> runaway position.
+                fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000), regime_filter: reg_ax,
             });
             eprintln!("basis grid: {} configs x {} window(s)", grid.len(), windows.len());
             let rep = run_sweep(&windows, &grid, BasisBot::new, sample_ns, fees, latency_ns, 20, th);

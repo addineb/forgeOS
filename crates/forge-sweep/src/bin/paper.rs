@@ -12,7 +12,7 @@ use forge_core::{Event, Qty};
 use forge_data::ForgeReader;
 use forge_metrics::{paper_run, PaperConfig};
 use forge_sim::{money_to_f64, FeeSchedule, SimConfig, SimEngine};
-use forge_strategy::{ImbalanceConfig, MomentumConfig, ObiBot, OfiMomentum, RegimeFilter, Signal};
+use forge_strategy::{BasisBot, BasisConfig, ImbalanceConfig, MomentumConfig, ObiBot, OfiMomentum, RegimeFilter, Signal};
 
 /// Parse a duration like `30s`, `5m`, `2h`, `250ms` (bare = ns) into nanoseconds.
 fn parse_dur(s: &str) -> Result<u64, String> {
@@ -143,7 +143,15 @@ fn run() -> Result<(), String> {
             };
             collect_trips(&windows, || ObiBot::new(c), latency_ns)
         }
-        other => return Err(format!("unknown --strategy `{other}` (ofi|wall)")),
+        "basis" => {
+            let c = BasisConfig {
+                top_n: topn, threshold_bps: threshold, window, sample_ns: 500_000_000, reversion,
+                qty: q, hold_ns, cooldown_ns, tp_bps, sl_bps, use_limit, signal: Signal::Real,
+                seed: 1, fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000), regime_filter: RegimeFilter::Any,
+            };
+            collect_trips(&windows, || BasisBot::new(c), latency_ns)
+        }
+        other => return Err(format!("unknown --strategy `{other}` (ofi|wall|basis)")),
     };
 
     let res = paper_run(&trips, &pcfg);

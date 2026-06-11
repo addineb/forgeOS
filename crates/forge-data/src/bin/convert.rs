@@ -87,6 +87,7 @@ fn parse() -> Result<Cli, String> {
                     "trade" => s.trade = true,
                     "bookDelta" => s.book_delta = true,
                     "hlquote" => s.hlquote = true,
+                    "hlbook" => s.hl_book = true,
                     other => return Err(format!("unknown stream `{other}`")),
                 }
             }
