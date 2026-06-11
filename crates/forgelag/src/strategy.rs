@@ -200,6 +200,11 @@ pub struct BasisConfig {
     pub zscore: bool,
     /// z multiplier for the z-score trigger.
     pub z_k: f64,
+    /// Require HL book pressure to AGREE with the reversion (bid-heavy to buy the
+    /// dip / ask-heavy to sell the rip) - the dead imbalance indicator as a CONFIRM.
+    pub confirm: bool,
+    /// Min top-N book imbalance in [0,1] to count as agreement.
+    pub confirm_imb: f64,
 }
 
 /// Basis-reversion direction signal: fade large deviations of the HL microprice
@@ -281,6 +286,12 @@ impl BasisSignal {
         let mean = self.sum / n;
         (self.sum_sq / n - mean * mean).max(0.0).sqrt()
     }
+    fn book_imb(&self, ctx: &LagCtx) -> f64 {
+        let bq: f64 = ctx.exec_book.bids_iter().take(self.cfg.top_n).map(|(_, q)| q.raw() as f64).sum();
+        let aq: f64 = ctx.exec_book.asks_iter().take(self.cfg.top_n).map(|(_, q)| q.raw() as f64).sum();
+        let tot = bq + aq;
+        if tot <= 0.0 { 0.0 } else { (bq - aq) / tot }
+    }
 }
 impl LagSignal for BasisSignal {
     fn observe(&mut self, ctx: &LagCtx) {
@@ -307,7 +318,7 @@ impl LagSignal for BasisSignal {
             }
         }
     }
-    fn entry(&mut self, _ctx: &LagCtx) -> Option<Side> {
+    fn entry(&mut self, ctx: &LagCtx) -> Option<Side> {
         if !self.have_dev {
             return None;
         }
@@ -330,6 +341,13 @@ impl LagSignal for BasisSignal {
         }
         let rich = dev > 0.0;
         let mut long = if self.cfg.reversion { !rich } else { rich };
+        if self.cfg.confirm {
+            let imb = self.book_imb(ctx);
+            let agree = if long { imb >= self.cfg.confirm_imb } else { imb <= -self.cfg.confirm_imb };
+            if !agree {
+                return None;
+            }
+        }
         if self.cfg.shuffle {
             long = self.coin();
         }

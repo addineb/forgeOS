@@ -115,3 +115,14 @@ Picks to spark: #1 (defeats latency) + #2 (restores frequency to latency-proof t
 ## CURRENT BEST DEPLOYABLE: big-dislocation (>=15bps) + REVERT-TO-MEAN EXIT.
 @ real HL latency (884ms): t~4, ~12 trades/day, RR 2.0-2.2, +43-57% paper/36d, DD ~6-7%.
 Next variances to try: funding/book CONDITION (#4), magnitude SIZING (#6), ref leg (#5).
+## BOOK-PRESSURE CONFIRM (#4, Type-A) WORKS on the selective variant (@884ms, 36d)
+Only fade when HL book AGREES (bid-heavy to buy dip / ask-heavy to sell rip).
+thr20 + revert-exit: no-confirm t=3.92/win53.5/RR2.23/DD5.8 -> +confirm(imb>=0.2)
+t=4.81/win57.9/RR2.31/DD5.3 (~43% paper either way; filters ~15% lower-quality trades).
+Helps SELECTIVE (thr20) not FREQUENT (thr15 slightly worse). The dead imbalance
+indicator EARNS ITS KEEP as a confirm on a structural trigger (validates method-1).
+=> Quality win (higher t/win, lower DD), not a return boost. Euro ~715 on 500/20x/36d.
+
+## BEST CONFIG SO FAR (real latency, honest): thr>=20bps + revert-to-mean exit +
+## book-confirm(imb>=0.2): t=4.81, ~4-5 trades/day, win 58%, RR 2.3, DD ~5%, +43%/36d.
+Next: magnitude SIZING (#6, weight fattest gaps -> boost euro), ref-leg swap (#5).

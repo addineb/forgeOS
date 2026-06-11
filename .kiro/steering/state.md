@@ -123,3 +123,9 @@ reproducible, coinflip loses on real data.
   RR 2.0-2.2, +43-57% paper/36d, DD ~6-7% (beats fixed-hold). forgelag has exit()
   hook + zscore + velgate flags. NEXT variances: funding/book condition, magnitude
   sizing, ref-leg swap. (entry now uses sampled-dev; minor implementation sensitivity.)
+
+- BOOK-CONFIRM (#4) WORKS on selective variant: thr20+revert-exit+confirm(imb>=0.2)
+  @884ms = t=4.81 (up from 3.92), win 58%, RR 2.3, DD ~5%, +43%/36d (~EUR715). Dead
+  imbalance indicator validated AS A CONFIRM (method-1). Quality win not return boost.
+  BEST CONFIG: big-dislocation(>=20bps)+revert-exit+book-confirm. NEXT: magnitude
+  sizing (#6) to lift euro, ref-leg swap (#5).
