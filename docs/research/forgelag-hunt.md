@@ -336,3 +336,24 @@ higher). TRUSTED read = 10% each: EUR1323, DD3.8%. Idealized fills, 884ms, Feb-c
 NOT in plan (404): coinbase, kraken, deribit, kucoin, gateio, htx, mexc, bitget, dydx,
 hyperliquid_spot, okx_swap(use okx_futures). => 5 exchanges / 8 feeds; covers everything
 this strategy needs (HL execution + liquid spot refs).
+## KRAKEN-USD REFERENCE TESTED -> WORSE (2026-06-11) + full CHD venue list corrected
+User flagged coinbase/kraken/deribit. CHD list_exchanges() (authoritative): coinbase &
+deribit NOT covered. Kraken IS (kraken_spot BTC_USD/ETH_USD = real USD spot; also bitget,
+lighter, aster perp-DEXes). Tested Kraken-USD as reference, 36d thr20 revert-exit 884ms:
+| ETH ref=OKX(USDT)    | 568 | t9.73 | +391% | DD5.7  |
+| ETH ref=Kraken(USD)  | 760 | t-0.69| +24%  | DD33.2 |
+| BTC ref=OKX(USDT)    | 186 | t4.27 | +41%  | DD4.1  |
+| BTC ref=Kraken(USD)  | 279 | t-1.20| -18%  | DD28.9 |
+Basis sane (BTC +0.18bps, ETH -2.2bps - aligns, no scale bug). But Kraken ~18x THINNER
+than OKX (25k vs 457k ETH trades/day). VERDICT: Kraken much WORSE - negative edge, ~30% DD.
+Thin reference goes STALE -> when HL moves and Kraken hasn't printed, strategy fades a FAKE
+gap with nothing to revert to (760 trades, all low quality). PATTERN CONFIRMED across whole
+venue hunt: reference LIQUIDITY/FRESHNESS is what matters. Liquid USDT venues (OKX,Binance)
+work; thin ones (Kraken,Bybit) create false signals. OKX wins (best lead-lag timing w/ HL).
+=> REFERENCE-VENUE SEARCH EXHAUSTED: OKX is the anchor, full stop. (Bitget untested - moderately
+liquid but USDT key collides w/ binance; likely same thinness issue, low priority.)
+
+## FULL CHD FEED VENUES (authoritative via SDK list_exchanges):
+binance_spot/futures, bybit_spot/bybit(fut), okx_spot/futures, kraken_spot/kraken_derivatives,
+bitget_spot/futures, hyperliquid_spot/futures, bitmex, lighter, aster_futures.
+NOT covered: coinbase, deribit. (15 exchange-feeds; we use HL exec + OKX-spot reference.)

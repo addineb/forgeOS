@@ -218,3 +218,11 @@ reproducible, coinflip loses on real data.
   VENUES (probed): hyperliquid_futures[exec], okx_spot[best ref]+okx_futures, binance
   spot+futures, bybit+bybit_spot, bitmex. NOT avail: coinbase/kraken/deribit/kucoin/
   gateio/htx/mexc/bitget/dydx. 5 exchanges/8 feeds - covers the strategy fully.
+- KRAKEN-USD REF TESTED -> WORSE (2026-06-11). User flagged coinbase/kraken/deribit; CHD
+  has Kraken (not coinbase/deribit). Kraken-USD ref 36d thr20: ETH t-0.69/+24%/DD33, BTC
+  t-1.20/-18%/DD29 (vs OKX ETH t9.73 BTC t4.27). Basis sane but Kraken ~18x THINNER -> stale
+  ref -> fake dislocations, negative edge + huge DD. PATTERN: reference LIQUIDITY is what
+  matters; OKX wins. REFERENCE-VENUE SEARCH DONE: OKX anchor, full stop. CHD venues (SDK):
+  binance/bybit/okx/kraken/bitget (spot+fut), hyperliquid, bitmex, lighter, aster. NO
+  coinbase/deribit. SETTLED STACK: HL exec + OKX-spot ref + thr20(or15) revert-exit, ETH
+  primary. OKX portfolio: EUR3468 aggr / 1323 prudent (user runs aggressive).
