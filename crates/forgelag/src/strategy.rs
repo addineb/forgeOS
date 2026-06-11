@@ -13,6 +13,10 @@ pub trait LagSignal {
     fn observe(&mut self, _ctx: &LagCtx) {}
     /// When flat and ready: `Some(side)` to enter, else `None`.
     fn entry(&mut self, ctx: &LagCtx) -> Option<Side>;
+    /// When in a position: return true to request an early exit (default never).
+    fn exit(&self, _ctx: &LagCtx) -> bool {
+        false
+    }
 }
 
 /// Shared execution knobs.
@@ -83,6 +87,9 @@ impl<S: LagSignal> LagStrategy for Managed<S> {
         match self.phase {
             Phase::Open { entry_ts, dir, entry_mid } => {
                 let mut close = now.saturating_sub(entry_ts) >= self.cfg.hold_ns;
+                if self.sig.exit(ctx) {
+                    close = true;
+                }
                 if let Some(m) = mid {
                     let move_bps = ((m - entry_mid) as f64 / entry_mid as f64) * 10_000.0 * dir as f64;
                     if self.cfg.tp_bps > 0.0 && move_bps >= self.cfg.tp_bps {
@@ -177,6 +184,22 @@ pub struct BasisConfig {
     pub shuffle: bool,
     /// Seed for the shuffle control.
     pub seed: u64,
+    /// Gate entries on basis VELOCITY (only enter while still widening) to
+    /// anticipate our own order latency (fill lands near the peak stretch).
+    pub vel_gate: bool,
+    /// Min |dev| change over the lookback (bps) to count as stretching fast.
+    pub vel_min_bps: f64,
+    /// Velocity lookback in samples.
+    pub vel_lookback: usize,
+    /// Exit when the basis reverts to within exit_bps of its mean (0/false=off,
+    /// fall back to the hold timeout).
+    pub exit_revert: bool,
+    /// |dev| (bps) at/below which the revert-to-mean exit fires.
+    pub exit_bps: f64,
+    /// Use a z-score trigger: effective threshold = z_k * rolling std of the gap.
+    pub zscore: bool,
+    /// z multiplier for the z-score trigger.
+    pub z_k: f64,
 }
 
 /// Basis-reversion direction signal: fade large deviations of the HL microprice
@@ -187,10 +210,14 @@ pub struct BasisSignal {
     ring: Vec<f64>,
     pos: usize,
     sum: f64,
+    sum_sq: f64,
     next_sample: u64,
     started: bool,
     cur_gap: f64,
     have_gap: bool,
+    cur_dev: f64,
+    dev_hist: Vec<f64>,
+    have_dev: bool,
 }
 impl BasisSignal {
     /// New basis signal.
@@ -202,10 +229,14 @@ impl BasisSignal {
             ring: Vec::new(),
             pos: 0,
             sum: 0.0,
+            sum_sq: 0.0,
             next_sample: 0,
             started: false,
             cur_gap: 0.0,
             have_gap: false,
+            cur_dev: 0.0,
+            dev_hist: Vec::new(),
+            have_dev: false,
         }
     }
     fn micro(&self, ctx: &LagCtx) -> Option<f64> {
@@ -233,12 +264,22 @@ impl BasisSignal {
         if self.ring.len() < self.cfg.window {
             self.ring.push(g);
             self.sum += g;
+            self.sum_sq += g * g;
         } else {
             let old = self.ring[self.pos];
             self.sum += g - old;
+            self.sum_sq += g * g - old * old;
             self.ring[self.pos] = g;
             self.pos = (self.pos + 1) % self.cfg.window;
         }
+    }
+    fn gap_std(&self) -> f64 {
+        let n = self.ring.len() as f64;
+        if n < 2.0 {
+            return 0.0;
+        }
+        let mean = self.sum / n;
+        (self.sum_sq / n - mean * mean).max(0.0).sqrt()
     }
 }
 impl LagSignal for BasisSignal {
@@ -255,8 +296,11 @@ impl LagSignal for BasisSignal {
                 self.started = true;
             }
             if ctx.now >= self.next_sample {
-                let g = self.cur_gap;
-                self.push_sample(g);
+                let base = if self.ring.is_empty() { self.cur_gap } else { self.sum / self.ring.len() as f64 };
+                self.cur_dev = self.cur_gap - base;
+                self.have_dev = self.ring.len() >= 20;
+                self.dev_hist.push(self.cur_dev);
+                self.push_sample(self.cur_gap);
                 while self.next_sample <= ctx.now {
                     self.next_sample += self.cfg.sample_ns;
                 }
@@ -264,13 +308,25 @@ impl LagSignal for BasisSignal {
         }
     }
     fn entry(&mut self, _ctx: &LagCtx) -> Option<Side> {
-        if !self.have_gap || self.ring.len() < 20 {
+        if !self.have_dev {
             return None;
         }
-        let base = self.sum / self.ring.len() as f64;
-        let dev = self.cur_gap - base;
-        if dev.abs() < self.cfg.threshold_bps {
+        let dev = self.cur_dev;
+        let thr = if self.cfg.zscore { self.cfg.z_k * self.gap_std() } else { self.cfg.threshold_bps };
+        if dev.abs() < thr {
             return None;
+        }
+        if self.cfg.vel_gate {
+            let n = self.dev_hist.len();
+            if n <= self.cfg.vel_lookback {
+                return None;
+            }
+            let vel = dev - self.dev_hist[n - 1 - self.cfg.vel_lookback];
+            // only enter while the gap is STILL widening fast -> our delayed fill
+            // lands near the peak stretch instead of chasing a reverting gap.
+            if vel.signum() != dev.signum() || vel.abs() < self.cfg.vel_min_bps {
+                return None;
+            }
         }
         let rich = dev > 0.0;
         let mut long = if self.cfg.reversion { !rich } else { rich };
@@ -278,5 +334,8 @@ impl LagSignal for BasisSignal {
             long = self.coin();
         }
         Some(if long { Side::Bid } else { Side::Ask })
+    }
+    fn exit(&self, _ctx: &LagCtx) -> bool {
+        self.cfg.exit_revert && self.have_dev && self.cur_dev.abs() <= self.cfg.exit_bps
     }
 }

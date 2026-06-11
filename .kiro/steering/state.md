@@ -116,3 +116,10 @@ reproducible, coinflip loses on real data.
   at real latency. BUT big-dislocation variant SURVIVES: thr>=20bps/3min/taker @884-
   1000ms = t=2.4-3.0, +6-8bps, ~5-6 trades/day, RR~1.9, win~48%, paper +59-80%/36d,
   DD~10%. Deployable SLIVER (borderline). NEXT: more periods to firm up + live validate.
+
+- VARIANCE TESTS: velocity gate=no effect (rejected); Z-SCORE k=3=disaster (over-
+  trades noise, rejected); REVERT-TO-MEAN EXIT = WINNER. Best deployable now =
+  big-dislocation (>=15bps) + revert-exit: @884ms real latency t~4, ~12 trades/day,
+  RR 2.0-2.2, +43-57% paper/36d, DD ~6-7% (beats fixed-hold). forgelag has exit()
+  hook + zscore + velgate flags. NEXT variances: funding/book condition, magnitude
+  sizing, ref-leg swap. (entry now uses sampled-dev; minor implementation sensitivity.)

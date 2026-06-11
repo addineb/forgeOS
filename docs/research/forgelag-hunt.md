@@ -100,3 +100,18 @@ Win rate ~48% (coinflip); profit is from RR ~1.9 (wins ~2x losses) = positive ex
 5. REFERENCE leg: Binance FUTURES (perp-perp) vs spot; aggregated multi-venue VWAP.
 6. SIZE proportional to dislocation magnitude (more $ on fattest/highest-expectancy).
 Picks to spark: #1 (defeats latency) + #2 (restores frequency to latency-proof trades).
+## VARIANCE TESTS (2026-06-11, @884ms real latency, 36 days)
+- VELOCITY GATE (#1): no effect (small dislocations decay < latency; not a timing problem). REJECTED.
+- REVERT-TO-MEAN EXIT (#3): WINNER. Exit when basis returns to ~mean (|dev|<=2bps)
+  instead of fixed hold. thr15: t=4.01, 446 trades (~12/day), win 48%, RR 2.00,
+  paper +57%, maxDD 6.9%. thr20: t=3.92, RR 2.23, maxDD 5.8%. Cuts losers early
+  (avgL 0.20->0.06) + stops giving back profit -> higher t, more trades, lower DD
+  than fixed-hold. BEST deployable config at real latency.
+- Z-SCORE TRIGGER (#2) k=3: DISASTER (t=-37, ~360 trades/day on noise). Bar too low;
+  recreates the latency-killed small-dislocation problem. REJECTED (as-is).
+- CAVEAT: entry refactor to sampled-dev (for velocity work) shifted baseline numbers
+  -> signal has some implementation sensitivity; revert-exit result is robust though.
+
+## CURRENT BEST DEPLOYABLE: big-dislocation (>=15bps) + REVERT-TO-MEAN EXIT.
+@ real HL latency (884ms): t~4, ~12 trades/day, RR 2.0-2.2, +43-57% paper/36d, DD ~6-7%.
+Next variances to try: funding/book CONDITION (#4), magnitude SIZING (#6), ref leg (#5).
