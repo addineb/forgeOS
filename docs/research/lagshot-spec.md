@@ -1,0 +1,56 @@
+---
+tags: [strategy, lagshot, basis, spec]
+type: strategy-spec
+---
+# LAGSHOT - strategy spec
+
+Cross-venue basis/lag reversion. The name: LAG (the edge - Hyperliquid lags spot
+price discovery) + SHOT (the slingshot - the basis stretches past normal, then
+snaps back). Runs on the forgelag engine (branch `forgelag`). Engine core SACRED /
+null-edge gated. This doc = the canonical spec; results live in [[forgelag-hunt]].
+
+## One-liner
+Fade the gap between Hyperliquid's perp microprice and OKX spot when it stretches
+too far from its recent baseline; hold minutes; close when it reverts. Taker-only.
+
+## Spec sheet
+| field            | value |
+|------------------|-------|
+| Type             | cross-venue basis / lag reversion (perp vs spot) |
+| Execution venue  | Hyperliquid perp, TAKER (must cross spread; maker fails = adverse selection) |
+| Reference anchor | OKX spot (beat Binance/Bybit/Kraken; aggregation rejected) |
+| Assets           | ETH (primary engine), BTC (diversifier). SOL/HYPE excluded. |
+| Signal           | HL microprice dislocation vs OKX, measured vs a rolling baseline (window 500, 0.5s samples) |
+| Entry            | fade when |dev| >= threshold. ETH thr16 (max profit) / thr19 (best risk-adj); BTC thr15-16 |
+| Exit             | REVERT-TO-MEAN (close when |dev| <= ~2bps); 10m hold timeout; 30s cooldown |
+| Hold horizon     | minutes (NOT sub-second) - this is why it survives latency |
+| Latency model    | 884ms real HL order-to-fill (the binding constraint; <~500ms = much stronger, >1s = inverts) |
+| Account model    | EUR500, 20x leverage, 20% sizing, 5% daily-loss halt |
+| Rejected knobs   | maker entries, stop-loss, aggregated ref, funding-conditioning, cross-asset lead, z-score, velocity gate, magnitude sizing, book-confirm(on OKX), regime filter(redundant) |
+
+## Performance (backtest, two INDEPENDENT periods, 884ms)
+| period                 | ETH thr16            | BTC thr15-16        |
+|------------------------|----------------------|---------------------|
+| Train (Feb+MayJun '26) | t9.35 +521% DD10 win55| t5 +67-69% DD5.5    |
+| OOS (Nov-Dec '25, 61d) | t13.31 +542% DD4.2 win62.5 | t3.3 +35-37% DD~4 |
+Frequency: ETH ~16-28 trades/day, BTC ~5-13.
+Best risk-adjusted single: ETH thr19 (t10.13, +453%, DD5.0).
+Portfolio BTC+ETH OKX (20% each, thr20): EUR500->3468 (+594%, DD7.6).
+
+## Validation passed (the anti-lie checks the last project never had)
+- NULL-EDGE gate: seeded coinflip nets NEGATIVE (engine doesn't manufacture edge).
+- SHUFFLE control: randomizing direction goes hard negative (t -6 to -13) in BOTH periods.
+- OUT-OF-SAMPLE: replicates on data never tuned on (Nov-Dec 2025), in fact stronger + lower DD.
+- No-lookahead by construction (two-clock model); deterministic; reproducible to the decimal.
+- No ruin in any tested config.
+
+## The ONE open gate (everything else is validated)
+REAL EXECUTION LATENCY. All numbers assume 884ms and idealized fills. Not a single live
+order placed. The strategy is TAKER and latency-sensitive -> the only honest next step is a
+tiny funded HL order to measure true signal->fill latency. That converts Lagshot from
+"strong backtest" to "tradeable or not". Until then: a validated hypothesis, NOT money.
+
+## Honest caveats kept attached
+- Idealized fills (sim models queue+slippage, reality has more friction).
+- Edge is regime-dependent (concentrates in volatile stretches; calm windows ~flat).
+- Decay risk (a clean edge invites competition).

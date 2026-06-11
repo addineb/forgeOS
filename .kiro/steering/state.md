@@ -258,3 +258,8 @@ reproducible, coinflip loses on real data.
   REGIME-ROBUST, NOT Feb artifact. 10% training DD was bad-luck case (OOS only 4.2%).
   FEB-CONCENTRATION DOUBT RESOLVED. LAST big gate = real HL execution latency (884ms assumed,
   idealized fills). Edge validated; next = measure live fill latency / tiny funded HL order.
+- STRATEGY NAMED: *** LAGSHOT *** (LAG = HL lags spot + SHOT = slingshot stretch-then-snap).
+  Spec doc = docs/research/lagshot-spec.md. = cross-venue basis reversion, HL-perp taker vs
+  OKX-spot anchor, ETH primary (thr16 profit / thr19 risk-adj) + BTC diversifier, revert-to-
+  mean exit, 884ms. Validated: null-edge + shuffle(neg x2) + OOS-replicates(Nov-Dec25, ETH
+  t13.31/+542%/DD4.2). ONE open gate = real HL execution latency (live test). All else done.
