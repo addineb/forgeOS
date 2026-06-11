@@ -88,6 +88,9 @@ fn run() -> Result<(), String> {
     let mut magsize = false;
     let mut magcap = 4.0_f64;
     let mut dumptrips: Option<String> = None;
+    let mut fundgate = false;
+    let mut fundmin = 0.00002_f64;
+    let mut fundalign = false;
 
     let mut depths = vec![5usize];
     let mut thr_ax = vec![8.0, 10.0, 12.0];
@@ -129,6 +132,9 @@ fn run() -> Result<(), String> {
             "--magsize" => magsize = true,
             "--magcap" => magcap = val()?.parse().map_err(|e| format!("magcap: {e}"))?,
             "--dumptrips" => dumptrips = Some(val()?),
+            "--fundgate" => fundgate = true,
+            "--fundmin" => fundmin = val()?.parse().map_err(|e| format!("fundmin: {e}"))?,
+            "--fundalign" => fundalign = true,
             other => return Err(format!("unknown arg {other}")),
         }
     }
@@ -151,7 +157,7 @@ fn run() -> Result<(), String> {
                         for &cd in &cd_ax {
                             for &lim in &lim_ax {
                                 cells.push(Cell {
-                                    basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1, vel_gate: velgate, vel_min_bps: velmin, vel_lookback: vellb, exit_revert: exitrevert, exit_bps: exitbps, zscore, z_k: zk, confirm, confirm_imb: confimb, mag_size: magsize, mag_cap: magcap },
+                                    basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1, vel_gate: velgate, vel_min_bps: velmin, vel_lookback: vellb, exit_revert: exitrevert, exit_bps: exitbps, zscore, z_k: zk, confirm, confirm_imb: confimb, mag_size: magsize, mag_cap: magcap, fund_gate: fundgate, fund_min: fundmin, fund_align: fundalign },
                                     managed: ManagedConfig { qty: q, hold_ns: h, cooldown_ns: cd, tp_bps: 0.0, sl_bps: 0.0, fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000), use_limit: lim },
                                     depth: d, thr: th, win: w, rev: rv, hold: h, lim,
                                 });
@@ -266,6 +272,8 @@ fn run() -> Result<(), String> {
     println!("z-score trigger  {}", if zscore { format!("ON (k={zk})") } else { "off".to_string() });
     println!("book confirm     {}", if confirm { format!("ON (imb>={confimb})") } else { "off".to_string() });
     println!("magnitude sizing {}", if magsize { format!("ON (cap {magcap}x)") } else { "off".to_string() });
+    println!("funding gate     {}", if fundgate { format!("ON (|fund|>={fundmin})") } else { "off".to_string() });
+    println!("funding align    {}", if fundalign { "ON".to_string() } else { "off".to_string() });
     println!("{:>6} {:>8} {:>6} {:>6} {:>8} {:>8} {:>5} {:>8} {:>7}  knobs", "n", "mean%", "t-stat", "win%", "avgW%", "avgL%", "RR", "paper%", "maxDD%");
     for r in rows.iter().take(top) {
         println!("{:>6} {:>8.4} {:>6.2} {:>5.1}% {:>8.4} {:>8.4} {:>5.2} {:>8.1} {:>7.1}  {}", r.n, r.mean, r.t, r.win, r.avg_w, r.avg_l, r.rr, r.paper, r.maxdd, r.knobs);

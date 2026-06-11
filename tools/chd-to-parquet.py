@@ -24,6 +24,11 @@ HLQUOTE_SCHEMA = pa.schema([
     ("ask", pa.float64()), ("mid", pa.float64()), ("source", pa.string()),
 ])
 
+FUNDING_SCHEMA = pa.schema([
+    ("ts", pa.int64()), ("funding", pa.float64()),
+    ("mark", pa.float64()), ("index", pa.float64()),
+])
+
 def dl(file_path):
     url = "%s/download?file=%s&api_key=%s" % (BASE, file_path, KEY)
     r = requests.get(url, timeout=180)
@@ -169,6 +174,19 @@ def conv_hlbook(exchange, symbol, coin, date, hh, data_dir, book):
     pq.write_table(tbl, os.path.join(outdir(data_dir, coin, "hlbook", date), hh+".parquet"))
     return len(rv), book
 
+def conv_funding(exchange, symbol, coin, date, hh, data_dir):
+    # HL funding rate rides in the mark_price stream. NOTE event_time is NANOSECONDS
+    # here (unlike *_trades which are ms) -> convert ns//1e6 to ms for feed consistency.
+    df = dl("%s/%s/%s/%s_mark_price.parquet.zst" % (exchange, date, hh, symbol))
+    if df is None or len(df) == 0: return 0
+    ts_ms = (df["event_time"].astype("int64") // 1_000_000).to_numpy()
+    fr = pd.to_numeric(df["funding_rate"], errors="coerce").fillna(0.0).astype("float64").to_numpy()
+    mk = pd.to_numeric(df["mark_price"], errors="coerce").fillna(0.0).astype("float64").to_numpy()
+    ix = pd.to_numeric(df["index_price"], errors="coerce").fillna(0.0).astype("float64").to_numpy()
+    tbl = pa.table({"ts": ts_ms, "funding": fr, "mark": mk, "index": ix}, schema=FUNDING_SCHEMA)
+    pq.write_table(tbl, os.path.join(outdir(data_dir, coin, "funding", date), hh+".parquet"))
+    return len(df)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", required=True)
@@ -183,7 +201,7 @@ def main():
     a = ap.parse_args()
     streams = a.streams.split(",")
     hours = [f"{h:02d}" for h in range(24)] if a.hours == "all" else a.hours.split(",")
-    tot = {"trade":0,"bookDelta":0,"hlquote":0,"hlbook":0}
+    tot = {"trade":0,"bookDelta":0,"hlquote":0,"hlbook":0,"funding":0}
     hlbook = {"bid":{}, "ask":{}}
     hlb_state = {"bid":{}, "ask":{}}
     for hh in hours:
@@ -195,6 +213,8 @@ def main():
             n, hlbook = conv_hlquote(a.hl_exchange, a.hl_symbol, a.coin, a.date, hh, a.data_dir, hlbook); tot["hlquote"]+=n
         if "hlbook" in streams:
             n, hlb_state = conv_hlbook(a.hl_exchange, a.hl_symbol, a.coin, a.date, hh, a.data_dir, hlb_state); tot["hlbook"]+=n
+        if "funding" in streams:
+            n = conv_funding(a.hl_exchange, a.hl_symbol, a.coin, a.date, hh, a.data_dir); tot["funding"]+=n
         print(f"[chd] {a.date} {hh} {streams} done", flush=True)
     print(f"[chd] TOTAL {tot}")
 

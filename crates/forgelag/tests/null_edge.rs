@@ -29,6 +29,7 @@ fn ev(role: Role, kind: LagKind, side: Side, px_raw: i64, qty_raw: i64, ts: u64)
         price: Price::from_raw(px_raw),
         qty: Qty::from_raw(qty_raw),
         src: 0,
+        aux: 0.0,
     }
 }
 

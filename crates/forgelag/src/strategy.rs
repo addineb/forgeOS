@@ -215,6 +215,13 @@ pub struct BasisConfig {
     pub mag_size: bool,
     /// Max size multiplier for magnitude sizing.
     pub mag_cap: f64,
+    /// Only enter when |funding rate| >= fund_min (extreme/crowded positioning).
+    pub fund_gate: bool,
+    /// Funding magnitude threshold (absolute per-hour rate).
+    pub fund_min: f64,
+    /// Require funding sign to support the reversion (long needs negative funding,
+    /// short needs positive) = the crowded side being unwound.
+    pub fund_align: bool,
 }
 
 /// Basis-reversion direction signal: fade large deviations of the HL microprice
@@ -355,6 +362,15 @@ impl LagSignal for BasisSignal {
             let imb = self.book_imb(ctx);
             let agree = if long { imb >= self.cfg.confirm_imb } else { imb <= -self.cfg.confirm_imb };
             if !agree {
+                return None;
+            }
+        }
+        if self.cfg.fund_gate && ctx.funding.abs() < self.cfg.fund_min {
+            return None;
+        }
+        if self.cfg.fund_align {
+            let supportive = if long { ctx.funding < 0.0 } else { ctx.funding > 0.0 };
+            if !supportive {
                 return None;
             }
         }

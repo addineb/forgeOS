@@ -41,6 +41,8 @@ pub enum LagKind {
     BookDelta,
     /// A trade print.
     Trade,
+    /// A funding-rate update (rate carried in aux).
+    Funding,
 }
 
 /// One normalized multi-venue event. Timestamps are Unix NANOSECONDS.
@@ -62,6 +64,8 @@ pub struct LagEvent {
     pub qty: Qty,
     /// Reference-venue index (0-based) for Reference trades; 0 for exec events.
     pub src: u8,
+    /// Auxiliary scalar (funding rate on Funding events; 0.0 otherwise).
+    pub aux: f64,
 }
 
 /// A window-load request.
@@ -149,6 +153,7 @@ fn push_hlbook(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), Str
                 price: Price::from_f64(price.value(i)).map_err(|e| format!("{e}"))?,
                 qty: Qty::from_f64(qty.value(i)).map_err(|e| format!("{e}"))?,
                 src: 0,
+                aux: 0.0,
             });
         }
     }
@@ -174,6 +179,29 @@ fn push_trades(path: &Path, lat: u64, role: Role, src: u8, out: &mut Vec<LagEven
                 price: Price::from_f64(price.value(i)).map_err(|e| format!("{e}"))?,
                 qty: Qty::from_f64(qty.value(i)).map_err(|e| format!("{e}"))?,
                 src,
+                aux: 0.0,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn push_funding(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), String> {
+    for b in read_batches(path)? {
+        let ts = col_i64(&b, "ts")?;
+        let fr = col_f64(&b, "funding")?;
+        for i in 0..b.num_rows() {
+            let exch = ms_to_ns(ts.value(i))?;
+            out.push(LagEvent {
+                role: Role::Reference,
+                kind: LagKind::Funding,
+                exch_ts: exch,
+                local_ts: exch.saturating_add(lat),
+                side: None,
+                price: Price::from_raw(0),
+                qty: Qty::from_raw(0),
+                src: 0,
+                aux: fr.value(i),
             });
         }
     }
@@ -206,6 +234,11 @@ pub fn load_window(cfg: &FeedConfig) -> Result<Vec<LagEvent>, String> {
         let ex_tr = cfg.root.join(&cfg.coin).join("trade").join(&cfg.date).join(format!("{hh}.parquet"));
         if ex_tr.exists() {
             push_trades(&ex_tr, cfg.exec_latency_ns, Role::Exec, 0, &mut evs)?;
+        }
+        // EXEC venue (HL) funding rate -> crowded-positioning conditioning.
+        let fnd = cfg.root.join(&cfg.coin).join("funding").join(&cfg.date).join(format!("{hh}.parquet"));
+        if fnd.exists() {
+            push_funding(&fnd, cfg.exec_latency_ns, &mut evs)?;
         }
     }
     evs.sort_by(|a, b| {

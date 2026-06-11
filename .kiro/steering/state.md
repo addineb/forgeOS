@@ -159,3 +159,16 @@ reproducible, coinflip loses on real data.
   the FEB window - the 22d May-Jun window alone is weak (ETH thr20 +2.6% single/+11% agg,
   BTC negative). Returns are lumpy/regime-dependent, NOT always-on. NEXT lead = Type C
   forced-flow (liquidation cascades) per the untested high-value buckets.
+- FUNDING-CONDITIONING (improvement #2) = TESTED + REJECTED for BTC/ETH (2026-06-11).
+  Built full funding infra: converter funding stream (HL mark_price; its event_time is
+  NANOSECONDS - handled), feed/engine funding field + LagCtx.funding, BasisConfig
+  fund_gate/fund_min/fund_align (hunt --fundgate/--fundmin/--fundalign). clippy+null-edge
+  green. BTC funding ASYMMETRIC: positive capped +1.25e-5, negative spikes -1.4e-4.
+  36d/thr20/884ms: gating on extreme funding lifts per-trade quality (ETH win 62->69%)
+  but cuts ~80% of trades -> ETH +283%->+30% t7.95->3.29; BTC +43->+3.5. fund-align
+  least harmful (keeps 60%) but still costs return/t. => basis edge is ORTHOGONAL to
+  hourly funding; crowdedness not the driver. Infra kept as option, not default.
+  LAG-VENUE RESEARCH now: #1 aggregated ref REJECTED, #2 funding REJECTED. STILL OPEN:
+  single-venue bake-off (Binance vs OKX vs Bybit anchor), aggregated-ref ON HYPE (thin-
+  ref case), #3 cross-asset lead (BTC leads ETH). Best deployable stays: thr20+revert-
+  exit, single Binance ref (ETH t~8/+283%, BTC t~3.9/+43%, edge concentrated in Feb).

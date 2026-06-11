@@ -23,6 +23,8 @@ pub struct LagCtx<'a> {
     pub exec_book: &'a OrderBook,
     /// Latest reference price (Binance trade), 0.0 until the first ref trade.
     pub ref_px: f64,
+    /// Latest HL funding rate (per-hour rate), 0.0 until the first funding tick.
+    pub funding: f64,
     /// Our signed position (raw qty): + long, - short.
     pub position_qty: i64,
 }
@@ -146,6 +148,7 @@ pub struct LagEngine<S: LagStrategy> {
     book: OrderBook,
     ref_px: f64,
     ref_last: Vec<f64>,
+    funding: f64,
     acct: Account,
     strat: S,
     fees: FeeSchedule,
@@ -171,6 +174,7 @@ impl<S: LagStrategy> LagEngine<S> {
             book: OrderBook::with_max_levels(cfg.exec_book_levels),
             ref_px: 0.0,
             ref_last: Vec::new(),
+            funding: 0.0,
             acct: Account::new(),
             strat,
             fees: cfg.fees,
@@ -321,6 +325,7 @@ impl<S: LagStrategy> LagEngine<S> {
                 self.ref_px = if cnt > 0 { sum / f64::from(cnt) } else { 0.0 };
             }
             (Role::Reference, LagKind::BookDelta) => {}
+            (_, LagKind::Funding) => self.funding = ev.aux,
         }
 
         self.buf.clear();
@@ -329,6 +334,7 @@ impl<S: LagStrategy> LagEngine<S> {
                 now: t,
                 exec_book: &self.book,
                 ref_px: self.ref_px,
+                funding: self.funding,
                 position_qty: self.acct.net_qty(),
             };
             self.strat.on_event(&ctx, &mut self.buf);

@@ -14,7 +14,7 @@ SSRN lead-lag microstructure, ml4trading/OneKey funding arb, Hyperliquid docs.
    (Binance spot > Binance futures). ADD: reference = VWAP/weighted mid across
    Binance+OKX+Bybit spot. Cleaner anchor -> better/more dislocations. Needs OKX/
    Bybit spot data per asset.
-2. FUNDING-CONDITIONING. Extreme funding -> predictable mean-reversion (ml4trading,
+2. FUNDING-CONDITIONING [TESTED 2026-06-11: REJECTED for BTC/ETH - quality-for-frequency trade, cuts ~80% of trades, t/return collapse; edge is orthogonal to hourly funding. See [[forgelag-hunt]]]. Extreme funding -> predictable mean-reversion (ml4trading,
    OneKey). Our basis IS funding-driven. ADD: gate/boost entries on funding extremes.
    HL funding settles hourly (easy pull).
 3. CROSS-ASSET LEAD. SSRN: one asset's trades+imbalance predict another's midpoint;

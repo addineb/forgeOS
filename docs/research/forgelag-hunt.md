@@ -196,3 +196,29 @@ the honest risk: returns are lumpy and regime-dependent, not a steady printer.
 
 REPRODUCIBILITY CHECK (addresses trust): the logged ETH +283%/t=7.95 and BTC +43%
 REPRODUCED EXACTLY on fresh re-run -> engine is consistent across runs, not drifting.
+## FUNDING-CONDITIONING (#2) TESTED -> REJECTED for BTC/ETH (2026-06-11)
+Built funding support: converter `funding` stream from HL mark_price (NOTE its
+event_time is NANOSECONDS not ms - handled), feed Funding event + engine funding
+field + LagCtx.funding, BasisConfig fund_gate/fund_min/fund_align knobs (hunt
+--fundgate --fundmin --fundalign). Clippy clean, null-edge gate still passes.
+BTC funding dist (per-hour, 36d): |median| 8.9e-6, p95 2.2e-5, p99 4.7e-5; ASYMMETRIC
+- positive CAPPED at +1.25e-5 (HL mechanic), negative spikes to -1.4e-4 (fear/crowded
+shorts). So fund_gate>=2e-5 ~ "only trade when funding very negative".
+
+Results (36d, thr20, revert-exit, 884ms):
+| BTC variant        | n   | t    | win  | RR   | paper | DD  |
+| baseline           | 187 | 3.92 | 53.5 | 2.23 | +43   | 5.8 |
+| fundgate>=2e-5     | 34  | 0.70 | 32.4 | 3.57 | +3.5  | 4.7 |
+| fundalign          | 111 | 3.09 | 50.5 | 2.62 | +30   | 4.7 |
+| ETH variant        | n   | t    | win  | RR   | paper | DD  |
+| baseline           | 549 | 7.95 | 62.3 | 1.77 | +283  | 7.4 |
+| fundgate>=2e-5     | 88  | 3.29 | 69.3 | 1.12 | +30   | 3.8 |
+| fundalign          | 323 | 6.19 | 62.8 | 1.78 | +112  | 9.2 |
+
+VERDICT: REJECTED. Quality-for-frequency trade that loses on net. Gating on extreme
+funding DOES lift per-trade quality (ETH win 62->69%) = extreme-funding moments are
+marginally better, but it discards ~80% of trades so total return + significance
+collapse (ETH +283->+30%, t 7.95->3.29). Sign-alignment is least harmful (keeps ~60%)
+but still costs return/t without improving them. => the basis-reversion edge is a
+short-horizon microprice dislocation LARGELY ORTHOGONAL to the hourly funding rate;
+crowdedness is not the driver. Funding infra kept as an option, not a default.
