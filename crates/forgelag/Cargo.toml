@@ -1,0 +1,18 @@
+[package]
+name = "forgelag"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Dedicated engine for spot-perp basis / cross-venue lag strategies: multi-venue replay, per-venue latency, basis-native sim + hunt + honest per-trade stats."
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-book = { path = "../forge-book" }
+forge-sim = { path = "../forge-sim" }
+arrow = "53"
+parquet = { version = "53", default-features = false, features = ["arrow", "snap", "zstd"] }
+rayon = "1"
+
+[[bin]]
+name = "lag-feedcheck"
+path = "src/bin/feedcheck.rs"

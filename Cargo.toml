@@ -12,6 +12,7 @@ members = [
     "crates/forge-strategy",
     "crates/forge-metrics",
     "crates/forge-sweep",
+    "crates/forgelag",
 ]
 
 [profile.release]
