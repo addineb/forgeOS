@@ -17,6 +17,10 @@ pub trait LagSignal {
     fn exit(&self, _ctx: &LagCtx) -> bool {
         false
     }
+    /// Size multiplier for the entry (default 1x); used for magnitude sizing.
+    fn size_mult(&self) -> f64 {
+        1.0
+    }
 }
 
 /// Shared execution knobs.
@@ -115,17 +119,19 @@ impl<S: LagSignal> LagStrategy for Managed<S> {
                 } else if now >= ready_at {
                     if let Some(m) = mid {
                         if let Some(side) = self.sig.entry(ctx) {
+                            let mlt = self.sig.size_mult().max(0.01);
+                            let sz = forge_core::Qty::from_raw((self.cfg.qty.raw() as f64 * mlt) as i64);
                             let intent = if self.cfg.use_limit {
                                 let px = match side {
                                     Side::Bid => ctx.exec_book.best_bid().map(|(p, _)| p),
                                     Side::Ask => ctx.exec_book.best_ask().map(|(p, _)| p),
                                 };
                                 match px {
-                                    Some(p) => LagOrder::limit(side, p, self.cfg.qty),
+                                    Some(p) => LagOrder::limit(side, p, sz),
                                     None => return,
                                 }
                             } else {
-                                LagOrder::market(side, self.cfg.qty)
+                                LagOrder::market(side, sz)
                             };
                             out.push(intent);
                             self.pending = Some((pos, now + self.cfg.fill_timeout_ns));
@@ -205,6 +211,10 @@ pub struct BasisConfig {
     pub confirm: bool,
     /// Min top-N book imbalance in [0,1] to count as agreement.
     pub confirm_imb: f64,
+    /// Scale entry size by dislocation magnitude (|dev|/threshold, capped).
+    pub mag_size: bool,
+    /// Max size multiplier for magnitude sizing.
+    pub mag_cap: f64,
 }
 
 /// Basis-reversion direction signal: fade large deviations of the HL microprice
@@ -355,5 +365,12 @@ impl LagSignal for BasisSignal {
     }
     fn exit(&self, _ctx: &LagCtx) -> bool {
         self.cfg.exit_revert && self.have_dev && self.cur_dev.abs() <= self.cfg.exit_bps
+    }
+    fn size_mult(&self) -> f64 {
+        if !self.cfg.mag_size || !self.have_dev {
+            return 1.0;
+        }
+        let reference = if self.cfg.threshold_bps > 0.0 { self.cfg.threshold_bps } else { 10.0 };
+        (self.cur_dev.abs() / reference).clamp(1.0, self.cfg.mag_cap.max(1.0))
     }
 }

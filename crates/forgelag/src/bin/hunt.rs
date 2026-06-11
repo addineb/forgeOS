@@ -50,6 +50,9 @@ fn fmt_dur(ns: u64) -> String {
     else { format!("{}ms", ns / 1_000_000) }
 }
 
+/// (per-trip (close_ts, return%), per-trip entry notional).
+type TripData = (Vec<(u64, f64)>, Vec<f64>);
+
 #[derive(Clone, Copy)]
 struct Cell {
     basis: BasisConfig,
@@ -82,6 +85,8 @@ fn run() -> Result<(), String> {
     let mut zk = 3.0_f64;
     let mut confirm = false;
     let mut confimb = 0.2_f64;
+    let mut magsize = false;
+    let mut magcap = 4.0_f64;
 
     let mut depths = vec![5usize];
     let mut thr_ax = vec![8.0, 10.0, 12.0];
@@ -120,6 +125,8 @@ fn run() -> Result<(), String> {
             "--zk" => zk = val()?.parse().map_err(|e| format!("zk: {e}"))?,
             "--confirm" => confirm = true,
             "--confimb" => confimb = val()?.parse().map_err(|e| format!("confimb: {e}"))?,
+            "--magsize" => magsize = true,
+            "--magcap" => magcap = val()?.parse().map_err(|e| format!("magcap: {e}"))?,
             other => return Err(format!("unknown arg {other}")),
         }
     }
@@ -142,7 +149,7 @@ fn run() -> Result<(), String> {
                         for &cd in &cd_ax {
                             for &lim in &lim_ax {
                                 cells.push(Cell {
-                                    basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1, vel_gate: velgate, vel_min_bps: velmin, vel_lookback: vellb, exit_revert: exitrevert, exit_bps: exitbps, zscore, z_k: zk, confirm, confirm_imb: confimb },
+                                    basis: BasisConfig { top_n: d, threshold_bps: th, window: w, sample_ns: 500_000_000, reversion: rv, shuffle, seed: 1, vel_gate: velgate, vel_min_bps: velmin, vel_lookback: vellb, exit_revert: exitrevert, exit_bps: exitbps, zscore, z_k: zk, confirm, confirm_imb: confimb, mag_size: magsize, mag_cap: magcap },
                                     managed: ManagedConfig { qty: q, hold_ns: h, cooldown_ns: cd, tp_bps: 0.0, sl_bps: 0.0, fill_timeout_ns: latency_ns.saturating_add(500_000_000).max(200_000_000), use_limit: lim },
                                     depth: d, thr: th, win: w, rev: rv, hold: h, lim,
                                 });
@@ -156,6 +163,7 @@ fn run() -> Result<(), String> {
 
     eprintln!("hunt: {} configs x {} days  latency={}ms  shuffle={}", cells.len(), dates.len(), latency_ns / 1_000_000, shuffle);
     let mut agg: Vec<Vec<(u64, f64)>> = vec![Vec::new(); cells.len()];
+    let mut agg_notl: Vec<Vec<f64>> = vec![Vec::new(); cells.len()];
     let mut days_used = 0usize;
     for d in &dates {
         let cfg = FeedConfig {
@@ -178,18 +186,20 @@ fn run() -> Result<(), String> {
             eprintln!("  skip {d}: empty");
             continue;
         }
-        let per: Vec<Vec<(u64, f64)>> = cells
+        let per: Vec<TripData> = cells
             .par_iter()
             .map(|c| {
                 let sig = BasisSignal::new(c.basis);
                 let strat = Managed::new(sig, c.managed);
                 let mut eng = LagEngine::new(strat, LagConfig { order_latency_ns: latency_ns, exec_book_levels: 20, fees: FeeSchedule::legacy() });
                 eng.run(evs.iter()).expect("monotonic stream");
-                eng.finish().trip_returns
+                let r = eng.finish();
+                (r.trip_returns, r.trip_notionals)
             })
             .collect();
-        for (i, p) in per.iter().enumerate() {
-            agg[i].extend(p);
+        for (i, (r, nl)) in per.iter().enumerate() {
+            agg[i].extend(r);
+            agg_notl[i].extend(nl);
         }
         days_used += 1;
         eprintln!("  {d}: {} events", evs.len());
@@ -230,7 +240,13 @@ fn run() -> Result<(), String> {
         let avg_w = if wv.is_empty() { 0.0 } else { wv.iter().sum::<f64>() / wv.len() as f64 };
         let avg_l = if lv.is_empty() { 0.0 } else { lv.iter().sum::<f64>() / lv.len() as f64 };
         let rr = if avg_l < 0.0 { avg_w / -avg_l } else { 0.0 };
-        let mut trips = agg[i].clone();
+        let notl = &agg_notl[i];
+        let mut trips: Vec<(u64, f64)> = if magsize && !notl.is_empty() {
+            let mean = notl.iter().sum::<f64>() / notl.len() as f64;
+            agg[i].iter().zip(notl.iter()).map(|((ts, r), &w)| (*ts, if mean > 0.0 { r * (w / mean) } else { *r })).collect()
+        } else {
+            agg[i].clone()
+        };
         trips.sort_by_key(|x| x.0);
         let pr = paper_run(&trips, &pcfg);
         rows.push(Row {
@@ -247,6 +263,7 @@ fn run() -> Result<(), String> {
     println!("revert-exit      {}", if exitrevert { format!("ON (exit |dev|<={exitbps}bps)") } else { "off".to_string() });
     println!("z-score trigger  {}", if zscore { format!("ON (k={zk})") } else { "off".to_string() });
     println!("book confirm     {}", if confirm { format!("ON (imb>={confimb})") } else { "off".to_string() });
+    println!("magnitude sizing {}", if magsize { format!("ON (cap {magcap}x)") } else { "off".to_string() });
     println!("{:>6} {:>8} {:>6} {:>6} {:>8} {:>8} {:>5} {:>8} {:>7}  knobs", "n", "mean%", "t-stat", "win%", "avgW%", "avgL%", "RR", "paper%", "maxDD%");
     for r in rows.iter().take(top) {
         println!("{:>6} {:>8.4} {:>6.2} {:>5.1}% {:>8.4} {:>8.4} {:>5.2} {:>8.1} {:>7.1}  {}", r.n, r.mean, r.t, r.win, r.avg_w, r.avg_l, r.rr, r.paper, r.maxdd, r.knobs);

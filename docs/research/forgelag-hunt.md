@@ -126,3 +126,7 @@ indicator EARNS ITS KEEP as a confirm on a structural trigger (validates method-
 ## BEST CONFIG SO FAR (real latency, honest): thr>=20bps + revert-to-mean exit +
 ## book-confirm(imb>=0.2): t=4.81, ~4-5 trades/day, win 58%, RR 2.3, DD ~5%, +43%/36d.
 Next: magnitude SIZING (#6, weight fattest gaps -> boost euro), ref-leg swap (#5).
+## MAGNITUDE SIZING (#6): NEGLIGIBLE. paper 42.9->41.7% (thr20), t 4.81->4.75; within
+## the big-dislocation bucket trades are similar size so weighting barely redistributes,
+## and bigger orders eat a touch more slippage. REJECTED. Euro is FREQUENCY-capped, not
+## sizing-capped. Real scaling levers = breadth (multi-asset) + ref-leg (#5), not sizing.

@@ -137,6 +137,8 @@ pub struct LagReport {
     pub final_position: i64,
     /// Per-round-trip (close_ts_ns, return_pct of entry notional).
     pub trip_returns: Vec<(u64, f64)>,
+    /// Entry notional per round trip (quote units), paired with trip_returns.
+    pub trip_notionals: Vec<f64>,
 }
 
 /// The lag replay engine. One engine = one deterministic single-threaded sim.
@@ -355,9 +357,11 @@ impl<S: LagStrategy> LagEngine<S> {
         let tn = self.acct.trip_notionals();
         let tc = self.acct.trip_close_ts();
         let mut trip_returns = Vec::with_capacity(tp.len());
+        let mut trip_notionals = Vec::with_capacity(tp.len());
         for i in 0..tp.len() {
             if tn[i] > 0 {
                 trip_returns.push((tc[i], money_to_f64(tp[i]) / money_to_f64(tn[i]) * 100.0));
+                trip_notionals.push(money_to_f64(tn[i]));
             }
         }
         LagReport {
@@ -371,6 +375,7 @@ impl<S: LagStrategy> LagEngine<S> {
             net_pnl: money_to_f64(self.acct.net_pnl()),
             final_position: self.acct.net_qty(),
             trip_returns,
+            trip_notionals,
         }
     }
 }
