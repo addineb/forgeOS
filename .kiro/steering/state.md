@@ -110,3 +110,9 @@ reproducible, coinflip loses on real data.
   TAKER-ONLY -> latency is binding. forgelag now models maker fills (queue) + HL
   trades feed; null-edge passes. NEXT real unknown = measure true taker signal->fill
   latency on HL (tiny funded order); HL structural ~230ms floor puts us on the cliff.
+
+- REAL HL LATENCY known (researched): ~884ms Tokyo / ~1079ms VA / ~900-1100ms our
+  Germany box (server-side dominated; colocated-only 200ms). Small/frequent edge DEAD
+  at real latency. BUT big-dislocation variant SURVIVES: thr>=20bps/3min/taker @884-
+  1000ms = t=2.4-3.0, +6-8bps, ~5-6 trades/day, RR~1.9, win~48%, paper +59-80%/36d,
+  DD~10%. Deployable SLIVER (borderline). NEXT: more periods to firm up + live validate.

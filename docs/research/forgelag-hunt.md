@@ -70,3 +70,21 @@ CONSEQUENCE: the edge REQUIRES crossing the spread (taker). Maker does NOT dodge
 latency problem; latency is the binding constraint. No free lunch.
 REMAINING unknown = REAL taker signal->fill latency on HL (needs a tiny funded order
 to measure; REST read-proxy ~230ms floor + block finality puts us on the cliff edge).
+## REAL HL LATENCY (researched) + the deployable sliver (2026-06-11)
+HL real order-to-fill latency (independent: Glassnode + HL docs + our ping):
+- ~884ms median from AWS Tokyo, ~1079ms Ashburn VA; ~5ms network, rest server-side.
+- HL docs: COLOCATED client median 0.2s, p99 0.9s (200ms only if physically colocated).
+- Our box (Germany): ~7ms network but HL server-side dominates -> expect ~900-1100ms.
+=> The FREQUENT small-stretch edge (thr10) is GONE/negative at real latency.
+
+## BIG-DISLOCATION variant SURVIVES real latency (36 days, Feb+May-Jun)
+thr>=20bps, ~3min hold, TAKER:
+- @884ms: t=2.99, n=198 (~5.5/day), +7.7bps/trade, win 49.5%, RR 1.89, paper +80%, DD 10%.
+- @1000ms: t=2.36, n=199, +6.1bps, win 47%, RR 1.86, paper +59%, DD 10.5%.
+Why: a >=20bps gap reverts slow/far enough that ~900ms latency eats only a fraction.
+Win rate ~48% (coinflip); profit is from RR ~1.9 (wins ~2x losses) = positive expectancy.
+
+## VERDICT (honest): there IS a deployable sliver at REAL latency = the SLOW big-
+## dislocation variant (>=20bps, 3min hold, ~5-6 trades/day). t~2.4-3.0 = significant
+## but borderline (vs t~5 at 300ms fantasy). Needs: more periods to firm up + live
+## validation. The small/frequent version is NOT deployable (latency kills it).
