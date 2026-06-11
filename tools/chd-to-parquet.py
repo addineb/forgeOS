@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # chd-to-parquet.py - cryptohftdata -> our captured Parquet tick layout.
 # Stages: trade (flat) | bookDelta (flat, Binance diff passthrough) |
-#         hlquote (flat, reconstructed BBO from Hyperliquid orderbook).
+#         hlquote (flat, reconstructed BBO from Hyperliquid orderbook) |
+#         hlbook  (HL full-depth top-20 -> incremental delta stream).
 # Schemas byte-match lib/tick-storage.ts so the replay harness reads them as-is.
 import os, sys, io, argparse, requests
 import pyarrow as pa, pyarrow.parquet as pq
@@ -100,7 +101,6 @@ def conv_hlquote(exchange, symbol, coin, date, hh, data_dir, book):
             book[s].pop(px[i], None)
         else:
             book[s][px[i]] = qt[i]
-        # emit on event_time boundary
         if cur_et is not None and ets[i] != cur_et:
             b,a = bbo()
             if b and a:
@@ -121,6 +121,54 @@ def conv_hlquote(exchange, symbol, coin, date, hh, data_dir, book):
     pq.write_table(tbl, os.path.join(outdir(data_dir, coin, "hlquote", date), hh+".parquet"))
     return len(rows_ts), book
 
+def conv_hlbook(exchange, symbol, coin, date, hh, data_dir, book):
+    # HL full-depth L2 -> incremental DELTA stream (bookDelta schema) for the engine.
+    # Every HL row is a full top-20 snapshot per event_time; diff each fresh snapshot
+    # vs the carried book and emit change/remove deltas so the engine incremental
+    # OrderBook reconstructs the exact HL top-20. Fixes the conv_hlquote staleness bug.
+    df = dl("%s/%s/%s/%s_orderbook.parquet.zst" % (exchange, date, hh, symbol))
+    if df is None or len(df) == 0: return 0, book
+    ets = df["event_time"].astype("int64").tolist()                     # ms (venue)
+    rts = (df["received_time"].astype("int64") // 1_000_000).tolist()   # ns -> ms (capture)
+    sd  = df["side"].astype(str).tolist()
+    px  = df["price"].astype("float64").tolist()
+    qt  = df["quantity"].astype("float64").tolist()
+    rv=[]; rc=[]; rs=[]; rp=[]; rq=[]; rk=[]
+    snap = {"bid": {}, "ask": {}}
+    cur_et = [None]; cur_ct = [None]
+    def flush():
+        et = cur_et[0]; ct = cur_ct[0]
+        for s in ("bid", "ask"):
+            new = snap[s]; old = book[s]
+            for p, q in new.items():
+                if old.get(p) != q:
+                    rv.append(et); rc.append(ct); rs.append(s); rp.append(p); rq.append(q); rk.append("change")
+            for p in list(old.keys()):
+                if p not in new:
+                    rv.append(et); rc.append(ct); rs.append(s); rp.append(p); rq.append(0.0); rk.append("remove")
+            book[s] = dict(new)
+    for i in range(len(ets)):
+        if cur_et[0] is not None and ets[i] != cur_et[0]:
+            flush()
+            snap["bid"] = {}; snap["ask"] = {}
+        s = "bid" if sd[i] == "bid" else "ask"
+        if qt[i] > 0:
+            snap[s][px[i]] = qt[i]
+        cur_et[0] = ets[i]; cur_ct[0] = rts[i]
+    if cur_et[0] is not None:
+        flush()
+    if not rv: return 0, book
+    tbl = pa.table({
+        "venueTs": pa.array(rv, pa.int64()),
+        "captureTs": pa.array(rc, pa.int64()),
+        "side": pa.array(rs, pa.string()),
+        "price": pa.array(rp, pa.float64()),
+        "qty": pa.array(rq, pa.float64()),
+        "kind": pa.array(rk, pa.string()),
+    }, schema=BOOKDELTA_SCHEMA)
+    pq.write_table(tbl, os.path.join(outdir(data_dir, coin, "hlbook", date), hh+".parquet"))
+    return len(rv), book
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", required=True)
@@ -135,8 +183,9 @@ def main():
     a = ap.parse_args()
     streams = a.streams.split(",")
     hours = [f"{h:02d}" for h in range(24)] if a.hours == "all" else a.hours.split(",")
-    tot = {"trade":0,"bookDelta":0,"hlquote":0}
+    tot = {"trade":0,"bookDelta":0,"hlquote":0,"hlbook":0}
     hlbook = {"bid":{}, "ask":{}}
+    hlb_state = {"bid":{}, "ask":{}}
     for hh in hours:
         if "trade" in streams:
             n = conv_trades(a.exchange, a.symbol, a.date, hh, a.data_dir); tot["trade"]+=n
@@ -144,7 +193,9 @@ def main():
             n = conv_bookdelta(a.exchange, a.symbol, a.date, hh, a.data_dir); tot["bookDelta"]+=n
         if "hlquote" in streams:
             n, hlbook = conv_hlquote(a.hl_exchange, a.hl_symbol, a.coin, a.date, hh, a.data_dir, hlbook); tot["hlquote"]+=n
-        print(f"[chd] {a.date} {hh} trade+bookDelta+hlquote done", flush=True)
+        if "hlbook" in streams:
+            n, hlb_state = conv_hlbook(a.hl_exchange, a.hl_symbol, a.coin, a.date, hh, a.data_dir, hlb_state); tot["hlbook"]+=n
+        print(f"[chd] {a.date} {hh} {streams} done", flush=True)
     print(f"[chd] TOTAL {tot}")
 
 if __name__ == "__main__":
