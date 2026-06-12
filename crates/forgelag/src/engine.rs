@@ -156,6 +156,8 @@ pub struct LagEngine<S: LagStrategy> {
     strat: S,
     fees: FeeSchedule,
     order_latency_ns: u64,
+    lat_samples: Vec<u64>,
+    lat_rng: u64,
     now: u64,
     started: bool,
     pending: BinaryHeap<Reverse<Pending>>,
@@ -183,6 +185,8 @@ impl<S: LagStrategy> LagEngine<S> {
             strat,
             fees: cfg.fees,
             order_latency_ns: cfg.order_latency_ns,
+            lat_samples: Vec::new(),
+            lat_rng: 0x9E37_79B9_7F4A_7C15,
             now: 0,
             started: false,
             pending: BinaryHeap::new(),
@@ -196,6 +200,25 @@ impl<S: LagStrategy> LagEngine<S> {
             orders_rejected: 0,
             events: 0,
         }
+    }
+
+    /// Supply an empirical per-order latency distribution (ns). When non-empty, each
+    /// order samples its submit->execute delay from these instead of the fixed latency.
+    pub fn set_latency_samples(&mut self, s: Vec<u64>) {
+        self.lat_samples = s;
+    }
+
+    fn next_latency(&mut self) -> u64 {
+        if self.lat_samples.is_empty() {
+            return self.order_latency_ns;
+        }
+        let mut x = self.lat_rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.lat_rng = x;
+        let idx = (x % self.lat_samples.len() as u64) as usize;
+        self.lat_samples[idx]
     }
 
     fn fill_taker(&mut self, side: Side, fill: &forge_sim::Fill) {
@@ -349,7 +372,8 @@ impl<S: LagStrategy> LagEngine<S> {
 
         for idx in 0..self.buf.len() {
             let order = self.buf[idx];
-            let arrival = t.checked_add(self.order_latency_ns).ok_or("order arrival overflow")?;
+            let lat = self.next_latency();
+            let arrival = t.checked_add(lat).ok_or("order arrival overflow")?;
             self.pending.push(Reverse(Pending { arrival, seq: self.seq, order }));
             self.seq += 1;
             self.orders_submitted += 1;

@@ -286,3 +286,12 @@ reproducible, coinflip loses on real data.
   venv + secret.env on box; spot->perp transfer needed (unified account had to be OFF);
   agent/main = 0xE4Cde743 (test wallet, $13). NEXT: larger latency sample + slippage check
   (compare real fill px vs expected) + then a live paper run of the actual Lagshot logic.
+- BLENDED REAL-LATENCY result (2026-06-11): wired 20 live latency samples (690-1107ms) into
+  engine (set_latency_samples; hunt --latdist real), sample per-order. 36d OKX revert-exit:
+  ETH thr16 +845%/EUR4723/DD5.9/t11.5; ETH thr19 +634%/EUR3672/DD4.3/t11.8; BTC thr16 +88%/
+  EUR937/DD5.0/t6.4. Lands between 766ms(+1056) and 884ms(+521) point estimates = honest
+  number. PRIORITY FEE rejected (45ms costs 1bp, recovers only ~0.5bp). CAVEATS: latency dist
+  n=20 ONE CALM window (latency worsens in vol = when signals fire; model samples latency
+  INDEP of market state -> if correlated, true# LOWER); fills still idealized (slippage
+  unchecked). NEXT: latency sample during VOLATILE stretch + slippage check + live paper loop.
+  Box: AWS Tokyo 35.78.232.67 (key ~/.ssh/lagshot_tokyo); HL test acct 0xE4Cde743 ($13).

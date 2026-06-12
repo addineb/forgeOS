@@ -44,6 +44,12 @@ fn parse_dur(s: &str) -> Result<u64, String> {
 fn parse_durs(s: &str) -> Result<Vec<u64>, String> {
     s.split(',').map(parse_dur).collect()
 }
+fn parse_latdist(s: &str) -> Result<Vec<u64>, String> {
+    if s.trim() == "real" {
+        return Ok(vec![737_700_000, 874_200_000, 716_100_000, 722_100_000, 727_600_000, 798_600_000, 854_000_000, 702_200_000, 698_300_000, 884_700_000, 1_101_200_000, 797_600_000, 836_200_000, 690_500_000, 1_106_500_000, 736_400_000, 793_500_000, 717_100_000, 894_100_000, 732_500_000]);
+    }
+    s.split(',').map(|x| { let v: f64 = x.trim().parse().map_err(|e| format!("bad latdist `{x}`: {e}"))?; Ok((v * 1_000_000.0) as u64) }).collect()
+}
 fn fmt_dur(ns: u64) -> String {
     if ns >= 60_000_000_000 && ns.is_multiple_of(60_000_000_000) { format!("{}m", ns / 60_000_000_000) }
     else if ns >= 1_000_000_000 && ns.is_multiple_of(1_000_000_000) { format!("{}s", ns / 1_000_000_000) }
@@ -100,6 +106,7 @@ fn run() -> Result<(), String> {
     let mut regime = false;
     let mut regimebps = 8.0_f64;
     let mut regimelb = 10usize;
+    let mut latdist: Vec<u64> = Vec::new();
 
     let mut depths = vec![5usize];
     let mut thr_ax = vec![8.0, 10.0, 12.0];
@@ -153,6 +160,7 @@ fn run() -> Result<(), String> {
             "--regime" => regime = true,
             "--regimebps" => regimebps = val()?.parse().map_err(|e| format!("regimebps: {e}"))?,
             "--regimelb" => regimelb = val()?.parse().map_err(|e| format!("regimelb: {e}"))?,
+            "--latdist" => { let v = val()?; latdist = parse_latdist(&v)?; }
             other => return Err(format!("unknown arg {other}")),
         }
     }
@@ -219,6 +227,7 @@ fn run() -> Result<(), String> {
                 let sig = BasisSignal::new(c.basis);
                 let strat = Managed::new(sig, c.managed);
                 let mut eng = LagEngine::new(strat, LagConfig { order_latency_ns: latency_ns, exec_book_levels: 20, fees: FeeSchedule::legacy() });
+                if !latdist.is_empty() { eng.set_latency_samples(latdist.clone()); }
                 eng.run(evs.iter()).expect("monotonic stream");
                 let r = eng.finish();
                 (r.trip_returns, r.trip_notionals)
@@ -296,6 +305,7 @@ fn run() -> Result<(), String> {
     println!("cross-asset lead {}", if xlead { format!("ON (lead={leadsym} |ret|>={xleadbps}bps/{xleadlb}smp)") } else { "off".to_string() });
     println!("stop / take     SL={sl}bps TP={tp}bps (0=off)");
     println!("regime filter   {}", if regime { format!("ON (skip fade vs |HL mom|>={regimebps}bps/{regimelb}smp)") } else { "off".to_string() });
+    println!("latency dist     {}", if latdist.is_empty() { "off (fixed)".to_string() } else { format!("ON ({} samples)", latdist.len()) });
     println!("{:>6} {:>8} {:>6} {:>6} {:>8} {:>8} {:>5} {:>8} {:>7}  knobs", "n", "mean%", "t-stat", "win%", "avgW%", "avgL%", "RR", "paper%", "maxDD%");
     for r in rows.iter().take(top) {
         println!("{:>6} {:>8.4} {:>6.2} {:>5.1}% {:>8.4} {:>8.4} {:>5.2} {:>8.1} {:>7.1}  {}", r.n, r.mean, r.t, r.win, r.avg_w, r.avg_l, r.rr, r.paper, r.maxdd, r.knobs);
