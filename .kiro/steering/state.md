@@ -295,3 +295,15 @@ reproducible, coinflip loses on real data.
   INDEP of market state -> if correlated, true# LOWER); fills still idealized (slippage
   unchecked). NEXT: latency sample during VOLATILE stretch + slippage check + live paper loop.
   Box: AWS Tokyo 35.78.232.67 (key ~/.ssh/lagshot_tokyo); HL test acct 0xE4Cde743 ($13).
+- *** LAGSHOT LIVE BOT DEPLOYED (2026-06-12) - tiny/real ***. tools/live_lagshot.py running
+  in tmux `lagshot` on AWS Tokyo box (35.78.232.67). Real strategy loop: HL ETH l2Book
+  (microprice top5) vs OKX ETH-USDT spot trades (ws), rolling baseline (win500/0.5s), enter
+  on |dev|>=16bps, revert-exit |dev|<=2bps, 10m hold, 30s cooldown. SAFETY: 1x leverage
+  (NO liquidation), $11 notional, single position, daily-15%-loss halt, realistic 5bps IOC
+  cross (NOT the SDK 5% default - per trader: be realistic). Fees covered by thr16 (>9bps RT
+  taker). DRY-RUN validated first: feeds connect, gap/dev match backtest (hl~okx~1672, gap
+  -4 to -6bps = matches ETH basis, dev oscillates +-2bps calm). Logs every ENTRY/EXIT with
+  net-edge, latency, fill px, slippage to /home/ubuntu/lagshot/live.log. MONITOR: grep
+  ENTRY/EXIT from live.log over days; compare real per-trade bps (expect ~5.5-6 net) + win%
+  + latency to backtest. This is the final integration test (latency+fills+logic in reality)
+  at lunch-money size. Start equity $12.86. Probe earlier cost ~$0.14 in fees (expected).
