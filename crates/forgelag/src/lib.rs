@@ -9,9 +9,11 @@
 
 pub mod engine;
 pub mod feed;
+pub mod maker;
 pub mod strategy;
 
 pub use engine::{LagConfig, LagCtx, LagEngine, LagOrder, LagOrderKind, LagReport, LagStrategy};
 pub use feed::{load_window, FeedConfig, LagEvent, LagKind, Role};
+pub use maker::{FairValueConfig, FairValueOracle, InventoryConfig, InventoryController, MakerQuoter, MakerQuoterConfig, QuoteConfig, QuoteManager, DEFAULT_STALENESS_NS};
 pub use strategy::{BasisConfig, BasisSignal, CoinSignal, LagSignal, Managed, ManagedConfig};
 pub use forge_sim::FeeSchedule;
