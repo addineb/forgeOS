@@ -307,3 +307,11 @@ reproducible, coinflip loses on real data.
   ENTRY/EXIT from live.log over days; compare real per-trade bps (expect ~5.5-6 net) + win%
   + latency to backtest. This is the final integration test (latency+fills+logic in reality)
   at lunch-money size. Start equity $12.86. Probe earlier cost ~$0.14 in fees (expected).
+- LIVE BOT FIX (2026-06-12 ~05:49): OKX public WS was dropping idle connections (~every few
+  min, then stuck reconnecting) -> bot was ALIVE-BUT-BLIND for ~2.5h (03:17-05:47), stale-guard
+  correctly refused to trade (no loss, calm market, stayed FLAT). ROOT CAUSE: OKX ws needs
+  keepalive ping + sparse trades channel goes idle. FIX: replaced OKX ws with REST ticker
+  poll every 0.4s (robust, no persistent conn to drop; failures skip via staleness guard) +
+  added [wait] liveness log so 'blind' != 'dead'. Restarted --live: heartbeats steady, OKX
+  fresh each beat, no errors. HL feed was rock-solid throughout (only OKX ws was flaky).
+  LESSON: unattended bots need robust feeds + liveness logging. Still: 1x, $11, FLAT, $12.86.

@@ -11,7 +11,8 @@ from eth_account import Account
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils import constants
-import websocket  # websocket-client
+import websocket  # websocket-client (HL)
+import requests   # OKX REST polling (robust vs flaky ws)
 
 # ---------- config ----------
 COIN       = "ETH"
@@ -72,23 +73,21 @@ def on_hl_book(msg):
     except Exception:
         pass
 
-# OKX public ws (trades) in its own thread
+# OKX REST ticker poll in its own thread (robust; no idle-disconnect like the public ws)
 def okx_thread():
-    url = "wss://ws.okx.com:8443/ws/v5/public"
-    sub = json.dumps({"op": "subscribe", "args": [{"channel": "trades", "instId": OKX_INST}]})
+    url = "https://www.okx.com/api/v5/market/ticker?instId=" + OKX_INST
+    sess = requests.Session()
+    fails = 0
     while True:
         try:
-            ws = websocket.create_connection(url, timeout=15)
-            ws.send(sub)
-            while True:
-                raw = ws.recv()
-                if not raw: break
-                d = json.loads(raw)
-                if "data" in d:
-                    px = float(d["data"][-1]["px"])
-                    state["okx_last"] = px; state["okx_ts"] = time.time()
+            r = sess.get(url, timeout=3)
+            px = float(r.json()["data"][0]["last"])
+            state["okx_last"] = px; state["okx_ts"] = time.time(); fails = 0
         except Exception as e:
-            log("OKX ws reconnect:", e); time.sleep(2)
+            fails += 1
+            if fails % 20 == 1:
+                log("OKX REST poll error:", e)
+        time.sleep(0.4)
 
 threading.Thread(target=okx_thread, daemon=True).start()
 info.subscribe({"type": "l2Book", "coin": COIN}, on_hl_book)
@@ -116,6 +115,7 @@ day_halted = False
 next_sample = 0.0
 n_trades = 0
 sample_count = 0
+loop_n = 0
 
 def now(): return time.time()
 
@@ -127,10 +127,11 @@ while True:
     next_sample = t + SAMPLE_S
 
     hl = state["hl_micro"]; okx = state["okx_last"]
-    if hl <= 0 or okx <= 0:
-        continue
-    # staleness guard: both feeds fresh within 3s
-    if t - state["hl_ts"] > 3 or t - state["okx_ts"] > 3:
+    loop_n += 1
+    stale = (hl <= 0 or okx <= 0 or t - state["hl_ts"] > 3 or t - state["okx_ts"] > 3)
+    if stale:
+        if loop_n % 60 == 0:
+            log(f"[wait] feeds stale hl_age={t-state['hl_ts']:.0f}s okx_age={t-state['okx_ts']:.0f}s phase={phase}")
         continue
 
     gap = (hl - okx) / okx * 1e4   # bps
