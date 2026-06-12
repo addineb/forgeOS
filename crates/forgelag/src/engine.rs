@@ -15,6 +15,11 @@ use forge_sim::{maker_fill, money_to_f64, price_market, price_to_limit, Account,
 
 use crate::feed::{LagEvent, LagKind, Role};
 
+/// Default starting equity for the maker Account_Model: EUR 500 (Req 10.6). The
+/// realized-equity curve used for drawdown is this value plus cumulative
+/// realized net P&L, sampled each step.
+pub const DEFAULT_STARTING_EQUITY_EUR: f64 = 500.0;
+
 /// Read-only context handed to a strategy on each event (no-lookahead).
 pub struct LagCtx<'a> {
     /// Virtual clock (ns) = `event.local_ts`.
@@ -139,6 +144,12 @@ struct Resting {
     price: i64,
     qty_remaining: i64,
     queue_ahead: i64,
+    /// True for a strict-maker `Place` (a quote); false for a legacy `Limit`. Only
+    /// quotes count toward `quotes_filled` (the Req 10.2 fill-rate numerator).
+    is_quote: bool,
+    /// Whether this resting order has already taken at least one fill, so a distinct
+    /// quote is counted ONCE toward `quotes_filled` (not once per partial fill).
+    had_fill: bool,
 }
 
 /// Summary of a completed lag replay.
@@ -166,6 +177,88 @@ pub struct LagReport {
     pub trip_returns: Vec<(u64, f64)>,
     /// Entry notional per round trip (quote units), paired with trip_returns.
     pub trip_notionals: Vec<f64>,
+    /// Count of maker `Place` quotes enqueued (NOT `Market`/taker orders). The
+    /// fill-rate denominator (Req 10.2). A `maker_fills` count can exceed this on
+    /// heavy partials; `quotes_filled` is the clean per-quote numerator.
+    pub quotes_submitted: u64,
+    /// Count of DISTINCT quotes that took at least one fill (counted once per quote,
+    /// not once per partial fill). The fill-rate numerator (Req 10.2).
+    pub quotes_filled: u64,
+    /// Maximum absolute inventory reached during the run, sampled at the end of every
+    /// step, in RAW base quantity (Req 4.6).
+    pub max_abs_inventory: i64,
+    /// Maximum peak-to-trough decline of the realized-equity curve (the EUR500 model
+    /// start plus cumulative realized net P&L, sampled each step), as a percent of the
+    /// preceding peak (Req 10.5). Full precision; `summary_pct` rounds to 2dp.
+    pub max_drawdown_pct: f64,
+}
+
+/// Maker-run performance summary. ALL ratios are in PERCENT (Req 10.7), each
+/// rounded to two decimal places (Req 10.1, 10.2, 10.4, 10.5), computed against the
+/// EUR500 Account_Model (Req 10.6). Produced by [`LagReport::summary_pct`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MakerSummary {
+    /// Net expectancy per round trip: the mean of `trip_returns` (each a percent of
+    /// that trip's entry notional, net of fees). 0.0 when there are zero completed
+    /// round trips (Req 10.1, 10.8).
+    pub net_expectancy_pct: f64,
+    /// Fill rate: distinct filled quotes / submitted quotes * 100, bounded to
+    /// [0, 100]. 0.0 when no quotes were submitted (Req 10.2, 10.3).
+    pub fill_rate_pct: f64,
+    /// Maximum absolute inventory reached, in RAW base quantity (Req 4.6). Carried
+    /// through (not a percent) so callers see the raw risk figure.
+    pub max_abs_inventory: i64,
+    /// Maximum absolute inventory as a percent of starting equity (Req 10.4).
+    /// UNIT CAVEAT: divides the inventory's BASE-unit magnitude by the EUR starting
+    /// equity WITHOUT a price multiply, so it is a rough gauge, not a true notional
+    /// exposure, unless quote sizes are already normalized to EUR.
+    pub inventory_pct: f64,
+    /// Maximum drawdown: largest peak-to-trough decline of the realized-equity curve
+    /// as a percent of the preceding peak (Req 10.5), against the EUR500 model.
+    /// Carried from [`LagReport::max_drawdown_pct`].
+    pub max_drawdown_pct: f64,
+    /// Completed round trips over the run.
+    pub round_trips: u64,
+}
+
+/// Round to two decimal places (Req 10: reported metrics are to 2dp).
+fn round2(x: f64) -> f64 {
+    (x * 100.0).round() / 100.0
+}
+
+impl LagReport {
+    /// Produce the maker [`MakerSummary`] in PERCENT (Req 10.1-10.8) against the
+    /// EUR500 Account_Model. `starting_equity_eur` is the EUR500 default
+    /// ([`DEFAULT_STARTING_EQUITY_EUR`], Req 10.6) and scales `inventory_pct`
+    /// (Req 10.4); `max_drawdown_pct` is the value computed at run time against the
+    /// EUR500 realized-equity curve. Net expectancy is the mean of `trip_returns`
+    /// (0.0 with zero round trips, Req 10.8); fill rate is `quotes_filled` over
+    /// `quotes_submitted` (0.0 with none submitted, Req 10.3), bounded to [0, 100].
+    #[must_use]
+    pub fn summary_pct(&self, starting_equity_eur: f64) -> MakerSummary {
+        let net_expectancy_pct = if self.trip_returns.is_empty() {
+            0.0
+        } else {
+            let sum: f64 = self.trip_returns.iter().map(|&(_, r)| r).sum();
+            sum / self.trip_returns.len() as f64
+        };
+        let fill_rate_pct = if self.quotes_submitted == 0 {
+            0.0
+        } else {
+            (self.quotes_filled as f64 / self.quotes_submitted as f64 * 100.0).clamp(0.0, 100.0)
+        };
+        let inv_base = Qty::from_raw(self.max_abs_inventory).to_f64();
+        let inventory_pct =
+            if starting_equity_eur > 0.0 { inv_base / starting_equity_eur * 100.0 } else { 0.0 };
+        MakerSummary {
+            net_expectancy_pct: round2(net_expectancy_pct),
+            fill_rate_pct: round2(fill_rate_pct),
+            max_abs_inventory: self.max_abs_inventory,
+            inventory_pct: round2(inventory_pct),
+            max_drawdown_pct: round2(self.max_drawdown_pct),
+            round_trips: self.round_trips,
+        }
+    }
 }
 
 /// The lag replay engine. One engine = one deterministic single-threaded sim.
@@ -194,6 +287,11 @@ pub struct LagEngine<S: LagStrategy> {
     orders_rested: u64,
     orders_rejected: u64,
     events: u64,
+    quotes_submitted: u64,
+    quotes_filled: u64,
+    max_abs_inventory: i64,
+    peak_equity: f64,
+    max_drawdown_pct: f64,
 }
 
 impl<S: LagStrategy> LagEngine<S> {
@@ -224,6 +322,11 @@ impl<S: LagStrategy> LagEngine<S> {
             orders_rested: 0,
             orders_rejected: 0,
             events: 0,
+            quotes_submitted: 0,
+            quotes_filled: 0,
+            max_abs_inventory: 0,
+            peak_equity: DEFAULT_STARTING_EQUITY_EUR,
+            max_drawdown_pct: 0.0,
         }
     }
 
@@ -267,7 +370,15 @@ impl<S: LagStrategy> LagEngine<S> {
             return;
         }
         let queue_ahead = self.book.qty_at(order.side, order.price).map_or(0, |q| q.raw());
-        self.resting.push(Resting { id: order.id, side: order.side, price: limit, qty_remaining: order.qty.raw(), queue_ahead });
+        self.resting.push(Resting {
+            id: order.id,
+            side: order.side,
+            price: limit,
+            qty_remaining: order.qty.raw(),
+            queue_ahead,
+            is_quote: false,
+            had_fill: false,
+        });
         self.orders_rested += 1;
     }
 
@@ -286,7 +397,15 @@ impl<S: LagStrategy> LagEngine<S> {
             return;
         }
         let queue_ahead = self.book.qty_at(order.side, order.price).map_or(0, |q| q.raw());
-        self.resting.push(Resting { id: order.id, side: order.side, price: limit, qty_remaining: order.qty.raw(), queue_ahead });
+        self.resting.push(Resting {
+            id: order.id,
+            side: order.side,
+            price: limit,
+            qty_remaining: order.qty.raw(),
+            queue_ahead,
+            is_quote: true,
+            had_fill: false,
+        });
         self.orders_rested += 1;
     }
 
@@ -352,6 +471,10 @@ impl<S: LagStrategy> LagEngine<S> {
                 self.acct.apply_maker(o.side, &f, &self.fees, self.now);
                 self.orders_filled += 1;
                 self.maker_fills += 1;
+                if o.is_quote && !o.had_fill {
+                    self.quotes_filled += 1;
+                }
+                o.had_fill = true;
                 o.qty_remaining -= fill;
             }
             if o.qty_remaining == 0 {
@@ -359,6 +482,27 @@ impl<S: LagStrategy> LagEngine<S> {
             } else {
                 self.resting[i] = o;
                 i += 1;
+            }
+        }
+    }
+
+    /// Sample the per-step risk metrics: the peak absolute inventory (Req 4.6) and the
+    /// running drawdown of the realized-equity curve = `DEFAULT_STARTING_EQUITY_EUR`
+    /// (EUR500, Req 10.6) plus cumulative realized net P&L (Req 10.5). Called at the
+    /// end of every `step` and once in `finish` after the final drain.
+    fn sample_metrics(&mut self) {
+        let inv = self.acct.net_qty().abs();
+        if inv > self.max_abs_inventory {
+            self.max_abs_inventory = inv;
+        }
+        let equity = DEFAULT_STARTING_EQUITY_EUR + money_to_f64(self.acct.net_pnl());
+        if equity > self.peak_equity {
+            self.peak_equity = equity;
+        }
+        if self.peak_equity > 0.0 {
+            let dd = (self.peak_equity - equity) / self.peak_equity * 100.0;
+            if dd > self.max_drawdown_pct {
+                self.max_drawdown_pct = dd;
             }
         }
     }
@@ -435,8 +579,14 @@ impl<S: LagStrategy> LagEngine<S> {
             if order.kind != LagOrderKind::Cancel {
                 self.orders_submitted += 1;
             }
+            // A maker quote = a `Place`; `Market`/taker entries and cancels do not
+            // count toward the fill-rate denominator (Req 1.1, 10.2).
+            if order.kind == LagOrderKind::Place {
+                self.quotes_submitted += 1;
+            }
         }
 
+        self.sample_metrics();
         self.events += 1;
         Ok(())
     }
@@ -456,6 +606,7 @@ impl<S: LagStrategy> LagEngine<S> {
     #[must_use]
     pub fn finish(mut self) -> LagReport {
         self.drain_pending(u64::MAX);
+        self.sample_metrics();
         let tp = self.acct.trip_pnls();
         let tn = self.acct.trip_notionals();
         let tc = self.acct.trip_close_ts();
@@ -479,6 +630,10 @@ impl<S: LagStrategy> LagEngine<S> {
             final_position: self.acct.net_qty(),
             trip_returns,
             trip_notionals,
+            quotes_submitted: self.quotes_submitted,
+            quotes_filled: self.quotes_filled,
+            max_abs_inventory: self.max_abs_inventory,
+            max_drawdown_pct: self.max_drawdown_pct,
         }
     }
 }

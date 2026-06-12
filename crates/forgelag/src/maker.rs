@@ -1686,3 +1686,401 @@ mod maker_quoter_stale_tests {
         assert_eq!(o3[0].qty.raw(), 10);
     }
 }
+
+// ===========================================================================
+// Task 8: config-range validation (Req 3.6) + fee-economics finding (Req 5.x).
+// ===========================================================================
+// VALIDATION API - two reachable layers (the hunt CLI in Task 11 calls these):
+//
+//   * Per-config `validate()` on [`FairValueConfig`] / [`InventoryConfig`] /
+//     [`QuoteConfig`] / [`MakerQuoterConfig`] -> `Result<(), String>`. Each
+//     REJECTS an out-of-range value and returns an error that NAMES the
+//     offending parameter, its value, and the valid range (Req 3.6).
+//
+//   * [`MakerQuoter::try_new`] - the VALIDATED constructor the CLI should call:
+//     validates all three configs AND the cross-config `quote_qty` consistency
+//     (the quote size lives in both [`QuoteConfig`] as a `Qty` and in
+//     [`InventoryConfig`] as a raw `i64`; the cap check and fill accounting only
+//     agree if they are EQUAL), then builds via the infallible `new`s.
+//
+// THE INFALLIBLE `*::new` CONSTRUCTORS ARE KEPT on purpose. `FairValueOracle::new`,
+// `InventoryController::new`, `QuoteManager::new`, and `MakerQuoter::new` FLOOR
+// their inputs (e.g. `top_n.max(1)`, `pos_cap.max(0)`) instead of rejecting, and
+// existing components/tests rely on that. Use the infallible `new` for INTERNAL
+// construction where inputs are already trusted; use `try_new` / `validate` at
+// the CONFIG BOUNDARY (CLI / external input) where a bad value must be REPORTED
+// (naming the param) rather than silently floored.
+//
+// VALID RANGES (from Req 1.5/3.6 and the design doc):
+//   quote_offset_bps   0..=100        entry_threshold_bps 1..=100
+//   exit_bps           0..=100 and < entry_threshold_bps (revert band inside entry band)
+//   reprice_tol_bps    0.1..=100.0    danger_bps          1.0..=500.0
+//   cancel_latency_ns  0..=5_000_000_000 (0-5000 ms)
+//   ack_timeout_ns     0..=5_000_000_000 (0-5000 ms)
+//   pos_cap            >= 0           inv_skew_bps        >= 0
+//   quote_qty          > 0, and QuoteConfig.quote_qty == InventoryConfig.quote_qty
+//   FairValueConfig: top_n/window/sample_ns >= 1, staleness_ns >= 1.
+
+/// Largest accepted latency/timeout knob: 5000 ms expressed in nanoseconds.
+pub const MAX_LATENCY_NS: u64 = 5_000_000_000;
+
+/// Reject `v` unless it lies in `[lo, hi]` (NaN is always rejected), naming `name`.
+fn check_f64(name: &str, v: f64, lo: f64, hi: f64) -> Result<(), String> {
+    if v.is_nan() || v < lo || v > hi {
+        return Err(format!("{name} {v} out of range {lo}..={hi}"));
+    }
+    Ok(())
+}
+
+/// Reject `v` unless it lies in `[0, hi]`, naming `name`.
+fn check_u64(name: &str, v: u64, hi: u64) -> Result<(), String> {
+    if v > hi {
+        return Err(format!("{name} {v} out of range 0..={hi}"));
+    }
+    Ok(())
+}
+
+impl FairValueConfig {
+    /// Validate the oracle knobs, REJECTING out-of-range values with an error
+    /// that names the bad parameter (Req 3.6). `top_n`, `window`, `sample_ns`
+    /// must be at least 1; `staleness_ns` must be at least 1 (a 0 limit would
+    /// mark every read stale). The infallible [`FairValueOracle::new`] floors
+    /// these instead - this is the boundary check the CLI uses.
+    ///
+    /// # Errors
+    /// Returns the name + value + range of the first out-of-range parameter.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.top_n < 1 {
+            return Err(format!("top_n {} out of range >=1", self.top_n));
+        }
+        if self.window < 1 {
+            return Err(format!("window {} out of range >=1", self.window));
+        }
+        if self.sample_ns < 1 {
+            return Err(format!("sample_ns {} out of range >=1", self.sample_ns));
+        }
+        if self.staleness_ns < 1 {
+            return Err(format!("staleness_ns {} out of range >=1", self.staleness_ns));
+        }
+        Ok(())
+    }
+}
+
+impl InventoryConfig {
+    /// Validate the inventory knobs (Req 4.5), REJECTING out-of-range values
+    /// with an error naming the bad parameter (Req 3.6): `pos_cap >= 0`,
+    /// `inv_skew_bps >= 0`, `quote_qty > 0`.
+    ///
+    /// # Errors
+    /// Returns the name + value of the first out-of-range parameter.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.pos_cap < 0 {
+            return Err(format!("pos_cap {} out of range >=0", self.pos_cap));
+        }
+        if self.inv_skew_bps.is_nan() || self.inv_skew_bps < 0.0 {
+            return Err(format!("inv_skew_bps {} out of range >=0", self.inv_skew_bps));
+        }
+        if self.quote_qty <= 0 {
+            return Err(format!("quote_qty {} out of range >0", self.quote_qty));
+        }
+        Ok(())
+    }
+}
+
+impl QuoteConfig {
+    /// Validate the quote-manager knobs, REJECTING out-of-range values with an
+    /// error naming the bad parameter (Req 3.6). See the module-level VALID
+    /// RANGES table. Also enforces the SENSIBLE cross-field rule that the
+    /// revert-to-mean exit band sits strictly inside the entry band
+    /// (`exit_bps < entry_threshold_bps`), so a position can actually be entered
+    /// before it is eligible to exit.
+    ///
+    /// # Errors
+    /// Returns the name + value + range of the first out-of-range parameter (or
+    /// the offending relationship for the exit/entry rule).
+    pub fn validate(&self) -> Result<(), String> {
+        check_f64("quote_offset_bps", self.quote_offset_bps, 0.0, 100.0)?;
+        check_f64("entry_threshold_bps", self.entry_threshold_bps, 1.0, 100.0)?;
+        check_f64("exit_bps", self.exit_bps, 0.0, 100.0)?;
+        check_f64("reprice_tol_bps", self.reprice_tol_bps, 0.1, 100.0)?;
+        check_f64("danger_bps", self.danger_bps, 1.0, 500.0)?;
+        check_u64("cancel_latency_ns", self.cancel_latency_ns, MAX_LATENCY_NS)?;
+        check_u64("ack_timeout_ns", self.ack_timeout_ns, MAX_LATENCY_NS)?;
+        if self.quote_qty.raw() <= 0 {
+            return Err(format!("quote_qty {} out of range >0", self.quote_qty.raw()));
+        }
+        if self.exit_bps >= self.entry_threshold_bps {
+            return Err(format!(
+                "exit_bps {} must be < entry_threshold_bps {}",
+                self.exit_bps, self.entry_threshold_bps
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl MakerQuoterConfig {
+    /// Validate the maker-strategy config. Delegates to [`QuoteConfig::validate`]
+    /// for the inner quote knobs (Req 3.6). `hold_ns` is an optional safety
+    /// backstop with no upper bound (0 = disabled, the validated default), so it
+    /// is intentionally unconstrained here.
+    ///
+    /// # Errors
+    /// Propagates the first error from the inner [`QuoteConfig::validate`].
+    pub fn validate(&self) -> Result<(), String> {
+        self.quote.validate()
+    }
+}
+impl MakerQuoter {
+    /// VALIDATED constructor (Req 3.6 / 1.5) - the path the hunt CLI (Task 11)
+    /// should use. Validates the [`MakerQuoterConfig`] (inner [`QuoteConfig`]),
+    /// the [`FairValueConfig`], and the [`InventoryConfig`], then checks the
+    /// cross-config `quote_qty` consistency before building via the infallible
+    /// [`MakerQuoter::new`]. On any out-of-range value it returns an error that
+    /// NAMES the offending parameter; it never silently floors.
+    ///
+    /// # Errors
+    /// - any single out-of-range knob (named, with its value and range), or
+    /// - a `quote_qty` mismatch between [`QuoteConfig`] (a `Qty`) and
+    ///   [`InventoryConfig`] (a raw `i64`) - they must be EQUAL so the cap check
+    ///   and the fill accounting agree.
+    pub fn try_new(
+        cfg: MakerQuoterConfig,
+        fv_cfg: FairValueConfig,
+        inv_cfg: InventoryConfig,
+    ) -> Result<Self, String> {
+        cfg.validate()?;
+        fv_cfg.validate()?;
+        inv_cfg.validate()?;
+        if cfg.quote.quote_qty.raw() != inv_cfg.quote_qty {
+            return Err(format!(
+                "quote_qty mismatch: QuoteConfig.quote_qty {} != InventoryConfig.quote_qty {}",
+                cfg.quote.quote_qty.raw(),
+                inv_cfg.quote_qty
+            ));
+        }
+        Ok(Self::new(cfg, FairValueOracle::new(fv_cfg), InventoryController::new(inv_cfg)))
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+
+    fn good_quote() -> QuoteConfig {
+        QuoteConfig {
+            quote_offset_bps: 2.0,
+            entry_threshold_bps: 16.0,
+            exit_bps: 2.0,
+            reprice_tol_bps: 1.0,
+            danger_bps: 40.0,
+            cancel_latency_ns: 1_000_000_000,
+            ack_timeout_ns: 1_000_000_000,
+            quote_qty: Qty::from_raw(10),
+        }
+    }
+    fn good_inv() -> InventoryConfig {
+        InventoryConfig { pos_cap: 1_000, inv_skew_bps: 1.0, quote_qty: 10 }
+    }
+    fn good_fv() -> FairValueConfig {
+        FairValueConfig::default()
+    }
+
+    fn assert_err_names(res: Result<(), String>, needle: &str) {
+        let e = res.expect_err("expected an out-of-range rejection");
+        assert!(e.contains(needle), "error should name `{needle}`, got: {e}");
+    }
+
+    #[test]
+    fn good_config_is_accepted() {
+        // Each per-config validate passes, and the validated constructor builds.
+        assert!(good_quote().validate().is_ok());
+        assert!(good_inv().validate().is_ok());
+        assert!(good_fv().validate().is_ok());
+        let mq = MakerQuoter::try_new(
+            MakerQuoterConfig { quote: good_quote(), hold_ns: 0 },
+            good_fv(),
+            good_inv(),
+        );
+        assert!(mq.is_ok(), "a fully valid config must build: {:?}", mq.err());
+    }
+
+    #[test]
+    fn rejects_quote_offset_above_range() {
+        let mut c = good_quote();
+        c.quote_offset_bps = 101.0; // > 100
+        assert_err_names(c.validate(), "quote_offset_bps");
+    }
+
+    #[test]
+    fn rejects_entry_threshold_zero() {
+        let mut c = good_quote();
+        c.entry_threshold_bps = 0.0; // < 1
+        assert_err_names(c.validate(), "entry_threshold_bps");
+    }
+
+    #[test]
+    fn rejects_danger_below_floor() {
+        let mut c = good_quote();
+        c.danger_bps = 0.5; // < 1.0
+        assert_err_names(c.validate(), "danger_bps");
+    }
+
+    #[test]
+    fn rejects_reprice_tol_below_floor() {
+        let mut c = good_quote();
+        c.reprice_tol_bps = 0.05; // < 0.1
+        assert_err_names(c.validate(), "reprice_tol_bps");
+    }
+
+    #[test]
+    fn rejects_cancel_latency_too_big() {
+        let mut c = good_quote();
+        c.cancel_latency_ns = MAX_LATENCY_NS + 1; // > 5000 ms
+        assert_err_names(c.validate(), "cancel_latency_ns");
+    }
+
+    #[test]
+    fn rejects_ack_timeout_too_big() {
+        let mut c = good_quote();
+        c.ack_timeout_ns = 6_000_000_000; // > 5000 ms
+        assert_err_names(c.validate(), "ack_timeout_ns");
+    }
+
+    #[test]
+    fn rejects_nan_offset() {
+        // NaN is out of range for any bounded f64 knob (Req 3.6 fail-fast).
+        let mut c = good_quote();
+        c.quote_offset_bps = f64::NAN;
+        assert_err_names(c.validate(), "quote_offset_bps");
+    }
+
+    #[test]
+    fn rejects_exit_not_strictly_below_entry() {
+        let mut c = good_quote();
+        c.exit_bps = 20.0; // >= entry_threshold 16 => the exit band swallows entry
+        assert_err_names(c.validate(), "exit_bps");
+    }
+
+    #[test]
+    fn rejects_negative_pos_cap() {
+        let mut c = good_inv();
+        c.pos_cap = -1;
+        assert_err_names(c.validate(), "pos_cap");
+    }
+
+    #[test]
+    fn rejects_negative_inv_skew() {
+        let mut c = good_inv();
+        c.inv_skew_bps = -0.1;
+        assert_err_names(c.validate(), "inv_skew_bps");
+    }
+
+    #[test]
+    fn rejects_zero_quote_qty_in_inventory() {
+        let mut c = good_inv();
+        c.quote_qty = 0; // must be > 0
+        assert_err_names(c.validate(), "quote_qty");
+    }
+
+    #[test]
+    fn rejects_zero_staleness() {
+        let mut c = good_fv();
+        c.staleness_ns = 0; // a 0 limit would mark every read stale
+        assert_err_names(c.validate(), "staleness_ns");
+    }
+
+    #[test]
+    fn rejects_mismatched_quote_qty_across_configs() {
+        // QuoteConfig.quote_qty (10) must equal InventoryConfig.quote_qty.
+        let mut inv = good_inv();
+        inv.quote_qty = 7; // mismatch vs QuoteConfig's 10
+        let res = MakerQuoter::try_new(
+            MakerQuoterConfig { quote: good_quote(), hold_ns: 0 },
+            good_fv(),
+            inv,
+        );
+        let e = res.err().expect("a quote_qty mismatch must be rejected");
+        assert!(e.contains("quote_qty mismatch"), "error should name the mismatch, got: {e}");
+        assert!(e.contains("10") && e.contains("7"), "error should show both values, got: {e}");
+    }
+
+    #[test]
+    fn try_new_propagates_a_bad_inner_quote_knob() {
+        // A bad QuoteConfig knob is surfaced (named) through the constructor.
+        let mut q = good_quote();
+        q.danger_bps = 600.0; // > 500
+        let res = MakerQuoter::try_new(
+            MakerQuoterConfig { quote: q, hold_ns: 0 },
+            good_fv(),
+            good_inv(),
+        );
+        let e = res.err().expect("bad inner knob must reject");
+        assert!(e.contains("danger_bps"), "constructor names the bad inner knob, got: {e}");
+    }
+}
+
+#[cfg(test)]
+mod fee_economics_tests {
+    // FEE ECONOMICS FINDING (Req 5.3/5.4/5.5/5.6).
+    //
+    // Maker entry fills use the maker fee/rebate and taker (market) exits use
+    // the taker fee, applied by the engine's `FeeSchedule` via
+    // `Account::apply_maker` / `Account::apply_taker` - already wired in
+    // `engine.rs` (`process_trade` -> `apply_maker`, `fill_taker` -> `apply_taker`).
+    //
+    // Req 5.6 asks for a FAIL-FAST when the maker fee/rebate is "not defined" in
+    // the active fee schedule at a maker fill. INVESTIGATION of the sacred-core
+    // `forge_sim::FeeSchedule` shows it stores the maker rate as a PLAIN `i64`
+    // field (`maker_rate_raw`), NOT an `Option`. A maker fee is therefore ALWAYS
+    // defined by construction - the "missing" case cannot occur. We satisfy
+    // Req 5.6 BY CONSTRUCTION (the type makes the bad state unrepresentable)
+    // rather than by adding a contrived runtime check, and we do NOT modify the
+    // sacred core. The tests below assert that invariant honestly.
+    use forge_core::SCALE;
+    use forge_sim::{money_to_f64, FeeSchedule};
+
+    /// A notional of 1000 quote units, scaled by `SCALE` (the `Money` unit).
+    fn notional() -> i128 {
+        1_000_i128 * i128::from(SCALE)
+    }
+
+    #[test]
+    fn legacy_schedule_yields_maker_rebate_and_distinct_taker_fee() {
+        let fees = FeeSchedule::legacy();
+        let n = notional();
+        let maker = fees.maker_fee(n);
+        let taker = fees.taker_fee(n);
+        // Req 5.5: the legacy maker rate is a REBATE -> maker_fee is NEGATIVE,
+        // i.e. a credit that INCREASES net proceeds when treated as a cost.
+        assert!(maker < 0, "legacy maker fee is a rebate/credit, got {}", money_to_f64(maker));
+        // Req 5.2/5.3: the taker fee is a real DEBIT (> 0) that decreases proceeds.
+        assert!(taker > 0, "taker fee is a debit, got {}", money_to_f64(taker));
+        // Maker and taker economics are DISTINCT (the maker bar is easier).
+        assert_ne!(maker, taker, "maker and taker fees must differ");
+        // Exact legacy numbers on 1000 notional: maker -0.002% = -0.02; taker 0.025% = 0.25.
+        assert!((money_to_f64(maker) + 0.02).abs() < 1e-9, "maker -0.02, got {}", money_to_f64(maker));
+        assert!((money_to_f64(taker) - 0.25).abs() < 1e-9, "taker 0.25, got {}", money_to_f64(taker));
+    }
+
+    #[test]
+    fn maker_fee_is_defined_by_construction_so_req_5_6_is_vacuous() {
+        // FeeSchedule has no Option-typed fee; maker_fee/taker_fee return a
+        // defined Money for ANY notional and ANY schedule. There is no
+        // "missing maker fee" state to fail-fast on (Req 5.6 satisfied by
+        // construction). Exercise several schedules to document that.
+        for fees in [FeeSchedule::legacy(), FeeSchedule::zero(), FeeSchedule::new(25_000, -2_000)] {
+            let _maker = fees.maker_fee(notional()); // always defined, never panics/None
+            let _taker = fees.taker_fee(notional());
+        }
+    }
+
+    #[test]
+    fn zero_schedule_has_no_rebate_and_no_fee() {
+        // The zero schedule (used to isolate spread in tests) credits/debits 0:
+        // confirms maker_fee is still defined (just 0), reinforcing 5.6 vacuity.
+        let fees = FeeSchedule::zero();
+        assert_eq!(fees.maker_fee(notional()), 0);
+        assert_eq!(fees.taker_fee(notional()), 0);
+    }
+}

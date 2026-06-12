@@ -12,8 +12,11 @@ pub mod feed;
 pub mod maker;
 pub mod strategy;
 
-pub use engine::{LagConfig, LagCtx, LagEngine, LagOrder, LagOrderKind, LagReport, LagStrategy};
+pub use engine::{
+    LagConfig, LagCtx, LagEngine, LagOrder, LagOrderKind, LagReport, LagStrategy, MakerSummary,
+    DEFAULT_STARTING_EQUITY_EUR,
+};
 pub use feed::{load_window, FeedConfig, LagEvent, LagKind, Role};
-pub use maker::{FairValueConfig, FairValueOracle, InventoryConfig, InventoryController, MakerQuoter, MakerQuoterConfig, QuoteConfig, QuoteManager, DEFAULT_STALENESS_NS};
+pub use maker::{FairValueConfig, FairValueOracle, InventoryConfig, InventoryController, MakerQuoter, MakerQuoterConfig, QuoteConfig, QuoteManager, DEFAULT_STALENESS_NS, MAX_LATENCY_NS};
 pub use strategy::{BasisConfig, BasisSignal, CoinSignal, LagSignal, Managed, ManagedConfig};
 pub use forge_sim::FeeSchedule;
