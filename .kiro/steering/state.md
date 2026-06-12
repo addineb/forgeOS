@@ -385,3 +385,20 @@ reproducible, coinflip loses on real data.
   <~800ms via own HL node + colocation + priority fees (big infra, still borderline).
   Total spent of $13: ~$1.2 (probes+tests+these trades). NEXT DECISION (user): invest in
   latency infra to chase it, or shelf Lagshot as 'real-but-latency-locked' and move on.
+- *** FINAL LATENCY RESEARCH -> LAGSHOT CLOSED (2026-06-12) ***. Asked if we can FIX the
+  execution latency to capture the edge. Researched HL tricks + general HFT. HINGE FACT:
+  884ms Tokyo = ~5ms NETWORK + ~879ms SERVER-SIDE (HyperBFT consensus+matching = the CHAIN's
+  floor, shared by all, NOT buyable). HL-only levers (official docs): own non-validating node +
+  build book locally (kills ~100-200ms API read lag; needs 32c/128GB box), split_client_blocks
+  (70-150ms), gossip read-priority (~25ms/slot, HYPE burned), order write-priority (~45ms/1bp
+  max 8bp=360ms, HYPE burned). GENERAL HFT toolkit (colocation/kernel-bypass/FPGA/fiber) =
+  USELESS: it shaves NETWORK+OS (micro/ns); our Tokyo network is already ~5ms; the wall is the
+  879ms consensus we don't control. EVEN FULLY STACKED: best calm ~500-600ms, but (1) write-pri
+  fee BURNED 45ms/1bp vs ~5-8bps edge = buying speed burns the edge (net-neg, confirmed); (2)
+  TRIGGER latency was 1.3-2.4s live (blows out in the volatility when signals fire) - shaving
+  300ms still leaves >1s and the reversion closes in <1s. VERDICT: reversion half-life ~= HL's
+  consensus floor; retail taker is structurally below it; no spend justifiable on EUR500 crosses
+  it. Latency = STRUCTURAL MOAT not a bug. LAGSHOT shelved: real edge (null-edge+shuffle x2+OOS
+  x2 all passed) but NOT capturable by us. docs/research/latency-research.md. No further latency
+  work. NEXT lead when ready = Type C forced-flow / liquidation cascades (CHD liq data; different
+  edge that does NOT depend on out-racing a reversion). Bot can be stopped (tmux kill lagshot).

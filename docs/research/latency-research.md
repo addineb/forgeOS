@@ -60,3 +60,38 @@ under 500ms makes EVERY config much stronger and re-opens the lower thresholds.
 At 884ms (Tokyo box, no node, no priority) ETH Lagshot is ALREADY strong (validated t9-13).
 The node/priority stack is UPSIDE (more return, BTC stronger, lower thresholds viable), NOT a
 prerequisite. The real unknown remains the LIVE latency distribution + real fills - measure first.
+## FINAL LATENCY RESEARCH (2026-06-12) - can we fix the execution latency? NO.
+Asked after the decisive live verdict: is there ANY way to cut Lagshot's trigger->fill
+latency enough to capture the edge. Researched HL-specific tricks first, then general HFT.
+
+### The hinge fact
+884ms Tokyo round-trip = ~5ms NETWORK + ~879ms SERVER-SIDE (HyperBFT consensus + matching).
+The 879ms is the CHAIN's own block processing - shared by everyone, not buyable with hardware.
+
+### Hyperliquid-only levers (official docs: optimizing-latency + priority-fees)
+1. Own non-validating node + build book locally from node outputs = biggest win; kills the
+   ~100-200ms public-API/WS read lag (see dislocation sooner). Needs 32c/128GB/500MB/s box.
+2. --disable-output-file-buffering = block outputs the instant they execute.
+3. split_client_blocks:true (gossip/read priority) = 70-150ms faster reads.
+4. Gossip (read) priority auction = ~25ms per slot, HYPE burned.
+5. Order (write) priority = ~45ms per 1bp, max 8bp (~360ms), HYPE burned.
+
+### General HFT toolkit (colocation, kernel-bypass DPDK/RDMA, FPGA NIC, fiber) = USELESS here
+That whole industry shaves NETWORK + OS latency (micro/nanoseconds). From AWS Tokyo our network
+to HL is ALREADY ~5ms - nothing left to cut on that side. Kernel bypass = 20-30% off internal
+tick-to-trade (microseconds), irrelevant vs an ~879ms consensus we do not control.
+
+### Why it still fails even fully stacked
+- BEST realistic calm median maybe ~500-600ms (own node + split_client_blocks + gossip + order pri).
+- WRITE-PRIORITY ECON: 45ms/1bp, fee BURNED. Net edge ~5-8bps/trade. Buy 360ms = pay 8bp = burn the
+  whole edge. Even 1-2bp eats half. Net-negative (confirmed earlier).
+- TRIGGER-MOMENT KILLER: live triggers fired at 1.3-2.4s (not calm 766ms) - latency blows out in
+  volatility = exactly when signals fire. Shaving ~300ms off 1.5-2.4s leaves ~1.1-2.1s; reversion
+  closes in <1s -> still chasing a vanished gap.
+
+### Verdict
+The reversion half-life ~= HL's consensus floor. Everyone executing ON HL hits the same ~879ms wall
+(incl us with a full node + priority fees). Captured by resting makers (tested = adverse selection,
+loses) and validator-adjacent priority players. Retail taker is structurally below the floor; no
+spend justifiable on EUR500 crosses it. LATENCY IS A STRUCTURAL MOAT, not a bug. Lagshot CLOSED:
+real edge, not capturable by us. No further latency work warranted.
