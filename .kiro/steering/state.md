@@ -315,3 +315,12 @@ reproducible, coinflip loses on real data.
   added [wait] liveness log so 'blind' != 'dead'. Restarted --live: heartbeats steady, OKX
   fresh each beat, no errors. HL feed was rock-solid throughout (only OKX ws was flaky).
   LESSON: unattended bots need robust feeds + liveness logging. Still: 1x, $11, FLAT, $12.86.
+- MORNING CHECK (2026-06-12 ~05:53): bot healthy post-fix (heartbeats steady, OKX REST fresh,
+  FLAT, $12.86). ZERO strategy trades overnight - market too CALM: peak |dev| only 9.3bps vs
+  16bps trigger (0 samples even hit 10bps; gap range -14.7..0). NOT a bug - legit quiet regime
+  (backtest min was also 0/day). The 17 round trips in user_fills = YESTERDAY's latency probe
+  (random orders, -0.6bps each = spread loss, NOT strategy); total acct impact -$0.21 all
+  probe/fees. NO LIVE EDGE DATA YET - need a VOLATILE session to get real trades. Confirmed
+  live: Lagshot is NOT always-on; idles in calm, fires in bursts on volatility (median 14/day
+  but calm stretches = 0). PLAN: let it run several days incl a volatile stretch, then compare
+  real per-trade bps to backtest (~5.5-6 net). Infra now robust. Box pennies/day; leave running.
