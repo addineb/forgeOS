@@ -367,3 +367,21 @@ reproducible, coinflip loses on real data.
   REAL slippage/per-trade edge - THE moment-of-truth (does edge survive ~1.5s vol-latency +
   reverted-price fills?). Honest: 1.3-1.8s live latency is in the backtest's danger zone
   (700ms t1.35, 1s negative) - the realized edge may be thin/negative. Measuring it now.
+- *** DECISIVE LIVE RESULT (2026-06-12 NY) - EDGE NOT CAPTURABLE AT OUR LATENCY ***.
+  First 3 REAL FILLED trades (post fill-fix), thr16, 1x:
+  T1 14:52 BUY trig dev=-23.1 lat=1609ms, dev-at-fill=-9.6, 1674.0->1680.1 = +6.1 WIN
+  T2 15:35 BUY trig dev=-17.2 lat=2380ms, dev-at-fill=+6.5(OVERSHOT past 0), 1676.7->1675.8 = -0.9 LOSS
+  T3 15:49 SELL trig dev=16.1 lat=946ms, dev-at-fill=+0.4(reverted), 1662.1->1662.6 = -0.5 LOSS
+  Equity 11.787->11.789 = ~FLAT (one lucky win offset 2 losses+fees). SLIPPAGE 15-22bps/trade.
+  ROOT (smoking gun = dev-at-fill): we trigger at 16-23bps but by fill (1-2.4s later) the gap
+  has ALREADY reverted to ~0 (or overshot). The basis-reversion happens FASTER than we can
+  fill at real latency. We pay 15-22bps chasing a gap that's gone -> net wash-to-loss.
+  TRIGGER-MOMENT latency: 2 of 3 >1.6s (negative zone per backtest). CONFIRMS backtest:
+  >1.3s = breakeven/negative. VERDICT: Lagshot edge is REAL (null-edge+shuffle+OOS all
+  passed) but NOT CAPTURABLE at retail execution latency (~1-2.4s, worst at triggers) -
+  the reversion outruns us. Break-even at best, structurally negative with more trades.
+  This is the PROCESS WORKING: found the binding constraint live with $12 before risking
+  EUR500 (unlike the prior project that lied). ONLY path to deploy = cut trigger latency
+  <~800ms via own HL node + colocation + priority fees (big infra, still borderline).
+  Total spent of $13: ~$1.2 (probes+tests+these trades). NEXT DECISION (user): invest in
+  latency infra to chase it, or shelf Lagshot as 'real-but-latency-locked' and move on.

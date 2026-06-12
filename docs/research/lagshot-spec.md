@@ -101,3 +101,18 @@ exactly when signals fire; this model samples latency INDEPENDENT of market stat
 latency is CORRELATED with vol (slower when we trade), true number is LOWER. Next: measure
 latency during a VOLATILE stretch. (2) fills still idealized - slippage (real fill px vs
 expected) NOT yet checked. NEXT: vol-period latency sample + slippage check + live paper loop.
+## *** DECISIVE LIVE VERDICT (2026-06-12): edge REAL but NOT CAPTURABLE at our latency ***
+First 3 real filled trades (thr16, 1x, NY session) - the moment-of-truth:
+| # | trig dev | latency | dev@fill | fill->exit | result |
+| 1 | -23.1 | 1609ms | -9.6 | 1674.0->1680.1 | +6.1 win |
+| 2 | -17.2 | 2380ms | +6.5(overshot) | 1676.7->1675.8 | -0.9 loss |
+| 3 | +16.1 |  946ms | +0.4 | 1662.1->1662.6 | -0.5 loss |
+Net ~FLAT (eq 11.787->11.789). Slippage 15-22bps/trade.
+SMOKING GUN = dev@fill: trigger at 16-23bps, but by the time we FILL (1-2.4s later) the gap
+has already reverted to ~0 (T2 overshot past 0). The reversion happens FASTER than we fill.
+We pay 15-22bps chasing a vanished gap -> wash-to-loss. Trigger-moment latency 2/3 >1.6s
+(backtest negative zone). CONFIRMS the latency cliff empirically with REAL money.
+VERDICT: Lagshot's edge is genuine (passed null-edge, shuffle x2, OOS x2) but UNCAPTURABLE
+at retail execution latency. NOT deployable as-is. To deploy = trigger latency <~800ms (own
+node + colocation + priority fees; big infra, borderline even then). The honest research
+process WORKED: killed a non-viable deploy with $12, not EUR500.
