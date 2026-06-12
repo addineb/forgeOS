@@ -37,12 +37,20 @@ pub enum LagOrderKind {
     /// Cross the spread now (taker).
     Market,
     /// Rest at `price`; fill only when the HL tape trades through it (maker).
+    /// Legacy path: fills as a taker if marketable on arrival.
     Limit,
+    /// Strict maker (resting limit): rest only if non-marketable; REJECT if marketable
+    /// on arrival (a maker never crosses the spread). Addressable/cancellable by `id`.
+    Place,
+    /// Cancel the resting order whose `id` matches; no-op if already filled/gone.
+    Cancel,
 }
 
 /// An order on the execution venue. `side` is OUR side (`Bid` = buy).
 #[derive(Clone, Copy, Debug)]
 pub struct LagOrder {
+    /// Client id; addresses a resting order so it can be cancelled. 0 for taker/legacy.
+    pub id: u64,
     /// Buy (bid) or sell (ask).
     pub side: Side,
     /// Execution style.
@@ -56,12 +64,23 @@ impl LagOrder {
     /// A market (taker) order.
     #[must_use]
     pub fn market(side: Side, qty: Qty) -> Self {
-        Self { side, kind: LagOrderKind::Market, price: Price::ZERO, qty }
+        Self { id: 0, side, kind: LagOrderKind::Market, price: Price::ZERO, qty }
     }
-    /// A limit (maker) order resting at `price`.
+    /// A limit (maker) order resting at `price` (legacy: takes if marketable on arrival).
     #[must_use]
     pub fn limit(side: Side, price: Price, qty: Qty) -> Self {
-        Self { side, kind: LagOrderKind::Limit, price, qty }
+        Self { id: 0, side, kind: LagOrderKind::Limit, price, qty }
+    }
+    /// A strict maker order with client `id`: rests if non-marketable, REJECTED if
+    /// marketable on arrival (a maker never crosses). Cancel later via [`LagOrder::cancel`].
+    #[must_use]
+    pub fn place(id: u64, side: Side, price: Price, qty: Qty) -> Self {
+        Self { id, side, kind: LagOrderKind::Place, price, qty }
+    }
+    /// Cancel the resting order whose client `id` matches (no-op if filled/gone).
+    #[must_use]
+    pub fn cancel(id: u64) -> Self {
+        Self { id, side: Side::Bid, kind: LagOrderKind::Cancel, price: Price::ZERO, qty: Qty::from_raw(0) }
     }
 }
 
@@ -76,6 +95,9 @@ pub trait LagStrategy {
 pub struct LagConfig {
     /// Outbound order latency (ns): submit at T, reach matcher at `T + this`.
     pub order_latency_ns: u64,
+    /// Cancel/reprice latency (ns): a `Cancel` submitted at T reaches the matcher at
+    /// `T + this`. Place/Market keep using `order_latency_ns` (or the sampled distribution).
+    pub cancel_latency_ns: u64,
     /// Max exec-book levels kept per side (0 = unlimited).
     pub exec_book_levels: usize,
     /// Fee schedule applied to fills.
@@ -83,7 +105,7 @@ pub struct LagConfig {
 }
 impl Default for LagConfig {
     fn default() -> Self {
-        Self { order_latency_ns: 0, exec_book_levels: 20, fees: FeeSchedule::legacy() }
+        Self { order_latency_ns: 0, cancel_latency_ns: 0, exec_book_levels: 20, fees: FeeSchedule::legacy() }
     }
 }
 
@@ -112,6 +134,7 @@ impl PartialOrd for Pending {
 
 #[derive(Clone, Copy)]
 struct Resting {
+    id: u64,
     side: Side,
     price: i64,
     qty_remaining: i64,
@@ -156,6 +179,7 @@ pub struct LagEngine<S: LagStrategy> {
     strat: S,
     fees: FeeSchedule,
     order_latency_ns: u64,
+    cancel_latency_ns: u64,
     lat_samples: Vec<u64>,
     lat_rng: u64,
     now: u64,
@@ -185,6 +209,7 @@ impl<S: LagStrategy> LagEngine<S> {
             strat,
             fees: cfg.fees,
             order_latency_ns: cfg.order_latency_ns,
+            cancel_latency_ns: cfg.cancel_latency_ns,
             lat_samples: Vec::new(),
             lat_rng: 0x9E37_79B9_7F4A_7C15,
             now: 0,
@@ -242,8 +267,35 @@ impl<S: LagStrategy> LagEngine<S> {
             return;
         }
         let queue_ahead = self.book.qty_at(order.side, order.price).map_or(0, |q| q.raw());
-        self.resting.push(Resting { side: order.side, price: limit, qty_remaining: order.qty.raw(), queue_ahead });
+        self.resting.push(Resting { id: order.id, side: order.side, price: limit, qty_remaining: order.qty.raw(), queue_ahead });
         self.orders_rested += 1;
+    }
+
+    /// Strict maker placement: rest only if non-marketable; REJECT if marketable on
+    /// arrival (a maker never crosses). Joins the BACK of the queue at its price level.
+    fn place_maker(&mut self, order: LagOrder) {
+        let limit = order.price.raw();
+        let best_ask = self.book.best_ask().map(|(p, _)| p.raw());
+        let best_bid = self.book.best_bid().map(|(p, _)| p.raw());
+        let marketable = match order.side {
+            Side::Bid => best_ask.is_some_and(|a| limit >= a),
+            Side::Ask => best_bid.is_some_and(|b| limit <= b),
+        };
+        if marketable {
+            self.orders_rejected += 1;
+            return;
+        }
+        let queue_ahead = self.book.qty_at(order.side, order.price).map_or(0, |q| q.raw());
+        self.resting.push(Resting { id: order.id, side: order.side, price: limit, qty_remaining: order.qty.raw(), queue_ahead });
+        self.orders_rested += 1;
+    }
+
+    /// Remove the resting order whose client `id` matches. No-op if already filled/gone.
+    /// On a partially-filled order this cancels the remaining quantity.
+    fn cancel_resting(&mut self, id: u64) {
+        if let Some(pos) = self.resting.iter().position(|o| o.id == id) {
+            self.resting.remove(pos);
+        }
     }
 
     fn execute(&mut self, order: LagOrder) {
@@ -253,6 +305,8 @@ impl<S: LagStrategy> LagEngine<S> {
                 None => self.orders_rejected += 1,
             },
             LagOrderKind::Limit => self.place_limit(order),
+            LagOrderKind::Place => self.place_maker(order),
+            LagOrderKind::Cancel => self.cancel_resting(order.id),
         }
     }
 
@@ -372,11 +426,15 @@ impl<S: LagStrategy> LagEngine<S> {
 
         for idx in 0..self.buf.len() {
             let order = self.buf[idx];
-            let lat = self.next_latency();
+            // Cancels travel on their own cancel-latency clock; Place/Market use the
+            // order-latency (fixed or sampled). A cancel is not an order submission.
+            let lat = if order.kind == LagOrderKind::Cancel { self.cancel_latency_ns } else { self.next_latency() };
             let arrival = t.checked_add(lat).ok_or("order arrival overflow")?;
             self.pending.push(Reverse(Pending { arrival, seq: self.seq, order }));
             self.seq += 1;
-            self.orders_submitted += 1;
+            if order.kind != LagOrderKind::Cancel {
+                self.orders_submitted += 1;
+            }
         }
 
         self.events += 1;

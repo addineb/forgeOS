@@ -80,7 +80,7 @@ fn coinflip_loses_with_spread_and_fees() {
     let strat = Managed::new(CoinSignal::new(99), cfg);
     let mut eng = LagEngine::new(
         strat,
-        LagConfig { order_latency_ns: 0, exec_book_levels: 20, fees: FeeSchedule::legacy() },
+        LagConfig { order_latency_ns: 0, cancel_latency_ns: 0, exec_book_levels: 20, fees: FeeSchedule::legacy() },
     );
     eng.run(evs.iter()).unwrap();
     let r = eng.finish();

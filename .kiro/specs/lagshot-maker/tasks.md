@@ -2,23 +2,23 @@
 
 Ordering follows the honest ladder: the engine cancel path and the null-edge maker gate come FIRST, so if the fill model cannot stay honest once we add cancels/quoting, we find out cheap before building strategy logic. No live code is in scope here (Req 12 is gated behind sim success).
 
-- [ ] 1. Add the cancel/reprice path to the forgelag sandbox engine
+- [x] 1. Add the cancel/reprice path to the forgelag sandbox engine
   - Introduce a `LagAction` enum (`Market`, `Place{id}`, `Cancel{id}`) or add `Cancel{id}` alongside `LagOrder`; add `id: u64` to `Resting`.
   - Route actions through `pending`: `Place`/`Market` use `order_latency_ns` (or sampled), `Cancel` uses a new `cancel_latency_ns`.
   - `drain_pending`: `Place` rests only if non-marketable (REJECT if marketable on arrival - a maker never crosses); `Cancel` removes the resting order by id (no-op if filled/gone); apply cancel to the remainder on a partially-filled order.
   - Keep the existing taker `Managed` path and all current tests green (Req 11.4).
   - _Requirements: 1.1, 3.3, 3.4, 6.7, 6.8, 11.1, 11.2_
 
-- [ ] 2. Verify the honest fill model with unit tests (the anti-lie tests)
-  - [ ] 2.1 Through-trade fill, queue-ahead protection, partial fill
+- [x] 2. Verify the honest fill model with unit tests (the anti-lie tests)
+  - [x] 2.1 Through-trade fill, queue-ahead protection, partial fill
     - Resting bid + Ask-aggressor trade through it after queue cleared -> fills at resting price (never mid, never improved); trade qty <= queue_ahead -> NO fill + queue decremented; residual < qty_remaining -> partial fill, remainder rests with queue_ahead 0.
     - _Requirements: 6.1, 6.2, 6.3, 6.4_
-  - [ ] 2.2 Clean-reversion-no-fill (the killer case) and cancel-latency window
+  - [x] 2.2 Clean-reversion-no-fill (the killer case) and cancel-latency window
     - Gap stretches then reverts with NO HL trade printing through the resting price -> order stays unfilled.
     - Pulled order still fills from an in-window through-trade; a post-window trade does not.
     - _Requirements: 6.5, 6.6, 6.7, 6.8_
 
-- [ ] 3. Build the maker null-edge gate (must pass before any strategy work is trusted)
+- [x] 3. Build the maker null-edge gate (must pass before any strategy work is trusted)
   - Add a random-side maker control (rest random side at the offset, same cadence) and a `tests/null_edge_maker.rs`.
   - Assert net P&L strictly < 0 per stream (synthetic + one real day) over >= configured min round trips, after maker+taker fees and honest fills; fail + block promotion if it nets >= 0; seeded -> identical across runs.
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_

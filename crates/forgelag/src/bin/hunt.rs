@@ -226,7 +226,7 @@ fn run() -> Result<(), String> {
             .map(|c| {
                 let sig = BasisSignal::new(c.basis);
                 let strat = Managed::new(sig, c.managed);
-                let mut eng = LagEngine::new(strat, LagConfig { order_latency_ns: latency_ns, exec_book_levels: 20, fees: FeeSchedule::legacy() });
+                let mut eng = LagEngine::new(strat, LagConfig { order_latency_ns: latency_ns, cancel_latency_ns: 0, exec_book_levels: 20, fees: FeeSchedule::legacy() });
                 if !latdist.is_empty() { eng.set_latency_samples(latdist.clone()); }
                 eng.run(evs.iter()).expect("monotonic stream");
                 let r = eng.finish();
