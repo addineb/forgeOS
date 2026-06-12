@@ -47,7 +47,7 @@ for ln in open("/home/ubuntu/lagshot/secret.env"):
     if "=" in ln and not ln.startswith("#"):
         k, v = ln.split("=", 1); c[k.strip()] = v.strip()
 agent = Account.from_key(c["AGENT_KEY"]); ADDR = c["MAIN_ADDRESS"]
-info = Info(constants.MAINNET_API_URL, skip_ws=False)
+info = Info(constants.MAINNET_API_URL, skip_ws=True)
 ex   = Exchange(agent, constants.MAINNET_API_URL, account_address=ADDR)
 
 # ---------- shared live state ----------
@@ -65,13 +65,20 @@ def hl_microprice(levels):
     except Exception:
         return 0.0
 
-def on_hl_book(msg):
-    try:
-        lv = msg["data"]["levels"]
-        m = hl_microprice(lv)
-        if m > 0: state["hl_micro"] = m; state["hl_ts"] = time.time()
-    except Exception:
-        pass
+def hl_thread():
+    # poll HL L2 book via REST (robust; SDK ws subscription drops on idle/unattended)
+    fails = 0
+    while True:
+        try:
+            book = info.l2_snapshot(COIN)
+            m = hl_microprice(book["levels"])
+            if m > 0:
+                state["hl_micro"] = m; state["hl_ts"] = time.time(); fails = 0
+        except Exception as e:
+            fails += 1
+            if fails % 20 == 1:
+                log("HL REST poll error:", e)
+        time.sleep(0.3)
 
 # OKX REST ticker poll in its own thread (robust; no idle-disconnect like the public ws)
 def okx_thread():
@@ -90,7 +97,7 @@ def okx_thread():
         time.sleep(0.4)
 
 threading.Thread(target=okx_thread, daemon=True).start()
-info.subscribe({"type": "l2Book", "coin": COIN}, on_hl_book)
+threading.Thread(target=hl_thread, daemon=True).start()
 
 # ---------- setup account ----------
 log(f"=== LAGSHOT LIVE {'(LIVE TRADING)' if LIVE else '(DRY-RUN, no orders)'} acct={ADDR[:10]} coin={COIN} thr={THR_BPS}bps ===")

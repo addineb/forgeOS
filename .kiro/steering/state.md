@@ -331,3 +331,12 @@ reproducible, coinflip loses on real data.
   already baked into blended backtest (+845%). STILL calm-market latency; volatile-session
   latency (when bot fires) = the remaining unknown, needs bot's own trades. Bot restarted
   healthy (N reset usage: probe used N=40/NOTIONAL=11; bot back live). Acct still ~$12.86 FLAT.
+- LIVE BOT FIX #2 (2026-06-12 ~09:53): HL feed ALSO died - the SDK l2Book WS subscription
+  silently stopped ~09:00 (hl_age grew to 2700s). Our [wait] liveness log CAUGHT it (vs
+  looking dead). Bot correctly REFUSED to trade on stale HL (no bad trades, calm anyway).
+  FIX: converted HL feed from SDK ws subscription -> REST poll info.l2_snapshot(COIN) every
+  0.3s (skip_ws=True). NOW BOTH feeds (HL + OKX) are robust REST polls, ZERO persistent ws.
+  PATTERN/LESSON: SDK websockets unreliable for unattended runs; REST polling is the robust
+  choice. Restarted, both feeds fresh, hb flowing, process alive. Equity $12.64 (= morning
+  probe cost; 0 strategy trades still - market calm, dev never near 16). STOP running probes
+  (burns acct). Just let it run for a volatile session.
