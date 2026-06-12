@@ -23,22 +23,22 @@ Ordering follows the honest ladder: the engine cancel path and the null-edge mak
   - Assert net P&L strictly < 0 per stream (synthetic + one real day) over >= configured min round trips, after maker+taker fees and honest fills; fail + block promotion if it nets >= 0; seeded -> identical across runs.
   - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
 
-- [ ] 4. Implement the FairValueOracle
+- [x] 4. Implement the FairValueOracle
   - Reuse `BasisSignal`'s gap/baseline sampling; expose `fair_value()` (= ref_px adjusted by rolling baseline; None until first ref), `dev_bps()`, and `is_stale(now)` (default 1000ms).
   - Update only from data with ts <= now (no lookahead).
   - _Requirements: 2.1, 2.2, 2.4, 2.5, 2.6, 9.3_
 
-- [ ] 5. Implement the InventoryController
+- [x] 5. Implement the InventoryController
   - Track signed position from `ctx.position_qty`; suppress a quote if it would push |position| strictly above `pos_cap`; suppress all quotes if `pos_cap` < one quote size; skew the reducing side closer to mid (offset monotonic in |position|); symmetric at flat.
   - _Requirements: 4.1, 4.2, 4.3, 4.4, 4.6, 4.7_
 
-- [ ] 6. Implement the QuoteManager
+- [x] 6. Implement the QuoteManager
   - Compute target = fair value offset by `quote_offset_bps` on the reversion side + inventory skew; want a quote only when |dev| >= entry_threshold.
   - Keep within `reprice_tol` (no duplicate quote); reprice (cancel+place) when fv drifts beyond tol; pull when basis widens beyond `danger_bps`; cancel the resting quote when |dev| falls within exit band or flips side.
   - Emergency flatten (Market) if a pull issued in danger fails to land before fill (ack-timeout) and position is non-zero.
   - _Requirements: 1.2, 1.3, 1.4, 2.3, 3.1, 3.2, 3.3, 3.5, 3.7_
 
-- [ ] 7. Assemble the MakerQuoter strategy (exchange-truth state machine)
+- [x] 7. Assemble the MakerQuoter strategy (exchange-truth state machine)
   - Implement `LagStrategy`; act on `ctx.position_qty` (not assumed fills). FLAT -> run QuoteManager entry logic; IN POSITION -> cancel stray entry quote, taker-exit on revert-to-mean (Req 5.2) or emergency flatten on danger; stale/no-fv -> pull quotes, keep managing any open position.
   - Wire maker fee on entry fills, taker fee on market exits.
   - _Requirements: 1.5, 3.7, 5.1, 5.2_
