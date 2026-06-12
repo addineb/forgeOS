@@ -266,3 +266,15 @@ because there is nothing to fill against, but because the fillable flow is
 momentum, not mean-reversion. That directly informs the queued lead: the trades
 around a dislocation are DIRECTIONAL flow - study them as forced-flow / Type C,
 do not try to provide liquidity into them. Maker pivot stays SHELVED.
+## SEQUEL - gap-close order-book study (gapscope), see docs/research/gap-close-study.md
+Per the trader's "go back to the beginning - the order book" request, a new
+analysis tool (`crates/forgelag/src/bin/gapscope.rs`) measured HOW the gap closes
+at the book level across 10 ETH days at |dev| thresholds 8/16/25bps. Headline:
+the gap closes FAST (~1-2s, under our latency), MOSTLY by book RE-QUOTE (56-68%;
+only 32-44% trade-driven) through PULLED liquidity (95-98% of resolved top-5
+walls cancel rather than absorb), with genuine directional momentum flow (close-
+dir volume 2-3x against) and frequent OVERSHOOT (41-68%, more for big gaps). It is
+a vacuum + momentum close, NOT a wall-provides-liquidity close. VERDICT: no clean
+forced-flow / order-behaviour signal with predictive lead time - the book
+CONFIRMS the kill (taker can't out-race a 1s vacuum-close; maker gets run over by
+the overshoot). Lagshot stays shelved; next lead = Type C liquidation cascades.

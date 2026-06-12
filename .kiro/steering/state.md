@@ -421,3 +421,23 @@ reproducible, coinflip loses on real data.
   selection-locked. Edge REAL but structurally uncapturable by us. Killed cheap in sim, 0 euros
   risked. NEXT lead must NOT depend on out-racing a reversion (taker) or being crossed-on-the-right-
   side (maker): -> Type C forced-flow / LIQUIDATION CASCADES (CHD liq data) is the queued lead.
+- *** GAP-CLOSE ORDER-BOOK STUDY (2026-06-12, gapscope) - the "go back to the book" prize ***.
+  Built forgelag/src/bin/gapscope.rs (analysis-only; reuses load_window + forge_book + oracle
+  gap/dev; sacred core untouched; 88 tests green). Replays real ETH, detects dislocations
+  (|dev|>=thr), measures HOW the gap closes over the close window. PATH-mode tweak first showed
+  the close is TRADE-DRIVEN (rest-in-path fills ~19x fade) but the flow is MOMENTUM/overshoot not
+  providable liquidity (run over harder: win 3%, t-65). gapscope then characterized the close,
+  10 ETH days, thr 8/16/25 (knob-bite valid, monotonic): closed<5s 92-98%; MEDIAN TIME-TO-CLOSE
+  1.1-2.0s (UNDER our 0.8-2.4s latency = why taker misses it); MECHANISM mostly RE-QUOTE 56-68%
+  (price shifts with little/no trade) vs trade-driven 32-44%; WALLS: 95-98% of resolved walls are
+  PULLED (cancelled) not ABSORBED (2-5%) = LIQUIDITY VACUUM not reload-to-absorb; close-dir volume
+  2-3x against; OVERSHOOT (dev flips past 0) 41-68% (more for big gaps). MECHANISM = dislocation ->
+  makers YANK quotes -> price re-quotes through the vacuum with a momentum shove -> overshoots ->
+  settles. The trader's "wall reloads to absorb" hypothesis = REFUTED (it's pull/vacuum, opposite).
+  VERDICT: book CONFIRMS the kill - can't provide into a re-quote, wall-pulls are concurrent (no
+  predictive lead) + intent-ambiguous (defensive vs spoof, unprovable), momentum/overshoot is the
+  flow that already ran us over. LAGSHOT FULLY EXHAUSTED: taker(latency)/maker-fade(adverse
+  sel)/maker-path(run over)/raw book(re-quote vacuum) - all closed for measured reasons, 0 euros
+  risked. docs/research/gap-close-study.md (+ per-dislocation CSVs on box /root/runs/gapscope/).
+  NEXT LEAD = Type C forced-flow / LIQUIDATION CASCADES (CHD liq data) - a forced-flow edge that
+  does not need to out-race a reversion or provide liquidity into a vacuum.

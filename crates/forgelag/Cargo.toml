@@ -21,3 +21,6 @@ path = "src/bin/feedcheck.rs"
 [[bin]]
 name = "lag-hunt"
 path = "src/bin/hunt.rs"
+[[bin]]
+name = "gapscope"
+path = "src/bin/gapscope.rs"
