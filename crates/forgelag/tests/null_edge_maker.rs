@@ -66,6 +66,10 @@ struct MakerCoin {
     offset_bps: f64,
     hold_ns: u64,
     ttl_ns: u64,
+    /// PATH placement: rest the coinflip quote IN the path (bid ABOVE mid, ask
+    /// BELOW mid) instead of fade (bid below / ask above). Still non-marketable
+    /// while `offset_bps` < the half-spread, so it fills only on through-trades.
+    path: bool,
     next_id: u64,
     resting: Option<u64>,
     placed_at: u64,
@@ -75,13 +79,14 @@ struct MakerCoin {
 }
 
 impl MakerCoin {
-    fn new(seed: u64, qty: Qty, offset_bps: f64, hold_ns: u64, ttl_ns: u64) -> Self {
+    fn new(seed: u64, qty: Qty, offset_bps: f64, hold_ns: u64, ttl_ns: u64, path: bool) -> Self {
         Self {
             rng: Rng(seed | 1),
             qty,
             offset_bps,
             hold_ns,
             ttl_ns,
+            path,
             next_id: 1,
             resting: None,
             placed_at: 0,
@@ -136,9 +141,15 @@ impl LagStrategy for MakerCoin {
             None => {
                 let side = if self.rng.bit() { Side::Bid } else { Side::Ask };
                 let off = ((mid as f64) * self.offset_bps / 1e4) as i64;
-                let px = match side {
-                    Side::Bid => mid - off,
-                    Side::Ask => mid + off,
+                let px = match (self.path, side) {
+                    // FADE: bid BELOW mid, ask ABOVE mid (classic maker placement).
+                    (false, Side::Bid) => mid - off,
+                    (false, Side::Ask) => mid + off,
+                    // PATH: rest IN the path - bid ABOVE mid, ask BELOW mid. Still
+                    // non-marketable while `off` < the half-spread, so fills come
+                    // only from through-trades (adverse selection), as required.
+                    (true, Side::Bid) => mid + off,
+                    (true, Side::Ask) => mid - off,
                 };
                 if px <= 0 {
                     return;
@@ -224,6 +235,7 @@ fn run_synth(seed: u64, ticks: usize) -> forgelag::LagReport {
         1.0,         // offset 1 bp from mid -> rests inside the 2-bp half-spread (true maker)
         0,           // immediate revert/timeout taker exit
         50_000_000,  // 50 ms re-anchor TTL
+        false,       // FADE placement
     );
     let mut eng = LagEngine::new(
         strat,
@@ -315,6 +327,7 @@ fn coinflip_maker_loses_on_real_eth_day() {
         0.05,        // ~touch offset so the maker actually fills on a real book
         0,           // immediate revert/timeout taker exit
         200_000_000, // 200 ms re-anchor TTL
+        false,       // FADE placement
     );
     let mut eng = LagEngine::new(
         strat,

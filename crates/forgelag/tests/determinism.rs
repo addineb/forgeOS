@@ -27,7 +27,7 @@ use forge_core::{Price, Qty, Side};
 use forgelag::{
     FairValueConfig, FairValueOracle, FeeSchedule, InventoryConfig, InventoryController, LagConfig,
     LagCtx, LagEngine, LagEvent, LagKind, LagOrder, LagOrderKind, LagReport, LagStrategy,
-    MakerQuoter, MakerQuoterConfig, QuoteConfig, Role, DEFAULT_STALENESS_NS,
+    MakerQuoter, MakerQuoterConfig, PlaceMode, QuoteConfig, Role, DEFAULT_STALENESS_NS,
 };
 
 // --------------------------------------------------------------------------
@@ -80,7 +80,9 @@ fn maker_strategy() -> MakerQuoter {
             cancel_latency_ns: 0,
             ack_timeout_ns: 0,
             quote_qty: qty,
+            place_mode: PlaceMode::Fade,
         },
+        maker_exit: false,
         hold_ns: 0,
     };
     let inv = InventoryController::new(InventoryConfig {

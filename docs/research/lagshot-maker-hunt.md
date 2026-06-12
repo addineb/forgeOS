@@ -161,3 +161,108 @@ RECOMMENDATION: shelve the maker pivot. The next lead should be an edge that doe
 NOT depend on either out-racing a reversion (taker) or being crossed-to on the right
 side (maker) - e.g. Type C forced-flow / liquidation cascades (CHD liq data), per
 the standing roadmap.
+
+## TWEAK PASS (2026-06-12) - PATH placement + maker-exit option
+
+Two trader-requested tweaks, both OPT-IN (defaults keep the validated FADE +
+taker-exit behaviour, so the prior 80 tests stay green; 84 tests now, all green;
+clippy -D warnings clean). Same 10 ETH days, OKX ref, realistic fees
+(maker +1.5 / taker +4.5 bps), both 0ms and 800ms, same grid as the fade sweep
+(quote_offset {0,1,2,4,8} x entry_threshold {8,12,16,20}).
+
+### What PATH mode does (exact convention as implemented)
+FADE (original): rest a quote AS A FADE on the dislocation - dev>0 (HL rich)
+rests an ASK ABOVE fair value (sell the richness); dev<0 (HL cheap) rests a BID
+BELOW fair value. Price formula: Ask = fv*(1+off), Bid = fv*(1-off).
+
+PATH (new): INVERT the SIDE only; the price formula is unchanged.
+- dev>0 (HL rich, expected to FALL toward fv): rest a BID BELOW fv. The falling
+  tape trades DOWN through the bid and fills us LONG below fv.
+- dev<0 (HL cheap, expected to RISE): rest an ASK ABOVE fv. The rising tape
+  trades UP through the ask and fills us SHORT above fv.
+Resulting position: PATH puts us in the reversion DIRECTION at fill (long when
+rich-and-falling, short when cheap-and-rising). Exit unchanged: revert-to-mean
+|dev|<=exit_bps taker market (or maker, tweak 2), plus optional hold backstop.
+CLI: --quote-mode fade|path (default fade); --path shorthand. Side-inversion +
+in-path fill verified by new unit tests reusing the force_for_test pattern.
+
+### Tweak 2 - maker exit
+--maker-exit-order rests the CLOSE as a passive maker Place at fv +/- offset on
+the closing side instead of a taker Market, to save the taker exit fee. Falls
+back to a taker Market on the hold timeout / danger path (never stuck). Default
+off = validated taker exit.
+
+### THE HEADLINE: does PATH fill more than FADE? YES - a lot, at tight offsets.
+Same cell, PATH vs FADE, 800ms, realistic fees:
+
+| off | ent | mode | quotes | fills | fill% | trips | mean% | t | win% | paper% | maxDD% |
+|----:|----:|:-----|-------:|------:|------:|------:|------:|----:|-----:|-------:|-------:|
+| 0 | 8 | PATH | 9414 | 870 | 9.2% | 678 | -0.0708 | -36.85 | 3.1% | -38.0 | 36.92 |
+| 0 | 8 | FADE | 49187 | 472 | 1.0% | 489 | -0.0696 | -21.75 | 6.3% | -37.1 | 8.40 |
+| 1 | 8 | PATH | 13397 | 884 | 6.6% | 706 | -0.0705 | -40.49 | 2.7% | -38.1 | 17.93 |
+| 1 | 8 | FADE | 29179 | 326 | 1.1% | 343 | -0.0603 | -21.86 | 7.0% | -35.6 | 2.92 |
+| 8 | 8 | PATH | 36817 | 59 | 0.2% | 48 | -0.0459 | -4.06 | 18.8% | -8.5 | 1.06 |
+| 8 | 8 | FADE | 48485 | 118 | 0.2% | 113 | -0.0144 | -1.19 | 47.8% | -4.9 | 1.66 |
+| 8 | 16 | PATH | 8217 | 22 | 0.3% | 14 | -0.0282 | -1.04 | 28.6% | -1.6 | 0.40 |
+| 8 | 16 | FADE | 14146 | 39 | 0.3% | 35 | -0.0046 | -0.22 | 48.6% | -0.7 | 0.37 |
+
+0ms (idealized upper bound):
+
+| off | ent | mode | quotes | fills | fill% | trips | mean% | t | win% | paper% |
+|----:|----:|:-----|-------:|------:|------:|------:|------:|----:|-----:|-------:|
+| 0 | 8 | PATH | 39823 | 1909 | 4.8% | 1909 | -0.0693 | -65.02 | 3.0% | -41.1 |
+| 0 | 8 | FADE | 52541 | 99 | 0.2% | 99 | -0.0784 | -12.82 | 3.0% | -17.9 |
+| 8 | 8 | PATH | 50136 | 54 | 0.1% | 54 | +0.0152 | 0.89 | 51.9% | +3.3 |
+| 8 | 8 | FADE | 48353 | 154 | 0.3% | 154 | -0.0112 | -1.65 | 46.8% | -1.5 |
+
+Read it:
+- At TIGHT offset (0-1bps) PATH fills FAR more than FADE: 0ms off0/ent8 PATH 1909
+  fills vs FADE 99 = ~19x; 800ms off0/ent8 PATH 870 fills (9.2%) vs FADE 472
+  (1.0%) = ~1.8x the fills and ~9x the fill rate. The tape DOES trade through a
+  quote rested in the path of the move.
+- At WIDE offset (8bps) NEITHER fills (PATH 59 vs FADE 118 at 800ms) - the order
+  sits far enough out that the move rarely reaches it, same as FADE.
+- The extra PATH fills are WORSE, not better: PATH win% 2.7-3.1% / t -37 to -65 at
+  tight offsets vs FADE win 6-7% / t -12 to -22. Resting in the path gets you RUN
+  OVER - the through-trades are the CONTINUATION / overshoot of the move, so we
+  fill LONG into a price that keeps falling (or SHORT into one that keeps rising).
+  PATH flips WHICH side is picked off; it does not escape adverse selection, it
+  deepens it.
+
+### Net-positive after realistic fees? NO - same verdict as FADE.
+- 800ms PATH: every cell negative (least-bad ~-0.028% at off8/ent16, sub-signif).
+- 0ms PATH: only the WIDE off8 cells flicker barely positive (mean +0.012 to
+  +0.015%, t 0.5-0.9, ~5 trips/day, fill 0.1%) - below significance and gone at
+  800ms. Same non-result as FADE wide cells, not captured edge.
+- Knob-bite VALID: the entry-thr dial moved trades on every adjacent pair (quotes
+  / fills / trips all change), so the negative verdicts count.
+
+### Maker-exit comparison (off8 cells, 800ms, +3m taker hold backstop)
+maker-exit does NOT rescue the pivot:
+- High-volume cell (off8/ent8): the passive close FAILS to fill in the same
+  adverse regime (to close a PATH-long you rest an ask above fv, but price fell,
+  so the ask seldom fills), stranding inventory until the 3m taker backstop fires
+  - producing a DEGENERATE inventory / drawdown blow-up (maxInv and maxDD ran away
+  to absurd values). This is the documented maker-exit risk made concrete, NOT a
+  usable result, and a caveat to flag if maker-exit is ever pursued.
+- Low-volume cells (ent16 / ent20) show positive t (3.43 / 2.60) but on only 13 /
+  7 completed trips over 10 days = noise, with the few-lucky-fills signature
+  (win 85%, RR ~13). Not trustworthy.
+- The taker-exit equivalent on the same cells is clean and uniformly negative
+  (t -1.08 to -3.96). Taker market exit stays the sane choice.
+
+### HONEST READ - is the close trade-driven or phantom? TRADE-DRIVEN.
+The prior pass guessed the gap closes WITHOUT trading through our quote (phantom /
+pure re-quote). PATH mode DISPROVES that: a quote rested in the path of the move
+fills far more than a fade quote (up to ~19x at 0ms). So the close IS
+trade-driven - there ARE trades to catch. The problem is WHAT those trades are:
+they are the directional continuation / overshoot of the dislocation, not
+providable mean-reverting liquidity. Resting in their path gets you run over (long
+into a falling tape), so PATH is even MORE adverse than FADE. Either way the maker
+is on the wrong side of the print that fills it.
+
+This SHARPENS the kill rather than reopening it: the maker pivot is dead not
+because there is nothing to fill against, but because the fillable flow is
+momentum, not mean-reversion. That directly informs the queued lead: the trades
+around a dislocation are DIRECTIONAL flow - study them as forced-flow / Type C,
+do not try to provide liquidity into them. Maker pivot stays SHELVED.

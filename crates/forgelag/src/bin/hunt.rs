@@ -34,7 +34,7 @@ use rayon::prelude::*;
 use forgelag::{
     load_window, BasisConfig, BasisSignal, FairValueConfig, FeeSchedule, FeedConfig,
     InventoryConfig, LagConfig, LagEngine, MakerQuoter, MakerQuoterConfig, Managed, ManagedConfig,
-    QuoteConfig, DEFAULT_STALENESS_NS,
+    PlaceMode, QuoteConfig, DEFAULT_STALENESS_NS,
 };
 
 fn parse_f64s(s: &str) -> Result<Vec<f64>, String> {
@@ -165,6 +165,8 @@ struct MakerRun {
     hold_ns: u64,
     maker_fee_set: bool,
     taker_fee_set: bool,
+    place_mode: PlaceMode,
+    maker_exit: bool,
     ax_depth: Vec<usize>,
     ax_win: Vec<usize>,
     ax_qoff: Vec<f64>,
@@ -187,6 +189,8 @@ fn maker_cfgs(
     staleness_ns: u64,
     sample_ns: u64,
     hold_ns: u64,
+    place_mode: PlaceMode,
+    maker_exit: bool,
 ) -> (MakerQuoterConfig, FairValueConfig, InventoryConfig) {
     let qcfg = QuoteConfig {
         quote_offset_bps: c.qoff,
@@ -197,8 +201,9 @@ fn maker_cfgs(
         cancel_latency_ns: c.clat,
         ack_timeout_ns: c.clat,
         quote_qty: q,
+        place_mode,
     };
-    let mcfg = MakerQuoterConfig { quote: qcfg, hold_ns };
+    let mcfg = MakerQuoterConfig { quote: qcfg, maker_exit, hold_ns };
     let fvcfg = FairValueConfig { top_n: c.depth, window: c.win, sample_ns, staleness_ns };
     let invcfg = InventoryConfig { pos_cap: c.poscap, inv_skew_bps: c.invskew, quote_qty: q.raw() };
     (mcfg, fvcfg, invcfg)
@@ -251,6 +256,8 @@ fn run() -> Result<(), String> {
     // MAKER mode + axes (Task 11). All default to a single point so a plain
     // `--maker` run is one cell; pass comma lists to sweep an axis.
     let mut maker = false;
+    let mut place_mode = PlaceMode::Fade;
+    let mut maker_exit = false;
     let mut maker_fee_bps: Option<f64> = None;
     let mut taker_fee_bps: Option<f64> = None;
     let mut qoff_ax = vec![2.0_f64];
@@ -312,6 +319,9 @@ fn run() -> Result<(), String> {
             "--latdist" => { let v = val()?; latdist = parse_latdist(&v)?; }
             // ---- maker (Task 11) ----
             "--maker" => maker = true,
+            "--path" => place_mode = PlaceMode::Path,
+            "--place-mode" | "--quote-mode" => { place_mode = match val()?.trim() { "fade" => PlaceMode::Fade, "path" => PlaceMode::Path, o => return Err(format!("bad --place-mode `{o}` (expected fade|path)")) }; }
+            "--maker-exit-mode" | "--maker-exit-rest" | "--maker-exit-order" => maker_exit = true,
             "--maker-fee-bps" => maker_fee_bps = Some(val()?.parse().map_err(|e| format!("maker-fee-bps: {e}"))?),
             "--taker-fee-bps" => taker_fee_bps = Some(val()?.parse().map_err(|e| format!("taker-fee-bps: {e}"))?),
             "--quote-offset" => qoff_ax = parse_f64s(&val()?)?,
@@ -355,6 +365,7 @@ fn run() -> Result<(), String> {
             root, coin, symbol, dates, hours, latency_ns, q, fees, top, shuffle,
             latdist, staleness_ns, sample_ns, hold_ns: maker_hold_ns,
             maker_fee_set: maker_fee_bps.is_some(), taker_fee_set: taker_fee_bps.is_some(),
+            place_mode, maker_exit,
             ax_depth: depths, ax_win: win_ax, ax_qoff: qoff_ax, ax_ethr: ethr_ax,
             ax_exit: exit_ax, ax_rtol: rtol_ax, ax_danger: danger_ax, ax_clat: clat_ax,
             ax_poscap: poscap_ax, ax_invskew: invskew_ax,
@@ -588,7 +599,7 @@ fn run_maker(cx: &MakerRun) -> Result<(), String> {
     //      NAMED, before any run rather than panicking inside the parallel
     //      closure. `try_new` also enforces the quote_qty consistency check. ----
     for c in &cells {
-        let (mcfg, fvcfg, invcfg) = maker_cfgs(c, cx.q, cx.staleness_ns, cx.sample_ns, cx.hold_ns);
+        let (mcfg, fvcfg, invcfg) = maker_cfgs(c, cx.q, cx.staleness_ns, cx.sample_ns, cx.hold_ns, cx.place_mode, cx.maker_exit);
         MakerQuoter::try_new(mcfg, fvcfg, invcfg).map_err(|e| {
             format!(
                 "invalid maker config (off={} entry={} exit={} rtol={} danger={} cap={}): {e}",
@@ -637,7 +648,7 @@ fn run_maker(cx: &MakerRun) -> Result<(), String> {
         let per: Vec<MakerOut> = cells
             .par_iter()
             .map(|c| {
-                let (mcfg, fvcfg, invcfg) = maker_cfgs(c, cx.q, cx.staleness_ns, cx.sample_ns, cx.hold_ns);
+                let (mcfg, fvcfg, invcfg) = maker_cfgs(c, cx.q, cx.staleness_ns, cx.sample_ns, cx.hold_ns, cx.place_mode, cx.maker_exit);
                 let strat = MakerQuoter::try_new(mcfg, fvcfg, invcfg).expect("pre-validated maker cfg");
                 let mut eng = LagEngine::new(
                     strat,
@@ -784,7 +795,22 @@ fn run_maker(cx: &MakerRun) -> Result<(), String> {
     if cx.shuffle {
         println!("note             --shuffle has no effect in maker mode (ignored)");
     }
-    println!("strategy         MAKER (resting-limit MakerQuoter; entries=Place, exits=taker Market)");
+    println!(
+        "place mode       {}",
+        match cx.place_mode {
+            PlaceMode::Fade => "FADE (ask ABOVE / bid BELOW fv - sell richness / buy cheapness)",
+            PlaceMode::Path => "PATH (rest IN the reversion path: BID BELOW fv when rich / ASK ABOVE fv when cheap)",
+        }
+    );
+    println!(
+        "exit             {}",
+        if cx.maker_exit {
+            "MAKER (rest a limit near fv; taker-market fallback on hold/danger)"
+        } else {
+            "TAKER (market cross)"
+        }
+    );
+    println!("strategy         MAKER (resting-limit MakerQuoter; entries=Place)");
     println!(
         "{:>6} {:>8} {:>6} {:>6} {:>5} {:>8} {:>7} {:>6} {:>7} {:>7} {:>6} {:>9}  knobs",
         "n", "mean%", "t-stat", "win%", "RR", "paper%", "maxDD%", "fill%", "quotes", "fills", "trips", "maxInv"

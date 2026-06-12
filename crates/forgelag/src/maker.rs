@@ -593,6 +593,26 @@ mod inv_tests {
 use crate::engine::LagOrder;
 use forge_core::{Price, Qty};
 
+/// Placement mode for the resting entry quote (PATH-MODE tweak).
+///
+/// * `Fade` (default, original): rest AS A FADE on the reversion side - sell
+///   richness (Ask ABOVE fv when `dev>0`), buy cheapness (Bid BELOW fv when
+///   `dev<0`). Fills mostly on CONTINUATION (the adverse-selection problem).
+/// * `Path`: INVERT the side so the quote sits IN the path the reverting move
+///   travels through - `dev>0` (HL rich, expected to FALL) rests a BID BELOW fv
+///   (the falling tape fills us LONG below fv); `dev<0` (cheap, expected to
+///   RISE) rests an ASK ABOVE fv (the rising tape fills us SHORT above fv).
+///   The price formula is unchanged (Ask above / Bid below fv); only the SIDE
+///   flips, which is what places us on the far side the reversion moves toward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PlaceMode {
+    /// Original fade placement (sell rich above fv / buy cheap below fv).
+    #[default]
+    Fade,
+    /// Rest in the path of the reversion (invert the side; see [`PlaceMode`]).
+    Path,
+}
+
 /// Configuration for the [`QuoteManager`]. All bps fields are interpreted the
 /// same way as the oracle/inventory (basis points of fair value).
 #[derive(Clone, Copy, Debug)]
@@ -620,6 +640,9 @@ pub struct QuoteConfig {
     pub ack_timeout_ns: u64,
     /// Size of one quote (raw base qty); matches the inventory controller's.
     pub quote_qty: Qty,
+    /// Placement mode: `Fade` (default) or `Path` (PATH-MODE tweak). See
+    /// [`PlaceMode`]. `Path` inverts the entry side to rest in the reversion path.
+    pub place_mode: PlaceMode,
 }
 impl Default for QuoteConfig {
     fn default() -> Self {
@@ -632,6 +655,7 @@ impl Default for QuoteConfig {
             cancel_latency_ns: DEFAULT_STALENESS_NS,
             ack_timeout_ns: DEFAULT_STALENESS_NS,
             quote_qty: Qty::from_raw(1),
+            place_mode: PlaceMode::Fade,
         }
     }
 }
@@ -718,6 +742,24 @@ impl QuoteManager {
         }
     }
 
+    /// Side to PLACE the entry quote on, honoring the placement mode
+    /// (`self.cfg.place_mode`). FADE returns the fade side ([`Self::reversion_side`]);
+    /// PATH inverts it so the quote rests in the path of the reverting move.
+    fn entry_side(&self, dev: f64) -> Option<Side> {
+        match self.cfg.place_mode {
+            PlaceMode::Fade => Self::reversion_side(dev),
+            PlaceMode::Path => Self::reversion_side(dev).map(Self::invert),
+        }
+    }
+
+    /// Flip a side (Ask<->Bid) for PATH-mode placement.
+    fn invert(s: Side) -> Side {
+        match s {
+            Side::Ask => Side::Bid,
+            Side::Bid => Side::Ask,
+        }
+    }
+
     /// Effective offset (bps) from fair value for `side` at `position`:
     /// `base quote_offset_bps + signed inventory skew`, floored at 0 so the
     /// quote never crosses to the wrong side of fair value (Req 2.3, 4.3).
@@ -752,6 +794,14 @@ impl QuoteManager {
         self.cancel_current(out);
     }
 
+    /// Allocate a fresh client id (entry quotes and maker-exit Places share the
+    /// id space so every resting order has a unique cancel address).
+    pub fn alloc_client_id(&mut self) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
     /// Place a fresh entry quote at `price` on `side`, recording it as resting.
     fn place_new(&mut self, side: Side, price: Price, out: &mut Vec<LagOrder>) {
         let id = self.next_id;
@@ -773,7 +823,7 @@ impl QuoteManager {
         };
         let pos = ctx.position_qty;
         let mag = dev.abs();
-        let side_now = Self::reversion_side(dev);
+        let side_now = self.entry_side(dev);
 
         if let Some(rq) = self.resting {
             let flipped = matches!(side_now, Some(s) if s != rq.side);
@@ -915,6 +965,7 @@ mod quote_tests {
             cancel_latency_ns: 100,
             ack_timeout_ns: 100,
             quote_qty: Qty::from_raw(10),
+            place_mode: PlaceMode::Fade,
         }
     }
 
@@ -1174,6 +1225,11 @@ use crate::engine::LagStrategy;
 pub struct MakerQuoterConfig {
     /// Inner quote-manager configuration (offsets, thresholds, danger, latencies, qty).
     pub quote: QuoteConfig,
+    /// MAKER-EXIT option (Tweak 2). `false` (default) keeps the validated TAKER
+    /// `Market` revert-to-mean exit. `true` rests a passive maker `Place` at
+    /// `fv +/- quote_offset_bps` on the closing side to save the taker fee; the
+    /// `hold_ns` timeout and the danger/emergency path remain TAKER backstops.
+    pub maker_exit: bool,
     /// Optional hold-timeout TAKER exit (ns). 0 = DISABLED (the default and the
     /// validated behaviour: a pure revert-to-mean exit, Req 5.2). A non-zero
     /// value is a SAFETY backstop only: if a position is opened and the
@@ -1278,12 +1334,39 @@ impl LagStrategy for MakerQuoter {
                 && matches!(self.qm.dev_bps(), Some(d) if d.abs() <= self.cfg.quote.exit_bps);
             let hold_timeout =
                 self.cfg.hold_ns > 0 && ctx.now.saturating_sub(self.entry_ts) >= self.cfg.hold_ns;
-            if reverted || hold_timeout {
-                out.push(LagOrder::market(
-                    Self::exit_side(pos),
-                    Qty::from_raw(pos.unsigned_abs() as i64),
-                ));
+            let exit_side = Self::exit_side(pos);
+            let qty = Qty::from_raw(pos.unsigned_abs() as i64);
+            if hold_timeout {
+                // Safety backstop is ALWAYS a taker market (never stuck holding),
+                // even under maker_exit (Tweak 2).
+                out.push(LagOrder::market(exit_side, qty));
                 self.exiting = Some(pos);
+            } else if reverted {
+                if self.cfg.maker_exit {
+                    // MAKER exit: rest a passive limit at fv +/- quote_offset on the
+                    // closing side (Bid below fv / Ask above fv) to save the taker
+                    // fee. It rests until the tape trades through it; the exiting
+                    // guard prevents duplicate submissions. With the validated
+                    // hold_ns=0 there is no taker fallback, so it simply rests.
+                    let off = self.cfg.quote.quote_offset_bps / 10_000.0;
+                    let fv = self.qm.fair_value().unwrap_or(0.0);
+                    let px = match exit_side {
+                        Side::Ask => fv * (1.0 + off),
+                        Side::Bid => fv * (1.0 - off),
+                    };
+                    match Price::from_f64(px) {
+                        Ok(price) => {
+                            let id = self.qm.alloc_client_id();
+                            out.push(LagOrder::place(id, exit_side, price, qty));
+                        }
+                        Err(_) => out.push(LagOrder::market(exit_side, qty)),
+                    }
+                    self.exiting = Some(pos);
+                } else {
+                    // Validated TAKER revert-to-mean exit (Req 5.2).
+                    out.push(LagOrder::market(exit_side, qty));
+                    self.exiting = Some(pos);
+                }
             }
         } else {
             // FLAT. Reset the in-position bookkeeping and the exit guard.
@@ -1329,12 +1412,13 @@ mod maker_quoter_tests {
             cancel_latency_ns: 100,
             ack_timeout_ns: 100,
             quote_qty: Qty::from_raw(10),
+            place_mode: PlaceMode::Fade,
         }
     }
 
     fn make_mq(hold_ns: u64) -> MakerQuoter {
         MakerQuoter::new(
-            MakerQuoterConfig { quote: quote_cfg(), hold_ns },
+            MakerQuoterConfig { quote: quote_cfg(), maker_exit: false, hold_ns },
             FairValueOracle::new(FairValueConfig::default()),
             InventoryController::new(InventoryConfig { pos_cap: 1_000, inv_skew_bps: 0.0, quote_qty: 10 }),
         )
@@ -1484,6 +1568,56 @@ mod maker_quoter_tests {
         assert!(!mq.qm.has_resting(), "no quote placed while stale");
     }
 
+    // ---- MAKER-EXIT option (Tweak pass) -----------------------------------
+    fn make_mq_rest(hold_ns: u64) -> MakerQuoter {
+        MakerQuoter::new(
+            MakerQuoterConfig { quote: quote_cfg(), maker_exit: true, hold_ns },
+            FairValueOracle::new(FairValueConfig::default()),
+            InventoryController::new(InventoryConfig { pos_cap: 1_000, inv_skew_bps: 0.0, quote_qty: 10 }),
+        )
+    }
+
+    #[test]
+    fn maker_exit_rests_a_limit_instead_of_crossing_on_revert() {
+        let book = OrderBook::with_max_levels(8);
+        let mut mq = make_mq_rest(0);
+        // Short -10, reverted within the exit band: with maker_exit the close is a
+        // resting maker Place (NOT a taker Market). A short closes by BUYING (Bid),
+        // rested just BELOW fv (passive) at 1000*(1-5bps) = 999.5.
+        force(&mut mq.qm.oracle, 100, 1000.0, 1.0);
+        let mut out = Vec::new();
+        mq.on_event(&ctx(100, -10, &book), &mut out);
+        assert_eq!(out.len(), 1, "one passive exit order");
+        assert_eq!(out[0].kind, LagOrderKind::Place, "maker exit RESTS a limit, not a taker market");
+        assert_eq!(out[0].side, Side::Bid, "short -10 closes by buying (Bid)");
+        assert_eq!(out[0].qty.raw(), 10, "closes the whole position");
+        let px = out[0].price.to_f64();
+        assert!((px - 999.5).abs() < 1e-3, "exit bid rests just BELOW fv (passive), got {px}");
+        // Same position next event: do NOT submit a second exit (already resting).
+        force(&mut mq.qm.oracle, 200, 1000.0, 1.0);
+        let mut out2 = Vec::new();
+        mq.on_event(&ctx(200, -10, &book), &mut out2);
+        assert!(out2.is_empty(), "no duplicate passive exit while it rests");
+    }
+
+    #[test]
+    fn maker_exit_falls_back_to_taker_market_on_hold_timeout() {
+        let book = OrderBook::with_max_levels(8);
+        let mut mq = make_mq_rest(50); // 50ns hold backstop
+        // Long +10, still dislocated (not reverted) => no passive exit yet.
+        force(&mut mq.qm.oracle, 100, 1000.0, 20.0);
+        let mut o1 = Vec::new();
+        mq.on_event(&ctx(100, 10, &book), &mut o1);
+        assert!(o1.is_empty(), "no exit before the hold elapses and before revert");
+        // Hold elapses => TAKER market fallback even under maker_exit (never stuck).
+        force(&mut mq.qm.oracle, 160, 1000.0, 20.0);
+        let mut o2 = Vec::new();
+        mq.on_event(&ctx(160, 10, &book), &mut o2);
+        assert_eq!(o2.len(), 1, "hold timeout forces an exit");
+        assert_eq!(o2[0].kind, LagOrderKind::Market, "fallback is a TAKER market (never stuck holding)");
+        assert_eq!(o2[0].side, Side::Ask, "long +10 => flatten by selling (Ask)");
+    }
+
     // ---- END-TO-END through the real LagEngine -----------------------------
 
     fn lev(role: Role, kind: LagKind, side: Side, px: f64, qty: f64, ts: u64) -> LagEvent {
@@ -1560,7 +1694,9 @@ mod maker_quoter_tests {
                 cancel_latency_ns: 0,
                 ack_timeout_ns: 0,
                 quote_qty: qty,
+                place_mode: PlaceMode::Fade,
             },
+            maker_exit: false,
             hold_ns: 0,
         };
         let inv = InventoryController::new(InventoryConfig {
@@ -1608,6 +1744,127 @@ mod maker_quoter_tests {
         assert_eq!(a.final_position, b.final_position, "final position identical across runs");
         assert_eq!(a.net_pnl.to_bits(), b.net_pnl.to_bits(), "net P&L byte-identical across runs (Req 9.5)");
     }
+
+    // ---- PATH MODE (Tweak 1) -----------------------------------------------
+    fn make_mq_path() -> MakerQuoter {
+        let cfg = MakerQuoterConfig {
+            quote: QuoteConfig { place_mode: PlaceMode::Path, ..quote_cfg() },
+            maker_exit: false,
+            hold_ns: 0,
+        };
+        MakerQuoter::new(
+            cfg,
+            FairValueOracle::new(FairValueConfig::default()),
+            InventoryController::new(InventoryConfig { pos_cap: 1_000, inv_skew_bps: 0.0, quote_qty: 10 }),
+        )
+    }
+
+    #[test]
+    fn path_mode_inverts_the_side_and_rests_in_the_reversion_path() {
+        let book = OrderBook::with_max_levels(8);
+        // RICH (dev>0, expected to FALL): PATH rests a BID BELOW fv (inverted from
+        // FADE Ask-above) so the falling reversion trades down into it.
+        let mut rich = make_mq_path();
+        force(&mut rich.qm.oracle, 100, 1000.0, 20.0);
+        let mut o = Vec::new();
+        rich.on_event(&ctx(100, 0, &book), &mut o);
+        assert_eq!(o.len(), 1);
+        assert_eq!(o[0].kind, LagOrderKind::Place, "PATH entry is a resting maker Place");
+        assert_eq!(o[0].side, Side::Bid, "PATH rich => BID (buy the falling reversion), inverted vs FADE Ask");
+        assert!(o[0].price.to_f64() < 1000.0, "PATH bid rests BELOW fv, got {}", o[0].price.to_f64());
+
+        // CHEAP (dev<0, expected to RISE): PATH rests an ASK ABOVE fv.
+        let mut cheap = make_mq_path();
+        force(&mut cheap.qm.oracle, 100, 1000.0, -20.0);
+        let mut o2 = Vec::new();
+        cheap.on_event(&ctx(100, 0, &book), &mut o2);
+        assert_eq!(o2[0].side, Side::Ask, "PATH cheap => ASK (sell the rising reversion), inverted vs FADE Bid");
+        assert!(o2[0].price.to_f64() > 1000.0, "PATH ask rests ABOVE fv, got {}", o2[0].price.to_f64());
+    }
+
+    // A scripted RICH dislocation whose HL tape trades DOWN through the PATH bid:
+    //   warm-up : ref 1000 (baseline ~0)
+    //   disloc  : ref drops to 998 => HL rich ~20bps => PATH rests a BID below fv
+    //   fill    : an HL SELL prints DOWN through the resting bid => maker fill LONG
+    //   revert  : ref back to 1000 => |dev| ~0 => taker exit => flat
+    fn path_round_trip_stream() -> Vec<LagEvent> {
+        let size = 100.0;
+        let mut evs = Vec::new();
+        let mut ts = 1_000_000_000u64;
+        let step = 1_000_000u64;
+        evs.push(lev(Role::Exec, LagKind::BookDelta, Side::Bid, 999.9, size, ts));
+        evs.push(lev(Role::Exec, LagKind::BookDelta, Side::Ask, 1000.1, size, ts));
+        for _ in 0..45 {
+            ts += step;
+            evs.push(lev(Role::Reference, LagKind::Trade, Side::Bid, 1000.0, size, ts));
+        }
+        // Dislocation: ref drops => HL rich => PATH rests a BID below fv.
+        ts += step;
+        evs.push(lev(Role::Reference, LagKind::Trade, Side::Bid, 998.0, size, ts));
+        // Through-trade DOWN: an HL SELL printing below the resting bid => fill LONG.
+        ts += step;
+        evs.push(lev(Role::Exec, LagKind::Trade, Side::Ask, 990.0, 50.0, ts));
+        // Hold one beat, still dislocated.
+        ts += step;
+        evs.push(lev(Role::Reference, LagKind::Trade, Side::Bid, 998.0, size, ts));
+        // Reversion: ref back to 1000 => dev ~0 => taker exit.
+        ts += step;
+        evs.push(lev(Role::Reference, LagKind::Trade, Side::Bid, 1000.0, size, ts));
+        for _ in 0..6 {
+            ts += step;
+            evs.push(lev(Role::Reference, LagKind::Trade, Side::Bid, 1000.0, size, ts));
+        }
+        evs
+    }
+
+    fn path_e2e_strategy() -> MakerQuoter {
+        let oracle = FairValueOracle::new(FairValueConfig {
+            top_n: 5,
+            window: 500,
+            sample_ns: 1_000_000,
+            staleness_ns: DEFAULT_STALENESS_NS,
+        });
+        let qty = Qty::from_f64(0.1).unwrap();
+        let cfg = MakerQuoterConfig {
+            quote: QuoteConfig {
+                quote_offset_bps: 25.0, // rest the bid well below the book (non-marketable)
+                entry_threshold_bps: 16.0,
+                exit_bps: 2.0,
+                reprice_tol_bps: 1.0,
+                danger_bps: 40.0,
+                cancel_latency_ns: 0,
+                ack_timeout_ns: 0,
+                quote_qty: qty,
+                place_mode: PlaceMode::Path,
+            },
+            maker_exit: false,
+            hold_ns: 0,
+        };
+        let inv = InventoryController::new(InventoryConfig {
+            pos_cap: Qty::from_f64(10.0).unwrap().raw(),
+            inv_skew_bps: 0.0,
+            quote_qty: qty.raw(),
+        });
+        MakerQuoter::new(cfg, oracle, inv)
+    }
+
+    #[test]
+    fn end_to_end_path_mode_fills_long_on_the_falling_reversion_then_exits_flat() {
+        let evs = path_round_trip_stream();
+        let mut eng = LagEngine::new(
+            path_e2e_strategy(),
+            LagConfig { order_latency_ns: 0, cancel_latency_ns: 0, exec_book_levels: 20, fees: FeeSchedule::legacy() },
+        );
+        eng.run(evs.iter()).unwrap();
+        let r = eng.finish();
+        eprintln!(
+            "[maker e2e PATH] events={} submitted={} filled={} maker_fills={} round_trips={} final_pos={} net={:.6}",
+            r.events, r.orders_submitted, r.orders_filled, r.maker_fills, r.round_trips, r.final_position, r.net_pnl
+        );
+        assert!(r.maker_fills >= 1, "PATH bid must fill as a MAKER on the falling tape; maker_fills={}", r.maker_fills);
+        assert!(r.round_trips >= 1, "one completed PATH round trip; got {}", r.round_trips);
+        assert_eq!(r.final_position, 0, "the taker exit returns us to flat");
+    }
 }
 
 #[cfg(test)]
@@ -1626,12 +1883,13 @@ mod maker_quoter_stale_tests {
             cancel_latency_ns: 100,
             ack_timeout_ns: 100,
             quote_qty: Qty::from_raw(10),
+            place_mode: PlaceMode::Fade,
         }
     }
 
     fn make_mq() -> MakerQuoter {
         MakerQuoter::new(
-            MakerQuoterConfig { quote: quote_cfg(), hold_ns: 0 },
+            MakerQuoterConfig { quote: quote_cfg(), maker_exit: false, hold_ns: 0 },
             FairValueOracle::new(FairValueConfig::default()),
             InventoryController::new(InventoryConfig { pos_cap: 1_000, inv_skew_bps: 0.0, quote_qty: 10 }),
         )
@@ -1877,6 +2135,7 @@ mod validation_tests {
             cancel_latency_ns: 1_000_000_000,
             ack_timeout_ns: 1_000_000_000,
             quote_qty: Qty::from_raw(10),
+            place_mode: PlaceMode::Fade,
         }
     }
     fn good_inv() -> InventoryConfig {
@@ -1898,7 +2157,7 @@ mod validation_tests {
         assert!(good_inv().validate().is_ok());
         assert!(good_fv().validate().is_ok());
         let mq = MakerQuoter::try_new(
-            MakerQuoterConfig { quote: good_quote(), hold_ns: 0 },
+            MakerQuoterConfig { quote: good_quote(), maker_exit: false, hold_ns: 0 },
             good_fv(),
             good_inv(),
         );
@@ -1996,7 +2255,7 @@ mod validation_tests {
         let mut inv = good_inv();
         inv.quote_qty = 7; // mismatch vs QuoteConfig's 10
         let res = MakerQuoter::try_new(
-            MakerQuoterConfig { quote: good_quote(), hold_ns: 0 },
+            MakerQuoterConfig { quote: good_quote(), maker_exit: false, hold_ns: 0 },
             good_fv(),
             inv,
         );
@@ -2011,7 +2270,7 @@ mod validation_tests {
         let mut q = good_quote();
         q.danger_bps = 600.0; // > 500
         let res = MakerQuoter::try_new(
-            MakerQuoterConfig { quote: q, hold_ns: 0 },
+            MakerQuoterConfig { quote: q, maker_exit: false, hold_ns: 0 },
             good_fv(),
             good_inv(),
         );
