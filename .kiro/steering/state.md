@@ -402,3 +402,22 @@ reproducible, coinflip loses on real data.
   x2 all passed) but NOT capturable by us. docs/research/latency-research.md. No further latency
   work. NEXT lead when ready = Type C forced-flow / liquidation cascades (CHD liq data; different
   edge that does NOT depend on out-racing a reversion). Bot can be stopped (tmux kill lagshot).
+- *** LAGSHOT-MAKER PIVOT = DEAD (2026-06-12, spec .kiro/specs/lagshot-maker) ***. Built the
+  full maker (resting-limit) variant to dodge the taker latency race: forgelag engine cancel/
+  reprice path + honest maker fill model (queue+adverse-selection, no mid fills) + FairValueOracle
+  (OKX-anchored) + InventoryController + QuoteManager + MakerQuoter + metrics + hunt --maker sweep
+  + null-edge MAKER gate (coinflip maker LOSES synth -9.48 / real ETH -57.67 -> engine not lying).
+  80 tests green, clippy clean, determinism byte-identical, no-lookahead proven. ALL on branch
+  forgelag, sacred core untouched. COARSE SWEEP (10 real ETH days Nov-Dec25, OKX ref, grid
+  quote_offset{0,1,2,4,8} x entry_thr{8,12,16,20}, REALISTIC fees maker+1.5/taker+4.5bps):
+  * 800ms exec+cancel: EVERY cell NEGATIVE. * 0ms idealized upper bound + real fees: STILL every
+  cell negative (~= 800ms). => pivot SUCCEEDED at dodging latency (0ms~=800ms) but loses to
+  ADVERSE SELECTION + fees. Resting fills only on continuation (wrong side of reversion); clean
+  reversions snap back WITHOUT trading through our quote = we never get the good fill. Tight
+  offset bleeds (win 6-9%, t-22); wide offset ~3 trips/day + still < 6bps round-trip fee. Only
+  green = default-REBATE control (maker -0.2bps) = REBATE MIRAGE (wall-bot lie pattern), negative
+  under honest fees. NO net-positive knob-bite-valid cell at any latency. docs/research/lagshot-
+  maker-hunt.md. VERDICT: both doors closed - TAKER Lagshot latency-locked, MAKER Lagshot adverse-
+  selection-locked. Edge REAL but structurally uncapturable by us. Killed cheap in sim, 0 euros
+  risked. NEXT lead must NOT depend on out-racing a reversion (taker) or being crossed-on-the-right-
+  side (maker): -> Type C forced-flow / LIQUIDATION CASCADES (CHD liq data) is the queued lead.
