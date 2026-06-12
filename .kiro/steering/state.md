@@ -324,3 +324,10 @@ reproducible, coinflip loses on real data.
   live: Lagshot is NOT always-on; idles in calm, fires in bursts on volatility (median 14/day
   but calm stretches = 0). PLAN: let it run several days incl a volatile stretch, then compare
   real per-trade bps to backtest (~5.5-6 net). Infra now robust. Box pennies/day; leave running.
+- LATENCY RECONFIRMED (2026-06-12 morning, fresh 40-order probe, calm): median 741ms, mean
+  787, p75 789, p90 891, max 1756 (one outlier). vs yesterday n=20 (median 766/mean806/p90
+  1101/max1107). Combined ~60 orders: typical ~740-770ms median, CONSISTENTLY under validated
+  884ms = strong regime holds. FAT TAIL real: ~1/40 fill at 1.76s (dud, edge gone there) -
+  already baked into blended backtest (+845%). STILL calm-market latency; volatile-session
+  latency (when bot fires) = the remaining unknown, needs bot's own trades. Bot restarted
+  healthy (N reset usage: probe used N=40/NOTIONAL=11; bot back live). Acct still ~$12.86 FLAT.
