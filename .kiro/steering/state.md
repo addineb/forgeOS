@@ -354,3 +354,16 @@ reproducible, coinflip loses on real data.
   1x, flat, eq $12.56 (test trades cost ~$0.10 spread, expected - no edge at thr1.5).
   LESSON: this is the bug that would have broken EVERY live exit. Test the machinery, don't
   assume. Bot now robust: both feeds + position all REST-polled, self-correcting.
+- *** FIRST LIVE TRIGGERS (2026-06-12 NY ~13:30-13:40) - 2 key findings ***. Production
+  thr16 fired 2 real ENTRY SELL signals on genuine dislocations (dev=16.4, 17.1bps) - DETECTION
+  WORKS LIVE. BUT both fill=None ok=False "Order could not immediately match": (1) LATENCY IN
+  VOLATILITY = 1314ms & 1827ms - MUCH worse than the calm-measured 766ms median. CONFIRMS the
+  latency-vol correlation worry: latency blows out exactly when we trade. (2) the 5bps IOC
+  cross was TOO TIGHT to fill - we SELL (HL rich, reverting), and in the 1.3-1.8s latency HL
+  already dropped past our limit -> IOC sell can't match -> NO FILL. Latency-selected by our
+  own prediction. FIX: widened CROSS/EXIT_CROSS to 50bps TOLERANCE (guarantees taker fill like
+  backtest market-taker; on deep ETH book the tiny order fills at touch, tolerance just stops
+  rejection; REAL slippage is logged). Redeployed. NEXT: catch a filled NY trigger + read the
+  REAL slippage/per-trade edge - THE moment-of-truth (does edge survive ~1.5s vol-latency +
+  reverted-price fills?). Honest: 1.3-1.8s live latency is in the backtest's danger zone
+  (700ms t1.35, 1s negative) - the realized edge may be thin/negative. Measuring it now.

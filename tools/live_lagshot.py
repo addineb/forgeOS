@@ -17,7 +17,7 @@ THR_BPS=16.0; EXIT_BPS=2.0
 WINDOW=500; SAMPLE_S=0.5; TOP_N=5
 HOLD_S=600; COOLDOWN_S=30
 NOTIONAL=11.0; LEVERAGE=1
-CROSS_BPS=5.0; EXIT_CROSS_BPS=12.0; FEE_RT_BPS=9.0
+CROSS_BPS=50.0; EXIT_CROSS_BPS=50.0; FEE_RT_BPS=9.0  # wide tolerance to GUARANTEE taker fill (matches backtest market-taker); real slippage is logged, not the tolerance
 DAILY_LOSS_HALT=0.15; WARMUP_SAMPLES=60; POS_EPS=1e-9
 
 LIVE="--live" in sys.argv
