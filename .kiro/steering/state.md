@@ -340,3 +340,17 @@ reproducible, coinflip loses on real data.
   choice. Restarted, both feeds fresh, hb flowing, process alive. Equity $12.64 (= morning
   probe cost; 0 strategy trades still - market calm, dev never near 16). STOP running probes
   (burns acct). Just let it run for a volatile session.
+- *** LIVE BOT BUG FOUND + FIXED (2026-06-12 ~12:45) - trader skepticism caught it ***.
+  Forced a live machinery test (lowered thr to 1.5 to fire in calm market). Found exits were
+  FAILING 100%: error "Order has invalid price." ROOT CAUSE = SDK arg mistake: market_close
+  3rd positional arg is `px` not slippage; my call ex.market_close(COIN, None, 0.0012) set a
+  $0.0012 limit price -> invalid. (Entries worked: market_open's 5th arg IS slippage.) Old
+  code silently went FLAT on failed close -> position desync (unmanaged open position).
+  FIX #1: rewrote bot to EXCHANGE-TRUTH state machine - pos_thread polls real position every
+  2s; loop acts on REAL pos not internal belief; failed close just retries next loop (no
+  desync possible) + pending guard. FIX #2: ex.market_close(COIN, slippage=EXIT_CROSS_BPS/1e4)
+  (keyword). VERIFIED at thr1.5: clean round trips, ENTRY+EXIT both ok=True/filled, ends FLAT.
+  Latency live 748-1221ms (matches measured), slip 0.2-1.8bps. Restored production thr16/exit2,
+  1x, flat, eq $12.56 (test trades cost ~$0.10 spread, expected - no edge at thr1.5).
+  LESSON: this is the bug that would have broken EVERY live exit. Test the machinery, don't
+  assume. Bot now robust: both feeds + position all REST-polled, self-correcting.
