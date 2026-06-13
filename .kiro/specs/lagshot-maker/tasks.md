@@ -43,7 +43,7 @@ Ordering follows the honest ladder: the engine cancel path and the null-edge mak
   - Wire maker fee on entry fills, taker fee on market exits.
   - _Requirements: 1.5, 3.7, 5.1, 5.2_
 
-- [ ] 8. Config, validation, and fee economics
+- [-] 8. Config, validation, and fee economics
   - Add maker knobs (quote_offset_bps, entry_threshold, reprice_tol_bps, danger_bps, cancel_latency_ns, ack_timeout_ns, pos_cap, inv_skew_bps, staleness_ns) to the config; reject out-of-range values at construction naming the bad param; fail-fast on missing maker fee at first maker fill; treat rebate as credit / fee as debit.
   - _Requirements: 1.5, 3.6, 5.3, 5.4, 5.5, 5.6_
 

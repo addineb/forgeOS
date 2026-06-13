@@ -327,7 +327,7 @@ fn first_touch(path: &[(u64, f64)], entry_ts: u64, long: bool, target_bps: f64, 
 #[must_use]
 fn simulate_maker_reversal(
     path: &[(u64, f64)],
-    trades: &[(u64, f64, bool)],
+    trades: &[(u64, f64, bool, f64)],
     arm_ts: u64,
     edge: f64,
     dir_up: bool,
@@ -341,7 +341,7 @@ fn simulate_maker_reversal(
     }
     // FILL: first aggressive print that trades THROUGH the resting edge at/after arm.
     let mut fill_ts: Option<u64> = None;
-    for &(ts, px, buy) in trades {
+    for &(ts, px, buy, _q) in trades {
         if ts < arm_ts {
             continue;
         }
@@ -391,6 +391,195 @@ fn simulate_maker_reversal(
     if started { Some((fill_ts, last)) } else { Some((fill_ts, 0.0)) }
 }
 // ----------------------------------------------------------------------------
+// NEW SEPARATOR: AGGRESSIVE TRADE FLOW vs PRICE IMPACT (the flow-vs-impact read)
+// ----------------------------------------------------------------------------
+// The prior depth-imbalance confirm FAILED to separate reversal from continuation
+// (P(rev|confirm) ~= P(rev|no-confirm) = random). This is a DIFFERENT signal built
+// from the HL AGGRESSIVE TRADES (not resting depth), over a no-lookahead window
+// [fire, confirm-window-end] (every read <= entry). The trader's 3-behaviour
+// taxonomy collapses to flow-vs-impact:
+//   1. ABSORBED  - forced (sweep-dir) volume HIGH, price barely moves -> REVERSAL.
+//   2. EXHAUSTED - late-half forced-volume RATE fades vs early half  -> REVERSAL.
+//   3. EASY-PUSH - price moves FAR on LITTLE volume (vacuum)         -> CONTINUATION.
+
+/// Scalar flow-vs-impact metrics over the measurement window. All pure.
+#[derive(Clone, Copy, Debug, Default)]
+struct FlowMetrics {
+    /// Total ABSOLUTE aggressive HL volume in the window (base units).
+    vol_abs: f64,
+    /// Total SIGNED aggressive volume (buy +, sell -).
+    vol_signed: f64,
+    /// Aggressive volume in the SWEEP DIRECTION (the forced flow): UP sweep =
+    /// aggressive buys, DOWN sweep = aggressive sells.
+    vol_dir: f64,
+    /// |microprice move| fire -> window-end, bps (the displacement).
+    disp_bps: f64,
+    /// Max extension in the sweep direction over the window, bps.
+    max_ext_bps: f64,
+    /// ABSORPTION = forced volume / displacement. HIGH = absorbed (behaviour 1).
+    absorption_ratio: f64,
+    /// IMPACT = displacement / forced volume. HIGH = easy push (behaviour 3).
+    impact_ratio: f64,
+    /// Forced volume in the EARLY half of the window.
+    early_dir_vol: f64,
+    /// Forced volume in the LATE half of the window.
+    late_dir_vol: f64,
+    /// late/early forced-volume rate ratio. LOW = exhausting (behaviour 2).
+    decel_ratio: f64,
+}
+
+/// Compute the flow-vs-impact metrics over the NO-LOOKAHEAD window
+/// `[fire_ts, window_end_ts]` (window_end = confirm-window-end = entry anchor, so
+/// every read is <= entry). `trades` = (ts, px, buy_aggr, qty); `path` = the
+/// microprice samples; `dir_up` = sweep direction; `fire_px` = microprice at the
+/// poke. Trades/samples outside the window are ignored (no lookahead). Pure.
+#[must_use]
+fn compute_flow(
+    trades: &[(u64, f64, bool, f64)],
+    path: &[(u64, f64)],
+    fire_ts: u64,
+    window_end_ts: u64,
+    fire_px: f64,
+    dir_up: bool,
+) -> FlowMetrics {
+    let eps = 1e-9;
+    let s = if dir_up { 1.0 } else { -1.0 };
+    let mid_ts = fire_ts.saturating_add(window_end_ts.saturating_sub(fire_ts) / 2);
+    let mut m = FlowMetrics::default();
+    for &(ts, _px, buy, q) in trades {
+        if ts < fire_ts || ts > window_end_ts {
+            continue;
+        }
+        let q = if q.is_finite() && q > 0.0 { q } else { 0.0 };
+        m.vol_abs += q;
+        m.vol_signed += if buy { q } else { -q };
+        // forced flow = aggression in the sweep direction.
+        let dir_q = if dir_up == buy { q } else { 0.0 };
+        m.vol_dir += dir_q;
+        if ts <= mid_ts {
+            m.early_dir_vol += dir_q;
+        } else {
+            m.late_dir_vol += dir_q;
+        }
+    }
+    // displacement + max extension from the microprice path within the window.
+    let mut end_px = fire_px;
+    if fire_px > 0.0 {
+        for &(ts, px) in path {
+            if ts < fire_ts || ts > window_end_ts {
+                continue;
+            }
+            end_px = px;
+            let ext = s * (px - fire_px) / fire_px * 10_000.0;
+            if ext > m.max_ext_bps {
+                m.max_ext_bps = ext;
+            }
+        }
+        m.disp_bps = ((end_px - fire_px) / fire_px * 10_000.0).abs();
+    }
+    m.absorption_ratio = m.vol_dir / m.disp_bps.max(eps);
+    m.impact_ratio = m.disp_bps / m.vol_dir.max(eps);
+    m.decel_ratio = m.late_dir_vol / m.early_dir_vol.max(eps);
+    m
+}
+
+/// ABSORPTION confirm (behaviour 1 -> predicts REVERSAL): forced volume HIGH vs
+/// the displacement it produced. True when absorption_ratio >= `absorb_min`
+/// (requires real forced flow). Pure.
+#[must_use]
+fn confirm_absorb_flow(m: &FlowMetrics, absorb_min: f64) -> bool {
+    m.vol_dir > 0.0 && m.absorption_ratio >= absorb_min
+}
+
+/// EXHAUSTION confirm (behaviour 2 -> predicts REVERSAL): the forced-volume RATE
+/// fades into the late half. True when late-half forced volume <= `decel_frac` *
+/// early-half (decel_ratio <= decel_frac), with real early flow to fade. Pure.
+#[must_use]
+fn confirm_exhaust_flow(m: &FlowMetrics, decel_frac: f64) -> bool {
+    m.early_dir_vol > 0.0 && m.late_dir_vol <= decel_frac * m.early_dir_vol
+}
+
+/// EASY-PUSH confirm (behaviour 3 -> predicts CONTINUATION): price moved FAR on
+/// LITTLE volume. True when impact_ratio >= `push_min` (requires real move). Pure.
+#[must_use]
+fn confirm_push_flow(m: &FlowMetrics, push_min: f64) -> bool {
+    m.disp_bps > 0.0 && m.impact_ratio >= push_min
+}
+
+/// The trader's 3-state flow taxonomy, keyed on the MASTER VARIABLE
+/// (price-impact-per-unit-forced-volume = `impact_ratio`) plus the flow-decay
+/// (exhaustion). All inputs are window metrics (read <= entry) = no-lookahead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FlowState {
+    /// LOW impact-per-volume WITH real sustained forced flow: a wall ate the
+    /// flow (lots of volume, little displacement) -> predicts REVERSAL.
+    Absorbed,
+    /// Forced flow decelerates toward zero (late << early): the push is spent
+    /// and price stalls -> predicts REVERSAL.
+    Exhausted,
+    /// HIGH impact-per-volume: price ran far on little volume into thin/pulled
+    /// liquidity -> predicts CONTINUATION.
+    Continuation,
+    /// None of the three signatures fired.
+    Unclassified,
+}
+
+/// Assign the 3-state flow outcome (pure). CONTINUATION (clean easy-push) is
+/// tested first, then ABSORBED (low impact-per-vol with real forced flow), then
+/// EXHAUSTED (decelerating forced flow). `impact_lo`/`impact_hi` are the two cuts
+/// on the master variable; `flow_decay` is the late/early forced-volume ceiling
+/// for exhaustion; `absorb_minvol` requires real forced flow for an absorption.
+#[must_use]
+fn assign_flow_state(m: &FlowMetrics, impact_lo: f64, impact_hi: f64, flow_decay: f64, absorb_minvol: f64) -> FlowState {
+    if m.disp_bps > 0.0 && m.vol_dir > 0.0 && m.impact_ratio >= impact_hi {
+        return FlowState::Continuation;
+    }
+    if m.vol_dir > absorb_minvol && m.impact_ratio <= impact_lo {
+        return FlowState::Absorbed;
+    }
+    if m.early_dir_vol > 0.0 && m.decel_ratio <= flow_decay {
+        return FlowState::Exhausted;
+    }
+    FlowState::Unclassified
+}
+
+/// P(target_class | signal) vs P(target_class | NOT signal) over decided sweeps,
+/// returned as (p_sig%, n_sig, p_not%, n_not). The KEY separation primitive
+/// (mirrors the depth-imbalance separation table). Pure + tested.
+#[must_use]
+fn separation(items: &[(bool, i8)], target: i8) -> (f64, usize, f64, usize) {
+    let (mut nw, mut tw, mut nn, mut tn) = (0usize, 0usize, 0usize, 0usize);
+    for &(sig, cls) in items {
+        if sig {
+            nw += 1;
+            if cls == target {
+                tw += 1;
+            }
+        } else {
+            nn += 1;
+            if cls == target {
+                tn += 1;
+            }
+        }
+    }
+    let pw = if nw > 0 { tw as f64 / nw as f64 * 100.0 } else { 0.0 };
+    let pn = if nn > 0 { tn as f64 / nn as f64 * 100.0 } else { 0.0 };
+    (pw, nw, pn, nn)
+}
+
+/// Percentile (nearest-rank on a sorted copy) of a slice; 0.0 for empty. Pure.
+#[must_use]
+fn percentile(v: &[f64], pct: f64) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mut s: Vec<f64> = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let rank = (pct / 100.0 * (s.len() as f64 - 1.0)).round() as usize;
+    s[rank.min(s.len() - 1)]
+}
+
+// ----------------------------------------------------------------------------
 // configuration + per-sweep record
 // ----------------------------------------------------------------------------
 
@@ -414,6 +603,21 @@ struct Cfg {
     confirm_imb: f64,
     confirm_trend_max: f64,
     maker_fee_bps: f64,
+    // NEW flow-vs-impact separator (default OFF / additive; output byte-preserved).
+    flow_on: bool,
+    absorb_gate: bool,
+    exhaust_gate: bool,
+    push_gate: bool,
+    absorb_min: f64,
+    exhaust_decel: f64,
+    push_min: f64,
+    // 3-state master-variable model (the trader's flow-vs-impact taxonomy).
+    impact_lo: f64,
+    impact_hi: f64,
+    flow_decay: f64,
+    absorb_minvol: f64,
+    state_gate: bool,
+    min_oidrop: f64,
 }
 
 /// One detected sweep and its full characterisation (scalars only; the forward
@@ -458,6 +662,28 @@ struct SweepStat {
     rev_make_gated_filled: bool,
     /// CONTINUATION trade, TAKER entry with the break (signed bps; run-overs in).
     cont_take: Option<f64>,
+    // ---- NEW flow-vs-impact metrics (recorded REGARDLESS of gating) ----
+    flow: FlowMetrics,
+    absorb_confirm: bool,
+    exhaust_confirm: bool,
+    push_confirm: bool,
+    /// REVERSAL MAKER gated by the ABSORPTION-flow confirm (hold-gate, no-lookahead).
+    rev_make_absorb: Option<f64>,
+    rev_make_absorb_filled: bool,
+    /// REVERSAL MAKER gated by the EXHAUSTION-flow confirm.
+    rev_make_exhaust: Option<f64>,
+    rev_make_exhaust_filled: bool,
+    // ---- NEW 3-state (master-variable) assignment + depth-ahead corroboration ----
+    /// 3-state assignment over the confirm window (read <= entry).
+    state_absorbed: bool,
+    state_exhausted: bool,
+    state_continuation: bool,
+    /// forced volume / depth-ahead drop over the window. HIGH = trades CONSUMED
+    /// the resting wall (absorption); LOW = the wall was PULLED/cancelled (vacuum).
+    consumed_frac: f64,
+    /// REVERSAL MAKER gated by the 3-state (ABSORBED or EXHAUSTED), hold-gate.
+    rev_make_state: Option<f64>,
+    rev_make_state_filled: bool,
 }
 
 /// Pending sweep being collected over its forward window.
@@ -474,6 +700,8 @@ struct Pending {
     end_ts: u64,
     imb_start: f64,
     imb_end: Option<f64>,
+    dep_ahead_start: f64,
+    dep_ahead_end: Option<f64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -504,9 +732,10 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, range_max: f64, s
         fire_ts: 0, dir_up: false, range_lo: 0.0, range_hi: 0.0, range_width_bps: 0.0,
         mid: 0.0, entry_px: 0.0, oi_drop_pct: 0.0, net_flow: 0.0, end_ts: 0,
         imb_start: 0.0, imb_end: None,
+        dep_ahead_start: 0.0, dep_ahead_end: None,
     };
     let mut cur_path: Vec<(u64, f64)> = Vec::new();
-    let mut cur_trades: Vec<(u64, f64, bool)> = Vec::new();
+    let mut cur_trades: Vec<(u64, f64, bool, f64)> = Vec::new();
     let mut out: Vec<SweepStat> = Vec::new();
 
     for ev in evs {
@@ -536,7 +765,7 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, range_max: f64, s
                     let signed = if aggr == Side::Bid { q } else { -q };
                     flow.push_back((now, signed));
                     if matches!(state, State::Collecting) {
-                        cur_trades.push((now, ev.price.to_f64(), aggr == Side::Bid));
+                        cur_trades.push((now, ev.price.to_f64(), aggr == Side::Bid, q));
                     }
                 }
             }
@@ -564,12 +793,14 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, range_max: f64, s
                 if cur.imb_end.is_none() && now >= cur.fire_ts.saturating_add(cfg.confirm_ns) {
                     let (bd, ad) = top_depth(&book, cfg.top_n);
                     cur.imb_end = Some(imbalance(bd, ad));
+                    cur.dep_ahead_end = Some(if cur.dir_up { ad } else { bd });
                 }
                 if now >= cur.end_ts {
                     // ensure the confirm read happened (short horizons guard).
                     if cur.imb_end.is_none() {
                         let (bd, ad) = top_depth(&book, cfg.top_n);
                         cur.imb_end = Some(imbalance(bd, ad));
+                        cur.dep_ahead_end = Some(if cur.dir_up { ad } else { bd });
                     }
                     out.push(finalize(&cur, &cur_path, &cur_trades, cfg, day, l_ns, range_max, sweep_margin));
                     cur_path.clear();
@@ -614,6 +845,8 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, range_max: f64, s
                                         end_ts: now.saturating_add(cfg.forward_ns),
                                         imb_start: imbalance(bd, ad),
                                         imb_end: None,
+                                        dep_ahead_start: if up { ad } else { bd },
+                                        dep_ahead_end: None,
                                     };
                                     cur_path.clear();
                                     cur_trades.clear();
@@ -640,7 +873,7 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, range_max: f64, s
 
 /// Finalise a collected sweep into scalar statistics.
 #[allow(clippy::too_many_arguments)]
-fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool)], cfg: &Cfg, day: &str, l_ns: u64, range_max: f64, sweep_margin: f64) -> SweepStat {
+fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)], cfg: &Cfg, day: &str, l_ns: u64, range_max: f64, sweep_margin: f64) -> SweepStat {
     let dir_up = cur.dir_up;
     let sweep_down = !dir_up;
     let edge = if dir_up { cur.range_hi } else { cur.range_lo };
@@ -671,6 +904,50 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool)], cfg
         };
     // (B) CONTINUATION taker: enter WITH the break (UP -> long, DOWN -> short).
     let cont_take = first_touch(path, anchor, dir_up, cfg.cont_target_bps, cfg.cont_stop_bps, cfg.hold_ns);
+    // ---- NEW flow-vs-impact metrics over the no-lookahead window [fire, anchor] ----
+    let flow = compute_flow(trades, path, cur.fire_ts, anchor, cur.entry_px, dir_up);
+    let absorb_confirm = confirm_absorb_flow(&flow, cfg.absorb_min);
+    let exhaust_confirm = confirm_exhaust_flow(&flow, cfg.exhaust_decel);
+    let push_confirm = confirm_push_flow(&flow, cfg.push_min);
+    // REVERSAL maker gated by each flow confirm (hold-gate: cancel if unconfirmed
+    // by the window-end, flatten an early fill at the read - no-lookahead).
+    let (rev_make_absorb, rev_make_absorb_filled) =
+        match simulate_maker_reversal(path, trades, cur.fire_ts, edge, dir_up, cfg.rev_target_bps, cfg.rev_stop_bps, cfg.hold_ns, Some((anchor, absorb_confirm))) {
+            Some((_, bps)) => (Some(bps), true),
+            None => (None, false),
+        };
+    let (rev_make_exhaust, rev_make_exhaust_filled) =
+        match simulate_maker_reversal(path, trades, cur.fire_ts, edge, dir_up, cfg.rev_target_bps, cfg.rev_stop_bps, cfg.hold_ns, Some((anchor, exhaust_confirm))) {
+            Some((_, bps)) => (Some(bps), true),
+            None => (None, false),
+        };
+    // ---- 3-state master-variable assignment + depth-ahead corroboration ----
+    let fstate = assign_flow_state(&flow, cfg.impact_lo, cfg.impact_hi, cfg.flow_decay, cfg.absorb_minvol);
+    let state_absorbed = fstate == FlowState::Absorbed;
+    let state_exhausted = fstate == FlowState::Exhausted;
+    let state_continuation = fstate == FlowState::Continuation;
+    // depth ahead of the sweep CONSUMED (traded through) vs PULLED (cancelled): the
+    // forced volume relative to how much depth-ahead disappeared over the window.
+    let dep_drop = (cur.dep_ahead_start - cur.dep_ahead_end.unwrap_or(cur.dep_ahead_start)).max(0.0);
+    // CONSUMED share in [0,1] (rough corroboration): of the depth-ahead that
+    // disappeared, how much aggressive trade volume traded through it. ~1 = trades
+    // ATE the wall (consumed -> absorption); ~0 = the wall was PULLED (vacuum ->
+    // continuation). NaN when there is no information (no drop AND no forced flow).
+    let consumed_frac = if dep_drop > 1e-9 {
+        (flow.vol_dir / dep_drop).min(1.0)
+    } else if flow.vol_dir > 0.0 {
+        1.0
+    } else {
+        f64::NAN
+    };
+    // REVERSAL maker gated by the 3-state (ABSORBED or EXHAUSTED = reversal-predicting),
+    // wired as the no-lookahead hold-gate (cancel if unconfirmed by the window-end).
+    let state_rev_ok = state_absorbed || state_exhausted;
+    let (rev_make_state, rev_make_state_filled) =
+        match simulate_maker_reversal(path, trades, cur.fire_ts, edge, dir_up, cfg.rev_target_bps, cfg.rev_stop_bps, cfg.hold_ns, Some((anchor, state_rev_ok))) {
+            Some((_, bps)) => (Some(bps), true),
+            None => (None, false),
+        };
     SweepStat {
         day: day.to_string(),
         l_ns,
@@ -700,6 +977,20 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool)], cfg
         rev_make_gated,
         rev_make_gated_filled,
         cont_take,
+        flow,
+        absorb_confirm,
+        exhaust_confirm,
+        push_confirm,
+        rev_make_absorb,
+        rev_make_absorb_filled,
+        rev_make_exhaust,
+        rev_make_exhaust_filled,
+        state_absorbed,
+        state_exhausted,
+        state_continuation,
+        consumed_frac,
+        rev_make_state,
+        rev_make_state_filled,
     }
 }
 
@@ -846,6 +1137,134 @@ fn report_pooled(label: &str, ds: &[&SweepStat], cfg: &Cfg, num_days: usize) {
     println!("(B) CONTINUATION  (with the break: UP->long, DOWN->short; taker)");
     report_trades("cont-TAKER (all)", &caps_of(ds, |s| s.cont_take), TAKER_RT_FEE_BPS);
     report_trades("cont-TAKER (+follow gate)", &caps_of(ds, |s| if s.cont_confirm { s.cont_take } else { None }), TAKER_RT_FEE_BPS);
+
+    // ----- NEW flow-vs-impact separator (only when ON; additive, byte-preserved) -----
+    if cfg.flow_on {
+        report_flow_separator(ds, cfg);
+        // OI-DROP GATE (the liquidation-footprint filter): re-run the SAME separator
+        // on ONLY the sweeps with a real OI-drop over the lookback, so we see the
+        // setup WITH vs WITHOUT the liquidation trigger.
+        if cfg.min_oidrop > 0.0 {
+            let gated: Vec<&SweepStat> = ds.iter().copied().filter(|s| s.oi_drop_pct >= cfg.min_oidrop).collect();
+            println!(
+                "\n  ===== WITH OI-DROP GATE (oi_drop_pct >= {:.2}%):  {} of {} sweeps kept =====",
+                cfg.min_oidrop, gated.len(), ds.len()
+            );
+            report_flow_separator(&gated, cfg);
+        }
+    }
+}
+
+/// Print one separation line: P(target|signal) vs P(target|NOT signal) + lift.
+fn sep_print(decided: &[&SweepStat], pred: impl Fn(&SweepStat) -> bool, target: i8, tag: &str, thr: f64, pct: f64) {
+    let items: Vec<(bool, i8)> = decided.iter().map(|&s| (pred(s), s.class)).collect();
+    let (pw, nw, pn, nn) = separation(&items, target);
+    let what = if target == -1 { "rev " } else { "cont" };
+    println!(
+        "    {tag} {thr:>10.4} (p{pct:>2.0})  P({what}|sig) {pw:>3.0}% n={nw:<4}  P({what}|!sig) {pn:>3.0}% n={nn:<4}  lift {:+.0}pp",
+        pw - pn
+    );
+}
+
+/// THE KEY MEASUREMENT: does aggressive-flow-vs-price-impact SEPARATE reversal vs
+/// continuation AHEAD of time (read <= entry)? Reports base rates + the three
+/// signals' conditional probabilities swept across self-calibrated percentile
+/// thresholds (knob-bite: the gate must move the set AND, ideally, the outcome
+/// probability). Then, when a gate flag is on, the honest net-of-fee trade lines.
+#[allow(clippy::too_many_lines)]
+fn report_flow_separator(ds: &[&SweepStat], cfg: &Cfg) {
+    let decided: Vec<&SweepStat> = ds.iter().copied().filter(|s| s.class != 0).collect();
+    let nd = decided.len();
+    println!("FLOW-vs-IMPACT separator (aggressive trade flow vs price impact; NO depth-imbalance)");
+    if nd < 10 {
+        println!("  (too few decided sweeps for separation: n={nd})");
+        return;
+    }
+    let base_rev = decided.iter().filter(|s| s.class == -1).count() as f64 / nd as f64 * 100.0;
+    let base_cont = decided.iter().filter(|s| s.class == 1).count() as f64 / nd as f64 * 100.0;
+    println!("  base rates (decided n={nd}):  REVERSAL {base_rev:.0}%   CONTINUATION {base_cont:.0}%");
+    let abss: Vec<f64> = decided.iter().map(|s| s.flow.absorption_ratio).collect();
+    let imps: Vec<f64> = decided.iter().map(|s| s.flow.impact_ratio).collect();
+    let decs: Vec<f64> = decided.iter().filter(|s| s.flow.early_dir_vol > 0.0).map(|s| s.flow.decel_ratio).collect();
+    let dirv: Vec<f64> = decided.iter().map(|s| s.flow.vol_dir).collect();
+    let disp: Vec<f64> = decided.iter().map(|s| s.flow.disp_bps).collect();
+    println!(
+        "  metric medians:  forced-vol {:.3}  disp {:.2}bps  absorption {:.3}  impact {:.4}  decel {:.2}",
+        median(&dirv), median(&disp), median(&abss), median(&imps), median(&decs)
+    );
+    // ---- 3-STATE @ CONFIGURED thresholds (the trader's dials): does each state
+    // predict its outcome vs the BASE RATE? P(rev|ABSORBED), P(rev|EXHAUSTED),
+    // P(cont|CONTINUATION). Depth-ahead consumed-vs-pulled reported as corroboration.
+    let na = decided.iter().filter(|s| s.state_absorbed).count();
+    let ne = decided.iter().filter(|s| s.state_exhausted).count();
+    let nc = decided.iter().filter(|s| s.state_continuation).count();
+    let nu = nd - na - ne - nc;
+    println!(
+        "  STATE ASSIGN @ impact-lo {:.4}/impact-hi {:.4}/flow-decay {:.3}:  ABSORBED {na}  EXHAUSTED {ne}  CONTINUATION {nc}  unclassified {nu}",
+        cfg.impact_lo, cfg.impact_hi, cfg.flow_decay
+    );
+    let abs_items: Vec<(bool, i8)> = decided.iter().map(|s| (s.state_absorbed, s.class)).collect();
+    let exh_items: Vec<(bool, i8)> = decided.iter().map(|s| (s.state_exhausted, s.class)).collect();
+    let cont_items: Vec<(bool, i8)> = decided.iter().map(|s| (s.state_continuation, s.class)).collect();
+    let (pa, _, pan, _) = separation(&abs_items, -1);
+    let (pe, _, pen, _) = separation(&exh_items, -1);
+    let (pc, _, pcn, _) = separation(&cont_items, 1);
+    let cons_a = median(&decided.iter().filter(|s| s.state_absorbed && s.consumed_frac.is_finite()).map(|s| s.consumed_frac).collect::<Vec<_>>());
+    let cons_c = median(&decided.iter().filter(|s| s.state_continuation && s.consumed_frac.is_finite()).map(|s| s.consumed_frac).collect::<Vec<_>>());
+    println!("    ABSORBED      P(rev |state) {pa:>3.0}% (n={na:<4}) vs base {base_rev:>3.0}%   P(rev |!state) {pan:>3.0}%   depth-consumed med {cons_a:.2}");
+    println!("    EXHAUSTED     P(rev |state) {pe:>3.0}% (n={ne:<4}) vs base {base_rev:>3.0}%   P(rev |!state) {pen:>3.0}%");
+    println!("    CONTINUATION  P(cont|state) {pc:>3.0}% (n={nc:<4}) vs base {base_cont:>3.0}%   P(cont|!state) {pcn:>3.0}%   depth-consumed med {cons_c:.2}");
+
+    // KNOB-BITE on the MASTER VARIABLE (impact-per-unit-forced-volume), swept BOTH
+    // ways from the SAME dial: LOW impact = ABSORBED (predicts REVERSAL); HIGH impact
+    // = EASY-PUSH (predicts CONTINUATION). This is the whole separation test.
+    // 1. ABSORBED -> REVERSAL: LOW impact-per-vol (vol eaten, price stuck). Lower pctiles.
+    println!("  [1] ABSORBED (low impact-per-vol) -> predicts REVERSAL  (gate: impact_ratio <= thr, forced vol present)");
+    for pct in [10.0, 20.0, 30.0, 40.0, 50.0] {
+        let thr = percentile(&imps, pct);
+        sep_print(&decided, |s| s.flow.vol_dir > 0.0 && s.flow.impact_ratio <= thr, -1, "imp<=", thr, pct);
+    }
+    // 2. EXHAUSTION -> REVERSAL: LOW decel_ratio = push fading. Lower pctiles.
+    println!("  [2] EXHAUSTION -> predicts REVERSAL  (gate: decel_ratio <= thr, early flow present)");
+    for pct in [10.0, 20.0, 30.0, 40.0, 50.0] {
+        let thr = percentile(&decs, pct);
+        sep_print(&decided, |s| s.flow.early_dir_vol > 0.0 && s.flow.decel_ratio <= thr, -1, "dec<=", thr, pct);
+    }
+    // 3. EASY-PUSH -> CONTINUATION: HIGH impact = far on little vol. Upper pctiles.
+    println!("  [3] EASY-PUSH -> predicts CONTINUATION  (gate: impact_ratio >= thr)");
+    for pct in [50.0, 60.0, 70.0, 80.0, 90.0] {
+        let thr = percentile(&imps, pct);
+        sep_print(&decided, |s| s.flow.disp_bps > 0.0 && s.flow.impact_ratio >= thr, 1, "imp>=", thr, pct);
+    }
+
+    // 3-STATE GATED honest trades @ the configured impact-lo/impact-hi/flow-decay dials:
+    // reversal gated on (ABSORBED|EXHAUSTED), continuation gated on (CONTINUATION).
+    if cfg.state_gate {
+        let mk_fee = cfg.maker_fee_bps + TAKER_EXIT_FEE_BPS;
+        println!(
+            "  3-STATE GATED trades @ impact-lo {:.4}/impact-hi {:.4}/flow-decay {:.3} (net-of-fees, run-overs IN):",
+            cfg.impact_lo, cfg.impact_hi, cfg.flow_decay
+        );
+        report_trades("  rev-MAKER (+ABS|EXH)", &caps_of(ds, |s| if s.rev_make_state_filled { s.rev_make_state } else { None }), mk_fee);
+        report_trades("  rev-TAKER (+ABS|EXH)", &caps_of(ds, |s| if s.state_absorbed || s.state_exhausted { s.rev_take } else { None }), TAKER_RT_FEE_BPS);
+        report_trades("  cont-TAKER (+CONT)", &caps_of(ds, |s| if s.state_continuation { s.cont_take } else { None }), TAKER_RT_FEE_BPS);
+    }
+    // gated honest trades (only the gates that are switched on).
+    if cfg.absorb_gate || cfg.exhaust_gate || cfg.push_gate {
+        let mk_fee = cfg.maker_fee_bps + TAKER_EXIT_FEE_BPS;
+        println!("  GATED honest trades @ configured thresholds (net-of-fees, run-overs IN):");
+        if cfg.absorb_gate {
+            report_trades("  rev-MAKER (+absorb-flow)", &caps_of(ds, |s| if s.rev_make_absorb_filled { s.rev_make_absorb } else { None }), mk_fee);
+            report_trades("  rev-TAKER (+absorb-flow)", &caps_of(ds, |s| if s.absorb_confirm { s.rev_take } else { None }), TAKER_RT_FEE_BPS);
+        }
+        if cfg.exhaust_gate {
+            report_trades("  rev-MAKER (+exhaust-flow)", &caps_of(ds, |s| if s.rev_make_exhaust_filled { s.rev_make_exhaust } else { None }), mk_fee);
+            report_trades("  rev-TAKER (+exhaust-flow)", &caps_of(ds, |s| if s.exhaust_confirm { s.rev_take } else { None }), TAKER_RT_FEE_BPS);
+        }
+        if cfg.push_gate {
+            report_trades("  cont-TAKER (+push-flow)", &caps_of(ds, |s| if s.push_confirm { s.cont_take } else { None }), TAKER_RT_FEE_BPS);
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -873,6 +1292,19 @@ fn run() -> Result<(), String> {
         confirm_imb: 0.10,
         confirm_trend_max: 0.0,
         maker_fee_bps: 1.5,
+        flow_on: false,
+        absorb_gate: false,
+        exhaust_gate: false,
+        push_gate: false,
+        absorb_min: 0.0,
+        exhaust_decel: 1.0,
+        push_min: 0.0,
+        impact_lo: 0.0,
+        impact_hi: 1e9,
+        flow_decay: 0.0,
+        absorb_minvol: 0.0,
+        state_gate: false,
+        min_oidrop: 0.0,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![30 * 60_000_000_000];
@@ -914,6 +1346,19 @@ fn run() -> Result<(), String> {
             "--confirm-imb" => cfg.confirm_imb = val()?.parse().map_err(|e| format!("confirm-imb: {e}"))?,
             "--confirm-trend-max" => cfg.confirm_trend_max = val()?.parse().map_err(|e| format!("confirm-trend-max: {e}"))?,
             "--maker-fee" => cfg.maker_fee_bps = val()?.parse().map_err(|e| format!("maker-fee: {e}"))?,
+            "--flow" => cfg.flow_on = true,
+            "--absorb-confirm" => { cfg.absorb_gate = true; cfg.flow_on = true; }
+            "--absorb-min" => cfg.absorb_min = val()?.parse().map_err(|e| format!("absorb-min: {e}"))?,
+            "--exhaust-confirm" => { cfg.exhaust_gate = true; cfg.flow_on = true; }
+            "--exhaust-decel" => cfg.exhaust_decel = val()?.parse().map_err(|e| format!("exhaust-decel: {e}"))?,
+            "--push-confirm" => { cfg.push_gate = true; cfg.flow_on = true; }
+            "--push-min" => cfg.push_min = val()?.parse().map_err(|e| format!("push-min: {e}"))?,
+            "--impact-lo" => { cfg.impact_lo = val()?.parse().map_err(|e| format!("impact-lo: {e}"))?; cfg.flow_on = true; }
+            "--impact-hi" => { cfg.impact_hi = val()?.parse().map_err(|e| format!("impact-hi: {e}"))?; cfg.flow_on = true; }
+            "--flow-decay" => { cfg.flow_decay = val()?.parse().map_err(|e| format!("flow-decay: {e}"))?; cfg.flow_on = true; }
+            "--absorb-minvol" => cfg.absorb_minvol = val()?.parse().map_err(|e| format!("absorb-minvol: {e}"))?,
+            "--state-gate" => { cfg.state_gate = true; cfg.flow_on = true; }
+            "--min-oidrop" => { cfg.min_oidrop = val()?.parse().map_err(|e| format!("min-oidrop: {e}"))?; cfg.flow_on = true; }
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -949,6 +1394,19 @@ fn run() -> Result<(), String> {
         "SWEEP grid: lookback L {:?}  x  range-max {:?}bps  x  sweep-margin {:?}bps",
         lb_lbl, range_maxes, sweep_margins
     );
+    if cfg.flow_on {
+        println!(
+            "FLOW-vs-IMPACT separator ON (read <= entry): absorb-min {:.4} (rev)  exhaust-decel {:.4} (rev)  push-min {:.4} (cont)   gates[absorb={} exhaust={} push={}]",
+            cfg.absorb_min, cfg.exhaust_decel, cfg.push_min, cfg.absorb_gate, cfg.exhaust_gate, cfg.push_gate
+        );
+        println!(
+            "  3-STATE master variable = |microprice disp (bps)| / forced aggressive vol:  ABSORBED impact<={:.4}  CONTINUATION impact>={:.4}  EXHAUSTED decel<={:.3}  absorb-minvol {:.3}  state-gate {}",
+            cfg.impact_lo, cfg.impact_hi, cfg.flow_decay, cfg.absorb_minvol, cfg.state_gate
+        );
+        if cfg.min_oidrop > 0.0 {
+            println!("  OI-DROP GATE ON: only act on sweeps with oi_drop_pct >= {:.2}% (reported WITH and WITHOUT)", cfg.min_oidrop);
+        }
+    }
 
     // build the (L, range-max, sweep-margin) grid (knob-bite: the sweep set must move).
     let mut combos: Vec<(u64, f64, f64)> = Vec::new();
@@ -1006,15 +1464,33 @@ fn run() -> Result<(), String> {
     if let Some(path) = &dump {
         use std::io::Write;
         let mut f = std::fs::File::create(path).map_err(|e| format!("dump: {e}"))?;
+        // flow columns are ADDITIVE: only present with --flow (default dump byte-preserved).
+        let flow_hdr = if cfg.flow_on {
+            ",vol_abs,vol_signed,vol_dir,disp_bps,max_ext_bps,absorption_ratio,impact_ratio,early_dir_vol,late_dir_vol,decel_ratio,absorb_confirm,exhaust_confirm,push_confirm,rev_make_absorb,rev_make_exhaust"
+        } else {
+            ""
+        };
         writeln!(
             f,
-            "day,l_ns,range_max,sweep_margin,fire_ts,dir_up,range_lo,range_hi,range_width_bps,mid,entry_px,oi_drop_pct,net_flow,class,cont_ext_bps,rev_back_bps,decision_ms,imb_start,imb_end,rev_confirm,cont_confirm,rev_take,rev_make,rev_make_filled,rev_make_gated,cont_take"
+            "day,l_ns,range_max,sweep_margin,fire_ts,dir_up,range_lo,range_hi,range_width_bps,mid,entry_px,oi_drop_pct,net_flow,class,cont_ext_bps,rev_back_bps,decision_ms,imb_start,imb_end,rev_confirm,cont_confirm,rev_take,rev_make,rev_make_filled,rev_make_gated,cont_take{flow_hdr}"
         ).map_err(|e| format!("dump: {e}"))?;
         for col in &pooled {
             for c in col {
+                let flow_cols = if cfg.flow_on {
+                    format!(
+                        ",{:.4},{:.4},{:.4},{:.2},{:.2},{:.4},{:.6},{:.4},{:.4},{:.4},{},{},{},{},{}",
+                        c.flow.vol_abs, c.flow.vol_signed, c.flow.vol_dir, c.flow.disp_bps, c.flow.max_ext_bps,
+                        c.flow.absorption_ratio, c.flow.impact_ratio, c.flow.early_dir_vol, c.flow.late_dir_vol, c.flow.decel_ratio,
+                        c.absorb_confirm, c.exhaust_confirm, c.push_confirm,
+                        c.rev_make_absorb.map_or("NA".to_string(), |x| format!("{x:.3}")),
+                        c.rev_make_exhaust.map_or("NA".to_string(), |x| format!("{x:.3}"))
+                    )
+                } else {
+                    String::new()
+                };
                 writeln!(
                     f,
-                    "{},{},{},{},{},{},{:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{},{:.2},{:.2},{},{:.4},{:.4},{},{},{},{},{},{},{}",
+                    "{},{},{},{},{},{},{:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{},{:.2},{:.2},{},{:.4},{:.4},{},{},{},{},{},{},{}{flow_cols}",
                     c.day, c.l_ns, c.range_max, c.sweep_margin, c.fire_ts, c.dir_up,
                     c.range_lo, c.range_hi, c.range_width_bps, c.mid, c.entry_px,
                     c.oi_drop_pct, c.net_flow, c.class, c.cont_ext_bps, c.rev_back_bps,
@@ -1140,7 +1616,7 @@ mod tests {
         // THROUGH at 101.2 (t=0.5s) -> FILL at the limit 101 (short). Price then
         // snaps back to 100.0 -> short from 101 -> ~+99bps captured.
         let path = vec![(0u64, 101.2), (500_000_000, 101.0), (1_000_000_000, 100.5), (2_000_000_000, 100.0)];
-        let trades = vec![(500_000_000u64, 101.2, true)]; // aggressive BUY through the edge
+        let trades = vec![(500_000_000u64, 101.2, true, 1.0)]; // aggressive BUY through the edge
         let (fts, bps) = simulate_maker_reversal(&path, &trades, 0, 101.0, true, 1000.0, 50.0, 30_000_000_000, None)
             .expect("forced buy fills the resting sell");
         assert_eq!(fts, 500_000_000);
@@ -1153,7 +1629,7 @@ mod tests {
         // breakout / continuation) -> the resting short bleeds = a REAL loss that
         // MUST be counted (no conditioning). 101 -> 103 = ~-198bps before stop.
         let path = vec![(0u64, 101.2), (500_000_000, 101.5), (1_000_000_000, 102.5), (2_000_000_000, 103.0)];
-        let trades = vec![(500_000_000u64, 101.2, true)];
+        let trades = vec![(500_000_000u64, 101.2, true, 1.0)];
         let (_, bps) = simulate_maker_reversal(&path, &trades, 0, 101.0, true, 1000.0, 1000.0, 30_000_000_000, None)
             .expect("fills then runs over");
         assert!(bps < -100.0, "trender run-over must be a real loss, got {bps}");
@@ -1164,7 +1640,7 @@ mod tests {
         // The tape never trades through the resting sell at edge 101 (only a SELL
         // prints, wrong side) -> NO FILL -> None (no trade, no cost).
         let path = vec![(0u64, 101.2), (500_000_000, 100.9), (1_000_000_000, 100.5)];
-        let trades = vec![(500_000_000u64, 101.2, false)]; // aggressive SELL, wrong side
+        let trades = vec![(500_000_000u64, 101.2, false, 1.0)]; // aggressive SELL, wrong side
         assert!(simulate_maker_reversal(&path, &trades, 0, 101.0, true, 40.0, 15.0, 30_000_000_000, None).is_none());
     }
 
@@ -1174,7 +1650,7 @@ mod tests {
         // THROUGH at 99.8 -> FILL at 100 (long). Price snaps back up to 101 -> long
         // from 100 -> ~+100bps.
         let path = vec![(0u64, 99.8), (500_000_000, 100.0), (1_000_000_000, 100.6), (2_000_000_000, 101.0)];
-        let trades = vec![(500_000_000u64, 99.8, false)]; // aggressive SELL through the low edge
+        let trades = vec![(500_000_000u64, 99.8, false, 1.0)]; // aggressive SELL through the low edge
         let (_, bps) = simulate_maker_reversal(&path, &trades, 0, 100.0, false, 1000.0, 50.0, 30_000_000_000, None)
             .expect("forced sell fills the resting buy");
         assert!(bps > 80.0, "long snapback 100->101, got {bps}");
@@ -1186,7 +1662,7 @@ mod tests {
         // absorption confirm FAILS -> the still-resting sell is CANCELLED -> no
         // trade. With confirm OK the same late fill is kept.
         let path = vec![(0u64, 101.2), (800_000_000, 101.1), (1_000_000_000, 101.05), (2_000_000_000, 100.0)];
-        let trades = vec![(1_000_000_000u64, 101.2, true)];
+        let trades = vec![(1_000_000_000u64, 101.2, true, 1.0)];
         assert!(
             simulate_maker_reversal(&path, &trades, 0, 101.0, true, 40.0, 1000.0, 30_000_000_000, Some((800_000_000, false))).is_none(),
             "unconfirmed order cancelled before the late fill"
@@ -1215,5 +1691,172 @@ mod tests {
         assert!(tstat(&[1.0]).abs() < 1e-12, "n<2 => 0");
         assert!(tstat(&[5.0, 5.0, 5.0]).abs() < 1e-12, "zero variance => 0");
         assert!(tstat(&[2.0, 3.0, 2.5, 3.5, 2.0]) > 2.0, "clearly positive => t>2");
+    }
+
+    // ---- NEW flow-vs-impact separator tests ----
+
+    #[test]
+    fn flow_absorption_high_when_volume_eats_move() {
+        // UP sweep: lots of aggressive BUY volume, price barely moves -> ABSORBED.
+        let (fire, end, fire_px) = (0u64, 60_000_000_000u64, 100.0);
+        let trades = vec![
+            (1_000_000_000u64, 100.0, true, 50.0),
+            (2_000_000_000u64, 100.0, true, 50.0),
+            (40_000_000_000u64, 100.0, true, 50.0),
+        ];
+        let path = vec![(0u64, 100.0), (60_000_000_000u64, 100.001)]; // ~0.1bp move
+        let m = compute_flow(&trades, &path, fire, end, fire_px, true);
+        assert!((m.vol_dir - 150.0).abs() < 1e-9, "forced buy vol, got {}", m.vol_dir);
+        assert!(m.disp_bps < 1.0, "tiny displacement, got {}", m.disp_bps);
+        assert!(m.absorption_ratio > 100.0, "high absorption, got {}", m.absorption_ratio);
+        assert!(confirm_absorb_flow(&m, 50.0), "absorption confirmed");
+        assert!(!confirm_push_flow(&m, 1.0), "NOT an easy push");
+    }
+
+    #[test]
+    fn flow_easy_push_high_impact_low_volume() {
+        // UP sweep: tiny volume, big price move -> EASY PUSH (vacuum).
+        let (fire, end, fire_px) = (0u64, 60_000_000_000u64, 100.0);
+        let trades = vec![(1_000_000_000u64, 100.0, true, 0.5)];
+        let path = vec![(0u64, 100.0), (60_000_000_000u64, 101.0)]; // +100bps
+        let m = compute_flow(&trades, &path, fire, end, fire_px, true);
+        assert!((m.disp_bps - 100.0).abs() < 1.0, "big move, got {}", m.disp_bps);
+        assert!(m.impact_ratio > 100.0, "high impact, got {}", m.impact_ratio);
+        assert!(confirm_push_flow(&m, 50.0), "push confirmed");
+        assert!(!confirm_absorb_flow(&m, 50.0), "low absorption");
+    }
+
+    #[test]
+    fn flow_exhaustion_when_late_volume_fades() {
+        // early half heavy, late half light -> decel small -> EXHAUSTED.
+        let (fire, end, fire_px) = (0u64, 60_000_000_000u64, 100.0);
+        let trades = vec![
+            (5_000_000_000u64, 100.0, true, 80.0),   // early (<= 30s mid)
+            (10_000_000_000u64, 100.0, true, 80.0),  // early
+            (50_000_000_000u64, 100.0, true, 10.0),  // late
+        ];
+        let path = vec![(0u64, 100.0), (60_000_000_000u64, 100.1)];
+        let m = compute_flow(&trades, &path, fire, end, fire_px, true);
+        assert!((m.early_dir_vol - 160.0).abs() < 1e-9, "early, got {}", m.early_dir_vol);
+        assert!((m.late_dir_vol - 10.0).abs() < 1e-9, "late, got {}", m.late_dir_vol);
+        assert!(m.decel_ratio < 0.1, "late faded, got {}", m.decel_ratio); // 10/160
+        assert!(confirm_exhaust_flow(&m, 0.5), "exhausted at decel 0.5");
+        assert!(!confirm_exhaust_flow(&m, 0.05), "NOT exhausted at strict 0.05");
+    }
+
+    #[test]
+    fn flow_window_is_no_lookahead() {
+        // trades before fire and after window-end are EXCLUDED (read <= entry).
+        let (fire, end, fire_px) = (10_000_000_000u64, 20_000_000_000u64, 100.0);
+        let trades = vec![
+            (5_000_000_000u64, 100.0, true, 99.0),   // before window -> excluded
+            (15_000_000_000u64, 100.0, true, 7.0),   // in window
+            (25_000_000_000u64, 100.0, true, 99.0),  // after window-end -> excluded
+        ];
+        let path = vec![(10_000_000_000u64, 100.0), (20_000_000_000u64, 100.0)];
+        let m = compute_flow(&trades, &path, fire, end, fire_px, true);
+        assert!((m.vol_dir - 7.0).abs() < 1e-9, "only in-window flow counts, got {}", m.vol_dir);
+    }
+
+    #[test]
+    fn flow_dir_volume_follows_sweep_side() {
+        // DOWN sweep: forced flow = aggressive SELLS; buys are against.
+        let (fire, end, fire_px) = (0u64, 60_000_000_000u64, 100.0);
+        let trades = vec![
+            (1_000_000_000u64, 100.0, false, 30.0), // sell = forced (down sweep)
+            (2_000_000_000u64, 100.0, true, 10.0),  // buy = against
+        ];
+        let path = vec![(0u64, 100.0), (60_000_000_000u64, 99.95)];
+        let m = compute_flow(&trades, &path, fire, end, fire_px, false);
+        assert!((m.vol_dir - 30.0).abs() < 1e-9, "down forced = sells, got {}", m.vol_dir);
+        assert!((m.vol_abs - 40.0).abs() < 1e-9, "abs vol, got {}", m.vol_abs);
+        assert!((m.vol_signed - (-20.0)).abs() < 1e-9, "30 sell - 10 buy, got {}", m.vol_signed);
+    }
+
+    #[test]
+    fn separation_detects_lift_and_random() {
+        // signal true mostly on reversals (class -1) -> P(rev|sig) > P(rev|!sig).
+        let lift = vec![(true, -1i8), (true, -1), (true, -1), (true, 1), (false, 1), (false, 1), (false, -1), (false, 1)];
+        let (pw, nw, pn, nn) = separation(&lift, -1);
+        assert_eq!((nw, nn), (4, 4));
+        assert!((pw - 75.0).abs() < 1e-9, "P(rev|sig), got {pw}");
+        assert!((pn - 25.0).abs() < 1e-9, "P(rev|!sig), got {pn}");
+        assert!(pw > pn, "signal lifts reversal prob");
+        // random signal -> no lift (like the dead depth-imbalance confirm).
+        let rnd = vec![(true, -1i8), (true, 1), (false, -1), (false, 1)];
+        let (rpw, _, rpn, _) = separation(&rnd, -1);
+        assert!((rpw - rpn).abs() < 1e-9, "random separator => zero lift");
+    }
+
+    #[test]
+    fn percentile_basic() {
+        let v = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        assert!((percentile(&v, 0.0) - 1.0).abs() < 1e-9);
+        assert!((percentile(&v, 50.0) - 3.0).abs() < 1e-9);
+        assert!((percentile(&v, 100.0) - 5.0).abs() < 1e-9);
+        assert!((percentile(&[], 50.0)).abs() < 1e-12, "empty => 0");
+    }
+
+    // ---- NEW 3-state (master-variable) assignment tests ----
+
+    /// Build a FlowMetrics with the master-variable fields set (avoids the
+    /// field-reassign-with-default clippy lint by using a full struct literal).
+    fn fm(disp: f64, vdir: f64, early: f64, late: f64) -> FlowMetrics {
+        FlowMetrics {
+            vol_abs: vdir,
+            vol_signed: vdir,
+            vol_dir: vdir,
+            disp_bps: disp,
+            max_ext_bps: disp,
+            absorption_ratio: vdir / disp.max(1e-9),
+            impact_ratio: disp / vdir.max(1e-9),
+            early_dir_vol: early,
+            late_dir_vol: late,
+            decel_ratio: late / early.max(1e-9),
+        }
+    }
+
+    #[test]
+    fn assign_state_three_way() {
+        // ABSORBED: lots of forced vol, tiny move -> LOW impact-per-vol (0.005).
+        let a = fm(0.5, 100.0, 50.0, 50.0);
+        assert_eq!(assign_flow_state(&a, 0.05, 0.5, 0.5, 1.0), FlowState::Absorbed);
+        // CONTINUATION: big move on little vol -> HIGH impact-per-vol (10).
+        let c = fm(50.0, 5.0, 2.5, 2.5);
+        assert_eq!(assign_flow_state(&c, 0.05, 0.5, 0.5, 1.0), FlowState::Continuation);
+        // EXHAUSTED: mid impact (0.1, between lo/hi), late flow faded hard (decel 0.11).
+        let e = fm(5.0, 50.0, 45.0, 5.0);
+        assert_eq!(assign_flow_state(&e, 0.05, 0.5, 0.5, 1.0), FlowState::Exhausted);
+        // UNCLASSIFIED: mid impact, flow steady (decel 1.0).
+        let u = fm(5.0, 50.0, 25.0, 25.0);
+        assert_eq!(assign_flow_state(&u, 0.05, 0.5, 0.5, 1.0), FlowState::Unclassified);
+    }
+
+    #[test]
+    fn assign_state_absorb_needs_real_volume() {
+        // LOW impact but NO forced volume -> not a real absorption (vol must clear minvol).
+        let m = fm(0.0, 0.0, 0.0, 0.0);
+        assert_eq!(assign_flow_state(&m, 0.05, 0.5, 0.5, 1.0), FlowState::Unclassified, "no forced vol => not absorbed");
+        // forced vol present but BELOW absorb-minvol -> still not absorbed.
+        let m2 = fm(0.2, 0.5, 0.25, 0.25); // impact 0.4 > lo, also vol 0.5 < minvol 1.0
+        assert_eq!(assign_flow_state(&m2, 0.05, 0.5, 0.5, 1.0), FlowState::Unclassified);
+    }
+
+    #[test]
+    fn flow_decay_knob_bites_state() {
+        // mid impact (0.1, between lo/hi) so ONLY the decel dial decides EXHAUSTED.
+        let m = fm(5.0, 50.0, 100.0, 30.0); // decel 0.30
+        assert_eq!(assign_flow_state(&m, 0.05, 0.5, 0.20, 0.0), FlowState::Unclassified, "strict decay 0.20: 0.30 not exhausted");
+        assert_eq!(assign_flow_state(&m, 0.05, 0.5, 0.50, 0.0), FlowState::Exhausted, "loose decay 0.50: exhausted");
+    }
+
+    #[test]
+    fn impact_cut_knob_bites_state() {
+        // a sweep with impact_ratio 0.1: low-cut at 0.05 -> NOT absorbed; at 0.20 -> absorbed.
+        let m = fm(5.0, 50.0, 25.0, 25.0); // impact 0.1, decel 1.0 (no exhaustion)
+        assert_eq!(assign_flow_state(&m, 0.05, 0.5, 0.5, 1.0), FlowState::Unclassified, "lo 0.05: 0.1 not <= 0.05");
+        assert_eq!(assign_flow_state(&m, 0.20, 0.5, 0.5, 1.0), FlowState::Absorbed, "lo 0.20: 0.1 <= 0.20 -> absorbed");
+        // raise the hi cut below 0.1 -> the same sweep flips to CONTINUATION.
+        assert_eq!(assign_flow_state(&m, 0.05, 0.08, 0.5, 1.0), FlowState::Continuation, "hi 0.08: 0.1 >= 0.08 -> continuation");
     }
 }

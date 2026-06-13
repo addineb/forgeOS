@@ -148,3 +148,104 @@ the side, and stops bleed."
 - More days would tighten the small-n cells, but the large-n cells already speak
   clearly and consistently across both assets; more days are unlikely to flip a
   uniformly net-negative, separation-dead result.
+## Flow-separator (3-state: absorbed/exhausted/continuation)
+
+Re-test (sweepscope EXTENDED, branch forgelag, same bin): replace the dead depth-
+imbalance confirm with the trader's flow-vs-impact model. MASTER VARIABLE =
+price-impact-per-unit-forced-volume over the confirm window [fire, fire+60s]
+(every read <= entry = no-lookahead): LOW impact = ABSORBED (predicts REVERSAL),
+HIGH impact = EASY-PUSH (predicts CONTINUATION); plus a separate FLOW-DECEL
+measure (late-half forced volume << early-half) = EXHAUSTED (predicts REVERSAL).
+Aggressive volume + impact come from the HL trades; depth-ahead consumed-vs-pulled
+read from the book. Sweep detection + the honest first-touch trade sims (rev
+maker@edge + taker, cont taker) UNCHANGED - only the separator/gate changed.
+Optional --min-oidrop liquidation gate (reported WITH and WITHOUT). All thresholds
+configurable (--impact-lo/--impact-hi/--flow-decay/--absorb-minvol) and swept
+(self-calibrated percentile knob-bite). Same 10 days ETH+BTC, populated grid
+L{15,30,60}m x range-max{50,80} x margin 5. clippy -Dwarnings clean; 27 unit tests
+(+4 new: 3-state assignment, impact-cut knob-bite, flow-decay knob-bite) + full
+forgelag suite green. Logs /root/runs/sweepscope_flow/{eth,btc}.log + _rows.csv.
+
+### VERDICT (one line)
+PARTIAL WIN. BAD FIRST: still NO net-positive trade at trustable n (>=30) - every
+gated reversal and continuation trade is net-negative after fees, WITH or WITHOUT
+the OI-drop gate (the only green cells are thin n=9-19 noise). GOOD - and this is
+the unlock: unlike depth-imbalance (which was RANDOM, ~0 lift), the flow model
+SEPARATES. FLOW DECELERATION (exhaustion) lifts P(reversal) ~+15-30pp over the base
+rate on BOTH ETH and BTC, no-lookahead. We finally have a real directional read;
+we just cannot yet monetize it through the honest first-touch trade (stop-bleed +
+fee still bind).
+
+### (1) Did it separate where depth-imbalance failed? YES - via DECELERATION.
+Self-calibrated percentile knob-bite, P(outcome | signal) vs P(outcome | !signal)
+over decided sweeps. EXHAUSTION (decel = late forced-vol / early forced-vol; lower
+cut = flow dying harder) is the robust, BOTH-ASSET separator:
+
+| coin | cell | base rev | dec<= cut | P(rev|sig) | n | lift |
+|------|------|----------|-----------|------------|---|------|
+| ETH | 15m/80 | 68% | p20 | 86% | 22 | +23pp |
+| ETH | 15m/80 | 68% | p30 | 84% | 32 | +23pp |
+| ETH | 30m/80 | 64% | p20 | 82% | 17 | +23pp |
+| ETH | 60m/80 | 72% | p20 | 90% | 10 | +22pp |
+| BTC | 15m/50 | 60% | p30 | 75% | 16 | +22pp |
+| BTC | 15m/80 | 65% | p30 | 86% | 21 | +30pp |
+| BTC | 15m/80 | 65% | p40 | 81% | 27 | +28pp |
+| BTC | 30m/80 | 64% | p10 | 83% |  6 | +22pp |
+
+The lift concentrates in the strongly-decelerating tail (p10-p30, n 6-32) and
+washes to ~0 by p50 - i.e. it is the sweeps whose forced flow DIES that revert.
+Consistent in sign across nearly every trustable cell, both assets. This is the
+opposite of the depth-imbalance confirm, which gave P(rev|absorb) ~= P(rev|no-
+absorb) everywhere.
+
+ABSORPTION via the impact ratio (LOW impact -> reversal) is ASSET-SPLIT, not robust:
+- BTC: WORKS as hypothesised - imp<= p10-p40 lifts P(rev) +12..+41pp (e.g. BTC
+  30m/80 imp<=p10 100% n=6 +41pp; 30m/50 imp<=p20 86% n=7 +25pp).
+- ETH: INVERTED - low impact predicts LESS reversal (15m/50 imp<=p50 48% vs base
+  59%, lift -23pp; 30m/80 imp<=p10 -22pp). On ETH high-impact "easy-push" sweeps
+  REVERSE more and low-impact "absorbed" sweeps CONTINUE more - the reverse of the
+  hypothesis. So on ETH the discriminator is the flow TIME-PROFILE (decel), not the
+  impact magnitude. EASY-PUSH (high impact -> continuation) is weak/negative on ETH
+  and only weakly positive on BTC at small-n upper cuts.
+
+### (2) Tradeability: NO net-positive at trustable n (gated, run-overs IN, real fees).
+Gate REVERSAL on (ABSORBED|EXHAUSTED), CONTINUATION on (CONTINUATION-sig). Configured
+dials impact-lo 0.02 / impact-hi 0.05 / flow-decay 0.10 (ETH-scaled; impact units do
+NOT transfer across assets - BTC lands nearly all CONTINUATION).
+
+| coin | cell (n) | rev-MAKER net | rev-TAKER net | cont-TAKER net |
+|------|----------|---------------|---------------|----------------|
+| ETH | 15m/80 (104) | -15.2 | -13.2 | -18.1 |
+| ETH | 30m/80 (83)  | -14.6 | -14.3 | -21.3 |
+| ETH | 15m/50 (83)  | -16.0 | -14.9 | -14.4 |
+| BTC | 15m/80 (66)  | -16.6 | -4.2 (n=9) | -13.0 |
+| BTC | 30m/80 (50)  | -17.0 | -15.7 (n=6) | -14.9 |
+
+Every n>=30 cell, both assets, all three gated trades NET-NEGATIVE. rev-MAKER stays
+gross-negative before fees (fills into the continuing poke = catches the knife, win
+7-26%). The honest first-touch stop is still tripped by the sweep's own overshoot
+before the (real, big) reversal develops - the separation tells us reversal is LIKELY
+(~80-90% on the decel tail) but the TRADE STRUCTURE cannot capture it net. Best green
+cells are thin-n artifacts (ETH 60m/80 +OI rev-TAKER +7.2bps n=9; ETH 30m/50 +OI
+rev-TAKER -6.5 n=12) - not trustable.
+
+### (3) OI-drop gate: no unlock.
+--min-oidrop 0.05% keeps ~40-55% of sweeps (e.g. ETH 15m/80 43 of 104; BTC 15m/50
+22 of 52). Separation roughly preserved but n drops; NO trustable-n trade flips
+net-positive with the gate (ETH 15m/80 +OI rev-TAKER n=25 NET -17.0). The
+liquidation footprint does not, by itself, turn the setup tradeable here.
+
+### Knob-bite: VALID.
+State counts and lifts move monotonically with the percentile cuts and with the
+--impact-lo/--impact-hi/--flow-decay dials; unit tests impact_cut_knob_bites_state
++ flow_decay_knob_bites_state pin it. The depth-ahead consumed-vs-pulled proxy was
+UNINFORMATIVE (top-5 depth reprices around the sweep -> the [0,1] consumed share
+saturates at 1.0); it is reported but carries no signal - exhaustion/impact carry it.
+
+### Bottom line
+Depth-imbalance was a random separator; FLOW DECELERATION is a REAL one (+15-30pp,
+both assets, no-lookahead) - that is the genuine progress and the reusable primitive.
+But a working SEPARATOR is necessary, not sufficient: the honest first-touch trade
+still bleeds on overshoot + fees, so 0 promote. NEXT (if revisited): a trade STRUCTURE
+that survives the overshoot (enter on confirmed range RE-ENTRY, or wider/scaled stop)
+applied to the exhaustion-selected reversals - the prediction is there to build on.
