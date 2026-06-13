@@ -240,6 +240,94 @@ fn simulate_fade(
     Some(last_fav)
 }
 
+/// Find the EXHAUSTION point in a cascade's forward path: the FIRST sample where
+/// BOTH conditions hold, meaning the forced flow has RUN OUT so a snap-back is
+/// likely:
+///   (a) OI STOPS BLEEDING - the OI-drop over the trailing `stall_ns` window has
+///       decelerated to <= `decel_frac` x the PEAK trailing OI-drop seen since the
+///       fire (forced deleveraging fading). If OI never bled forward at all, this
+///       leg is treated as satisfied (the flow was already spent at the fire).
+///   (b) PRICE STALLS - price has not made a NEW extreme in the cascade direction
+///       within the trailing `stall_ns` window (it stops extending).
+/// `price` and `oi` are ALIGNED sample paths `(ts, value)`, ascending, both
+/// starting at the fire (same indices/timestamps). At least one full `stall_ns`
+/// must have elapsed since the fire before judging (so a window + a peak exist).
+/// Returns the timestamp of the first qualifying sample, or None if exhaustion
+/// never occurs within the path (=> that cascade is SKIPPED, no trade). Pure.
+#[must_use]
+fn find_exhaustion(
+    price: &[(u64, f64)],
+    oi: &[(u64, f64)],
+    fire_ts: u64,
+    dir_down: bool,
+    stall_ns: u64,
+    decel_frac: f64,
+) -> Option<u64> {
+    if price.len() < 2 || oi.len() != price.len() || stall_ns == 0 {
+        return None;
+    }
+    // OI value at-or-before a target ts on the sampled path (None if before start).
+    let oi_at = |target: u64| -> Option<f64> {
+        let mut v = None;
+        for &(ts, o) in oi {
+            if ts <= target {
+                v = Some(o);
+            } else {
+                break;
+            }
+        }
+        v
+    };
+    // trailing OI-drop% over [t-stall, t] (positive = still bleeding). None if the
+    // window reaches before the fire or the start OI is non-positive.
+    let trailing_drop = |t: u64| -> Option<f64> {
+        let lo = t.checked_sub(stall_ns)?;
+        if lo < fire_ts {
+            return None;
+        }
+        let o_start = oi_at(lo)?;
+        let o_end = oi_at(t)?;
+        if o_start <= 0.0 {
+            return None;
+        }
+        Some((o_start - o_end) / o_start * 100.0)
+    };
+    let s = if dir_down { -1.0 } else { 1.0 };
+    let mut extreme = price[0].1;
+    let mut extreme_ts = price[0].0;
+    let mut peak_rate = 0.0f64;
+    for &(ts, px) in price {
+        // (b) update the running cascade-direction extreme FIRST.
+        if s * px > s * extreme {
+            extreme = px;
+            extreme_ts = ts;
+        }
+        // need a full trailing window since the fire before judging.
+        if ts.saturating_sub(fire_ts) < stall_ns {
+            continue;
+        }
+        let cur_rate = match trailing_drop(ts) {
+            Some(r) => r,
+            None => continue,
+        };
+        if cur_rate > peak_rate {
+            peak_rate = cur_rate;
+        }
+        // (a) OI bleed has decelerated below the fraction of its peak rate.
+        let oi_exhausted = if peak_rate > 0.0 {
+            cur_rate <= decel_frac * peak_rate
+        } else {
+            true // OI never bled forward => forced flow already spent.
+        };
+        // (b) price has not extended (no new extreme) for the whole stall window.
+        let price_stalled = ts.saturating_sub(extreme_ts) >= stall_ns;
+        if oi_exhausted && price_stalled {
+            return Some(ts);
+        }
+    }
+    None
+}
+
 // ----------------------------------------------------------------------------
 // configuration + per-cascade record
 // ----------------------------------------------------------------------------
@@ -259,6 +347,9 @@ struct Cfg {
     revert_frac: f64,
     top_n: usize,
     path_sample_ns: u64,
+    exhaust: bool,
+    exhaust_stall_ns: u64,
+    exhaust_decel: f64,
 }
 
 /// One detected cascade and its characterisation (scalars only; the forward path
@@ -283,6 +374,11 @@ struct CascadeStat {
     peak_ns: u64,
     /// bps captured by the reactive fade at each configured delay (None = no entry).
     fades: Vec<Option<f64>>,
+    /// True if the cascade reached an exhaustion point (always true when --exhaust
+    /// is OFF). When ON and false, the cascade was SKIPPED (no fade entries).
+    exhausted: bool,
+    /// ns from fire to the exhaustion point (None if never / exhaust off).
+    exhaust_ns: Option<u64>,
 }
 
 /// Pending cascade being collected over its forward window.
@@ -320,6 +416,7 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
     let mut blocked_until = 0u64;
     let mut cur = Pending { fire_ts: 0, dir_down: false, baseline: 0.0, oi_drop_pct: 0.0, price_move_bps: 0.0, net_flow: 0.0, end_ts: 0 };
     let mut cur_path: Vec<(u64, f64)> = Vec::new();
+    let mut cur_opath: Vec<(u64, f64)> = Vec::new();
     let mut out: Vec<CascadeStat> = Vec::new();
 
     for ev in evs {
@@ -377,11 +474,13 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
                     };
                     if push {
                         cur_path.push((now, m));
+                        cur_opath.push((now, oi_now));
                     }
                 }
                 if now >= cur.end_ts {
-                    out.push(finalize(&cur, &cur_path, cfg, day, d_oi, p_move));
+                    out.push(finalize(&cur, &cur_path, &cur_opath, cfg, day, d_oi, p_move));
                     cur_path.clear();
+                    cur_opath.clear();
                     state = State::Armed;
                 }
             }
@@ -406,7 +505,9 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
                                     end_ts: now.saturating_add(cfg.forward_ns),
                                 };
                                 cur_path.clear();
+                                cur_opath.clear();
                                 cur_path.push((now, mic_n));
+                                cur_opath.push((now, oi_now));
                                 blocked_until = now.saturating_add(cfg.cooldown_ns);
                                 state = State::Collecting;
                             }
@@ -421,14 +522,27 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
 }
 
 /// Finalise a collected cascade into scalar statistics.
-fn finalize(cur: &Pending, path: &[(u64, f64)], cfg: &Cfg, day: &str, d_oi: f64, p_move: f64) -> CascadeStat {
+fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], cfg: &Cfg, day: &str, d_oi: f64, p_move: f64) -> CascadeStat {
     let rev = measure_reversion(path, cur.fire_ts, cur.baseline, cur.dir_down);
     let reverted = rev.revert_frac >= cfg.revert_frac;
-    let fades: Vec<Option<f64>> = cfg
-        .delays_ns
-        .iter()
-        .map(|&d| simulate_fade(path, cur.fire_ts, cur.dir_down, d, cfg.fade_revert_bps, cfg.fade_hold_ns))
-        .collect();
+    // Choose the fade ENTRY ANCHOR: baseline fades at the fire; --exhaust waits for
+    // the exhaustion point (forced flow runs out) and only then fades. If exhaustion
+    // never fires within the horizon, the cascade is SKIPPED (no entries).
+    let exhaust_ts = if cfg.exhaust {
+        find_exhaustion(path, oi_path, cur.fire_ts, cur.dir_down, cfg.exhaust_stall_ns, cfg.exhaust_decel)
+    } else {
+        Some(cur.fire_ts)
+    };
+    let fades: Vec<Option<f64>> = match exhaust_ts {
+        Some(anchor) => cfg
+            .delays_ns
+            .iter()
+            .map(|&d| simulate_fade(path, anchor, cur.dir_down, d, cfg.fade_revert_bps, cfg.fade_hold_ns))
+            .collect(),
+        None => cfg.delays_ns.iter().map(|_| None).collect(),
+    };
+    let exhausted = exhaust_ts.is_some();
+    let exhaust_ns = if cfg.exhaust { exhaust_ts.map(|tt| tt.saturating_sub(cur.fire_ts)) } else { None };
     CascadeStat {
         day: day.to_string(),
         d_oi,
@@ -447,6 +561,8 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], cfg: &Cfg, day: &str, d_oi: f64,
         ttf_ns: rev.ttf_ns,
         peak_ns: rev.peak_ns,
         fades,
+        exhausted,
+        exhaust_ns,
     }
 }
 // ----------------------------------------------------------------------------
@@ -498,6 +614,16 @@ fn report_pooled(label: &str, ds: &[&CascadeStat], cfg: &Cfg, num_days: usize) {
         println!("  (none detected - thresholds too strict or quiet regime)");
         return;
     }
+    if cfg.exhaust {
+        let ex = ds.iter().filter(|d| d.exhausted).count();
+        let exn: Vec<f64> = ds.iter().filter_map(|d| d.exhaust_ns).map(|x| x as f64 / 1e9).collect();
+        println!(
+            "EXHAUSTION (entry-conditioned)  fired {ex}/{n} = {:.0}%   skipped {}   median wait {:.1}s",
+            ex as f64 / n as f64 * 100.0,
+            n - ex,
+            if exn.is_empty() { 0.0 } else { median(&exn) }
+        );
+    }
     let down = ds.iter().filter(|d| d.dir_down).count();
     println!("direction                     DOWN {down}  UP {}", n - down);
 
@@ -540,13 +666,17 @@ fn report_pooled(label: &str, ds: &[&CascadeStat], cfg: &Cfg, num_days: usize) {
             continue;
         }
         let wins = v.iter().filter(|&&x| x > 0.0).count();
+        let worst = v.iter().copied().fold(f64::INFINITY, f64::min);
+        let tail = v.iter().filter(|&&x| x < -30.0).count();
         println!(
-            "  delay {:>6}   mean {:+.2}bps  median {:+.2}  t-stat {:+.2}  win {:.0}%  n={}",
+            "  delay {:>6}   mean {:+.2}bps  median {:+.2}  t-stat {:+.2}  win {:.0}%  worst {:+.1}  <-30bps {:.0}%  n={}",
             fmt_ns(dl),
             mean(&v),
             median(&v),
             tstat(&v),
             wins as f64 / v.len() as f64 * 100.0,
+            worst,
+            tail as f64 / v.len() as f64 * 100.0,
             v.len()
         );
     }
@@ -572,6 +702,9 @@ fn run() -> Result<(), String> {
         revert_frac: 0.5,
         top_n: 5,
         path_sample_ns: 50_000_000,
+        exhaust: false,
+        exhaust_stall_ns: 2_000_000_000,
+        exhaust_decel: 0.5,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut oi_drops: Vec<f64> = vec![0.5];
@@ -607,6 +740,9 @@ fn run() -> Result<(), String> {
             "--revert-frac" => cfg.revert_frac = val()?.parse().map_err(|e| format!("revert-frac: {e}"))?,
             "--top" => cfg.top_n = val()?.parse().map_err(|e| format!("top: {e}"))?,
             "--sample" => cfg.path_sample_ns = parse_dur(&val()?)?,
+            "--exhaust" => cfg.exhaust = true,
+            "--exhaust-stall" => cfg.exhaust_stall_ns = parse_dur(&val()?)?,
+            "--exhaust-decel" => cfg.exhaust_decel = val()?.parse().map_err(|e| format!("exhaust-decel: {e}"))?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -632,6 +768,14 @@ fn run() -> Result<(), String> {
         "fade: enter at delays [{}]  exit on {:.0}bps revert or {} hold   revert-class >={:.0}% of spike",
         delay_lbl.join(","), cfg.fade_revert_bps, fmt_ns(cfg.fade_hold_ns), cfg.revert_frac * 100.0
     );
+    if cfg.exhaust {
+        println!(
+            "EXHAUSTION ON: fade only after OI-bleed decel <= {:.2}x peak AND no new price extreme for {} (entry = exhaustion point + delays)",
+            cfg.exhaust_decel, fmt_ns(cfg.exhaust_stall_ns)
+        );
+    } else {
+        println!("EXHAUSTION OFF (baseline): fade immediately at fire + delays");
+    }
     println!("SWEEP oi-drop {:?}%  x  price-move {:?}bps", oi_drops, price_moves);
 
     // build the threshold grid (knob-bite: cascade set must move with these).
@@ -688,7 +832,7 @@ fn run() -> Result<(), String> {
     if let Some(path) = &dump {
         use std::io::Write;
         let mut f = std::fs::File::create(path).map_err(|e| format!("dump: {e}"))?;
-        let mut hdr = String::from("day,oi_drop_thr,price_move_thr,fire_ts,dir_down,oi_drop_pct,price_move_bps,net_flow,spike_bps,revert_bps,revert_frac,reverted,full_revert,tth_ms,ttf_ms,peak_ms");
+        let mut hdr = String::from("day,oi_drop_thr,price_move_thr,fire_ts,dir_down,oi_drop_pct,price_move_bps,net_flow,spike_bps,revert_bps,revert_frac,reverted,full_revert,exhausted,exhaust_ms,tth_ms,ttf_ms,peak_ms");
         for &dl in &cfg.delays_ns {
             hdr.push_str(&format!(",fade_{}", fmt_ns(dl)));
         }
@@ -696,9 +840,11 @@ fn run() -> Result<(), String> {
         for col in &pooled {
             for c in col {
                 let mut line = format!(
-                    "{},{},{},{},{},{:.4},{:.3},{:.4},{:.3},{:.3},{:.4},{},{},{},{},{:.0}",
+                    "{},{},{},{},{},{:.4},{:.3},{:.4},{:.3},{:.3},{:.4},{},{},{},{},{},{},{:.0}",
                     c.day, c.d_oi, c.p_move, c.fire_ts, c.dir_down, c.oi_drop_pct, c.price_move_bps, c.net_flow,
                     c.spike_bps, c.revert_bps, c.revert_frac, c.reverted, c.full_revert,
+                    c.exhausted,
+                    c.exhaust_ns.map_or(-1.0, |x| x as f64 / 1e6),
                     c.tth_ns.map_or(-1.0, |x| x as f64 / 1e6),
                     c.ttf_ns.map_or(-1.0, |x| x as f64 / 1e6),
                     c.peak_ns as f64 / 1e6
@@ -797,5 +943,57 @@ mod tests {
     fn fade_none_when_path_too_short() {
         let path = vec![(0u64, 100.0), (100_000_000, 100.0)];
         assert!(simulate_fade(&path, 0, true, 800_000_000, 10.0, 30_000_000_000).is_none());
+    }
+
+    #[test]
+    fn exhaustion_fires_when_oi_and_price_stall() {
+        // DOWN cascade sampled every 0.5s; stall window 1s, decel 0.5x.
+        // Price extends to a low by 1.5s then goes FLAT (stalls); OI bleeds hard
+        // over the first 1s then slows to a trickle => exhaustion should fire.
+        let price = vec![
+            (0u64, 100.0),
+            (500_000_000, 99.5),
+            (1_000_000_000, 99.2),
+            (1_500_000_000, 99.1),
+            (2_000_000_000, 99.1),
+            (2_500_000_000, 99.1),
+            (3_000_000_000, 99.2),
+        ];
+        let oi = vec![
+            (0u64, 1000.0),
+            (500_000_000, 980.0),
+            (1_000_000_000, 965.0),
+            (1_500_000_000, 960.0),
+            (2_000_000_000, 959.0),
+            (2_500_000_000, 958.0),
+            (3_000_000_000, 958.0),
+        ];
+        let ex = find_exhaustion(&price, &oi, 0, true, 1_000_000_000, 0.5);
+        assert_eq!(ex, Some(2_500_000_000), "exhaustion at 2.5s, got {ex:?}");
+    }
+
+    #[test]
+    fn exhaustion_never_fires_on_a_trender() {
+        // OI keeps bleeding AND price makes a new low every sample (a pure trend):
+        // neither leg is ever satisfied => no exhaustion => the cascade is skipped.
+        let price = vec![
+            (0u64, 100.0),
+            (500_000_000, 99.0),
+            (1_000_000_000, 98.0),
+            (1_500_000_000, 97.0),
+            (2_000_000_000, 96.0),
+            (2_500_000_000, 95.0),
+            (3_000_000_000, 94.0),
+        ];
+        let oi = vec![
+            (0u64, 1000.0),
+            (500_000_000, 980.0),
+            (1_000_000_000, 960.0),
+            (1_500_000_000, 940.0),
+            (2_000_000_000, 920.0),
+            (2_500_000_000, 900.0),
+            (3_000_000_000, 880.0),
+        ];
+        assert!(find_exhaustion(&price, &oi, 0, true, 1_000_000_000, 0.5).is_none());
     }
 }

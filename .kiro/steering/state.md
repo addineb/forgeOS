@@ -481,3 +481,12 @@ reproducible, coinflip loses on real data.
   adverse selection likely kills maker too). docs/research/oi-cascade-study.md; CSVs
   /root/runs/oiscope/{eth,btc}_cascades.csv. Type C forced-flow lead = effectively
   exhausted for the naive fade shape.
+- TWEAK 1 exhaustion-conditioned entry (oiscope --exhaust/--exhaust-stall/--exhaust-decel, default OFF;
+  build+clippy+97 tests green) TESTED ISOLATED 10d ETH+BTC = NOT tradeable alone. Fires on 100% of
+  cascades / skips 0 over the 60s horizon -> it's an entry-TIMING shift (~4-5s later), NOT a trender-skip
+  filter (n unchanged). Cuts ETH mid left-tail (<-30bps ~halved, mean +1-2bps) but worst trade ~-77bps
+  survives (paused trenders). Best gross still BTC oi0.5/move10 +3.75bps t2.58 (n=30) << ~9bps taker fee;
+  ETH neg-to-flat; net-of-9bps NEGATIVE every cell both assets. Knob-bite: STALL window is the live dial
+  (wait 2.5->5.9s); DECEL nearly inert (price-stall leg binds). LESSON: "exhaustion" != selectivity (all
+  cascades stall once); still cannot separate reverters from trenders. NEXT (isolated, one-by-one): tweak
+  2 magnitude filter, then tweak 3 gapscope confirm. docs/research/oi-cascade-study.md Tweak 1 section.

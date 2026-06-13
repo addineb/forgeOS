@@ -149,3 +149,126 @@ This kills the naive version cheap (0 euros risked), exactly as intended.
 
 On current evidence: shelve the OI-cascade fade. Detection works and is honest; the
 edge is not there at our cost structure. CSVs: /root/runs/oiscope/{eth,btc}_cascades.csv.
+---
+
+## Tweak 1: exhaustion-conditioned entry (isolated)
+
+Tested ALONE (no magnitude filter, no gapscope confirm - those come later). Default
+OFF so baseline behavior is byte-preserved. Build + clippy(-D warnings) + tests all
+green on the box; oiscope unit tests 7 -> 9 (2 new exhaustion-trigger tests), full
+forgelag suite 95 -> 97 green.
+
+### The exact rule + flags
+Thesis: a cascade that REVERTS is one where the forced flow RUNS OUT - the OI-drop
+decelerates AND price stops extending (stalls) - then it snaps back; a TRENDER keeps
+bleeding OI / pushing price. Since latency is slack here, we can afford to WAIT for
+that exhaustion before fading.
+
+New flags (all default OFF / baseline-preserving):
+  --exhaust                enable exhaustion-conditioned entry.
+  --exhaust-stall <dur>    stall window / trailing lookback W_s (default 2s).
+  --exhaust-decel <frac>   OI-bleed deceleration fraction f (default 0.5).
+
+EXHAUSTION fires at the FIRST forward sample t (with >= W_s elapsed since the fire)
+where BOTH hold:
+  (a) OI STOPS BLEEDING: trailing OI-drop% over [t-W_s, t] <= f x the PEAK trailing
+      OI-drop% seen since the fire. (If OI never bled forward, this leg is treated as
+      already satisfied.)
+  (b) PRICE STALLS: price has made NO new extreme in the cascade direction within the
+      trailing W_s window.
+Entry = fade at the exhaustion point, then the SAME delays (0/800/2000ms) are applied
+AFTER it (so we keep the latency-realism A/B), with the SAME exit (10bps revert target
+/ 30s max hold). If exhaustion never fires within the 60s horizon -> NO trade (skip).
+Fees: this is a TAKER fade (cross on entry + exit). HL taker round-trip ~9bps. Below,
+"gross" = captured bps; NET = gross - 9bps. Baseline grid matched exactly:
+window 5s, oi-drop {0.2,0.5,1.0}% x move {5,10,20}bps, cooldown 30s, forward 60s,
+delays 0/800ms/2000ms, fade target 10bps / hold 30s, 10 study days, ETH then BTC.
+
+### KEY structural finding (read this first)
+EXHAUSTION FIRED ON 100% OF CASCADES, SKIPPED 0, on EVERY cell of both assets
+(median wait ~4-5s after the fire). Over a 60s horizon essentially every cascade
+eventually stalls at least once - so the "skip the trenders that never exhaust"
+mechanism that was the whole point almost NEVER triggers. In practice the tweak is
+NOT a selectivity filter; it is an ENTRY-TIMING shift: fade ~4-5s after the fire at
+the first stall, instead of at 0-2s. The trade COUNT is unchanged (n identical to
+baseline in every cell). So a paused trender (a trend that takes a breather, trips
+the stall, then resumes) still gets faded - which is why the fattest left-tail trades
+survive (see worst column below).
+
+### A/B - ETH (gross fade bps; t in parens). worst / %<-30bps at delay 0ms.
+| oi/move | n | base @0ms | exh @0ms | base @2s | exh @2s | base worst /<-30 | exh worst /<-30 |
+|---|---|---|---|---|---|---|---|
+| 0.2/5  | 335 | -1.61 (t-2.08) | -0.26 (t-0.38) | -1.25 (t-1.64) | -0.74 (t-1.06) | -78.2 / 4% | -77.3 / 2% |
+| 0.2/10 | 174 | -3.18 (t-2.43) | -1.13 (t-1.00) | -2.70 (t-2.11) | -1.70 (t-1.49) | -78.2 / 7% | -77.3 / 4% |
+| 0.2/20 | 35  | -6.57 (t-1.52) | -0.55 (t-0.17) | -5.25 (t-1.26) | -2.72 (t-0.76) | -73.8 / 20% | -77.3 / 6% |
+| 0.5/5  | 104 | -2.38 (t-1.75) | +0.22 (t+0.20) | -0.72 (t-0.61) | +0.02 (t+0.02) | -71.3 / 6% | -43.1 / 1% |
+| 0.5/10 | 63  | -4.37 (t-2.16) | -1.82 (t-1.08) | -2.84 (t-1.64) | -1.94 (t-1.01) | -71.3 / 8% | -43.1 / 3% |
+| 0.5/20 | 12  | -13.91 (t-1.95)| -2.40 (t-0.52) | -4.86 (t-0.94) | -8.49 (t-1.20) | -71.3 / 25% | -29.7 / 0% |
+| 1.0/5  | 36  | -0.99 (t-0.54) | +1.04 (t+0.56) | +0.01 (t+0.00) | +0.22 (t+0.11) | -28.2 / 0% | -34.9 / 3% |
+| 1.0/10 | 28  | -1.76 (t-0.89) | -0.39 (t-0.17) | -0.70 (t-0.34) | -1.11 (t-0.46) | -28.2 / 0% | -34.9 / 4% |
+| 1.0/20 | 7   | -0.84 (t-0.15) | +0.96 (t+0.16) | +0.42 (t+0.07) | -3.90 (t-0.47) | -23.9 / 0% | -29.7 / 0% |
+
+ETH read: exhaustion LIFTS the mean by ~+1 to +2bps and roughly HALVES the mid
+left-tail (e.g. <-30bps 4%->2%, 7%->4%, 20%->6%), turning the worst-losing cells from
+clearly-negative to near-zero. BUT the single WORST trade barely moves (still ~-77bps)
+- the fattest tail = paused trenders that stall then resume, which the timing-shift
+cannot dodge. No ETH cell is gross-positive of note; net of 9bps every ETH cell is
+still negative.
+
+### A/B - BTC (gross fade bps; t in parens). worst / %<-30bps at delay 0ms.
+| oi/move | n | base @0ms | exh @0ms | base @2s | exh @2s | base worst /<-30 | exh worst /<-30 |
+|---|---|---|---|---|---|---|---|
+| 0.2/5  | 235 | +0.05 (t+0.10) | +1.13 (t+2.13) | +1.03 (t+1.91) | +0.84 (t+1.60) | -27.0 / 0% | -23.4 / 0% |
+| 0.2/10 | 75  | +0.75 (t+0.70) | +1.86 (t+1.74) | +2.07 (t+2.01) | +0.93 (t+0.89) | -27.0 / 0% | -23.4 / 0% |
+| 0.2/20 | 9   | +5.41 (t+1.40) | +5.42 (t+1.42) | +5.36 (t+1.30) | +5.47 (t+1.52) | -19.7 / 0% | -23.4 / 0% |
+| 0.5/5  | 66  | -0.28 (t-0.27) | +0.44 (t+0.44) | +0.58 (t+0.59) | +0.68 (t+0.67) | -17.4 / 0% | -20.5 / 0% |
+| 0.5/10 | 30  | +2.29 (t+1.39) | +3.43 (t+2.39) | +3.01 (t+2.12) | +3.75 (t+2.58) | -17.4 / 0% | -12.7 / 0% |
+| 0.5/20 | 3   | +11.59 (n=3)   | +10.54 (n=3)   | +10.64 (n=3)   | +11.33 (n=3)   | +10.8 / 0% | +10.2 / 0% |
+| 1.0/5  | 13  | -1.06 (t-0.58) | +1.44 (t+0.80) | +0.98 (t+0.59) | +1.19 (t+0.56) | -11.1 / 0% | -7.9 / 0% |
+| 1.0/10 | 8   | +2.04 (t+0.64) | +2.76 (t+1.00) | +1.66 (t+0.64) | +1.85 (t+0.58) | -8.4 / 0% | -7.9 / 0% |
+
+BTC read: BTC had almost no left tail to cut (spikes are smaller; baseline <-30bps was
+already ~0%). Exhaustion lifts the mean a touch and firms the t on the better cells -
+the standout is oi0.5/move10 (n=30): +3.01bps t2.12 -> +3.75bps t2.58 at 2s; and it
+makes the 0ms entry useful (oi0.2/move5 +0.05 t0.10 -> +1.13 t2.13). But the BEST
+gross capture anywhere is still only ~+3.75bps (n=30) - WELL under the ~9bps taker
+round-trip. Net of 9bps every BTC cell is negative.
+
+### Knob-bite (ETH, single cell oi0.2/move10, n=174 fixed)
+| dial | median wait | fade @0ms | fade @2s |
+|---|---|---|---|
+| decel 0.3 | 4.1s | -1.06 (t-0.94) | -1.60 (t-1.40) |
+| decel 0.5 | 4.1s | -1.13 (t-1.00) | -1.70 (t-1.49) |
+| decel 0.7 | 4.0s | -1.18 (t-1.05) | -1.68 (t-1.48) |
+| stall 1s  | 2.5s | -1.27 (t-1.02) | -2.25 (t-1.90) |
+| stall 2s  | 4.1s | -1.13 (t-1.00) | -1.70 (t-1.49) |
+| stall 3s  | 5.9s | -1.26 (t-1.12) | -1.25 (t-1.06) |
+
+Honest knob-bite: the STALL window is the binding dial - it moves the median wait
+monotonically (2.5s -> 4.1s -> 5.9s) and shifts the captured bps with it. The DECEL
+fraction is nearly INERT (0.3/0.5/0.7 all ~the same wait and result), because OI bleed
+decelerates fast and is almost always already below 0.5x its peak by the time price
+stalls - so leg (b) price-stall is what actually binds, not leg (a) OI-decel. The dials
+move the ENTRY TIMING / captured bps but NOT the trade count (always 174) - because the
+gate fires 100% of the time. So the dial "moves trades" in the timing sense, not the
+selectivity sense.
+
+### Verdict on Tweak 1 (isolated): NO - it does not make the fade tradeable.
+- Did it CUT THE LEFT TAIL? Partially. On ETH it roughly halves the mid tail
+  (<-30bps fraction) and lifts the mean ~+1 to +2bps, flipping the worst-losing cells
+  to near-zero. But the SINGLE worst trades (~-77bps) survive untouched - those are
+  paused trenders, and a timing shift cannot avoid them.
+- Did it LIFT mean / t ABOVE THE FEE FLOOR? No. Best gross is BTC ~+3.75bps (oi0.5/
+  move10, t2.58, n=30); ETH stays negative-to-flat. The ~9bps taker round-trip is
+  never cleared. NET of 9bps every cell on both assets is negative.
+- Why it underperforms the thesis: the gate fires on 100% of cascades (skips 0) over
+  the 60s horizon, so it never actually SEPARATES reverters from trenders - it only
+  delays entry to the first stall (~4-5s). It is an entry-timing tweak, not the
+  selectivity filter the thesis wanted.
+
+CONCLUSION: exhaustion-conditioning ALONE trims the ETH mid-tail and nudges BTC
+mean/t modestly, but it leaves the fade structurally sub-fee on both assets. It trades
+the same set, just later, without fixing the fat tail. Not tradeable on its own. (The
+modest tail-trim + the fact that the stall window is the live dial are worth carrying
+into the later combined tests with the magnitude filter / gapscope confirm.) Logs:
+/root/runs/oiscope_exh/{eth,btc}_{base,exh}.log + eth_cell_*.log.
