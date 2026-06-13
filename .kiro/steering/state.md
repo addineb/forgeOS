@@ -750,3 +750,19 @@ reproducible, coinflip loses on real data.
   (4) slippage + -106bps tail, (5) live paper. NEXT = build a concurrency-capped position-sizing sim +
   live paper, NOT more param hunting. docs/research/sweep-study.md "Ladder CORRECTION" section; CSVs
   /root/runs/lad_eth.csv,lad_btc.csv; per-config logs /root/runs/lad*.
+- *** CONCURRENCY-CAPPED SIZING SIM (2026-06-13) = PASSED, concurrency is a NON-issue. *** Built
+  event-driven sim from the ladder dumps (entry fire_ts + exit ladder_exit_ts added to sweepscope dump;
+  clippy+36 tests green). KEY: MAX concurrent open positions = ONLY 2 across the whole 1492-trade,
+  222-day window (30m cooldown + fast resolution => signals rarely overlap within a coin; it is basically
+  ETH-trade + BTC-trade at most). So a cap of 2 skips ZERO trades and compounding is LEGITIMATE (not the
+  earlier 15-trades-stacked fantasy). Realistic EUR500 (event-driven, proper time model, ~222d window):
+  cap3 1x-notional (safe) -> EUR2501 (+400%) maxDD 5.6% worst1 -EUR25; cap2 2x -> EUR11970 (+2294%)
+  maxDD 11% worst1 -EUR233; cap1 4x (aggr) -> EUR59584 maxDD 25%. (worst1 EUR large only because equity
+  compounded up; %DD is the risk gauge.) ~6.7 trades/day over 222d (~15/active-day). The earlier
+  sequential-compound EUR260k was inflated by NOT modeling time; proper sim = +400% conservative /
+  +2294% @2x with single-digit-to-11% DD. *** Sizing/concurrency check PASSED rather than exposing a lie.
+  *** STILL UNVERIFIED before live: (1) partial fills (each trade = full size assumed), (2) taker-exit
+  slippage, (3) maker-fill realism as equity/size grows, (4) regime coverage (trades cluster Nov-Dec +
+  Feb + May-Jun), (5) LIVE PAPER run. This is now the FIRST genuine deployable CANDIDATE. NEXT = live
+  paper run on the AWS Tokyo box (HL), tiny size, the ladder sweep logic. scripts: _concsim.ps1; CSVs
+  /root/runs/lad_eth.csv,lad_btc.csv.

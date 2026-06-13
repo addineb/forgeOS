@@ -714,6 +714,7 @@ struct SweepStat {
     rev_ladder: Option<f64>,
     ladder_rungs: usize,
     ladder_inval: bool,
+    ladder_exit_ts: u64,
 }
 
 /// Pending sweep being collected over its forward window.
@@ -1022,13 +1023,13 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
         (None, f64::NAN)
     };
     // LADDER (grid) reversal: maker rungs INTO the dislocation, full-size run-overs IN.
-    let (rev_ladder, ladder_rungs, ladder_inval) = if cfg.ladder {
+    let (rev_ladder, ladder_rungs, ladder_inval, ladder_exit_ts) = if cfg.ladder {
         match simulate_ladder(path, cur.fire_ts, cur.entry_px, dir_up, cfg.rungs, cfg.ladder_range_bps, cfg.rev_target_bps, cfg.ladder_invalid_bps, cfg.hold_ns) {
-            Some((bps, r, inv)) => (Some(bps), r, inv),
-            None => (None, 0, false),
+            Some((bps, r, inv, ets)) => (Some(bps), r, inv, ets),
+            None => (None, 0, false, 0),
         }
     } else {
-        (None, 0, false)
+        (None, 0, false, 0)
     };
     SweepStat {
         day: day.to_string(),
@@ -1085,6 +1086,7 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
         rev_ladder,
         ladder_rungs,
         ladder_inval,
+        ladder_exit_ts,
     }
 }
 
@@ -1673,7 +1675,7 @@ fn run() -> Result<(), String> {
         };
         writeln!(
             f,
-            "day,l_ns,range_max,sweep_margin,fire_ts,dir_up,range_lo,range_hi,range_width_bps,mid,entry_px,oi_drop_pct,net_flow,class,cont_ext_bps,rev_back_bps,decision_ms,imb_start,imb_end,rev_confirm,cont_confirm,rev_take,rev_make,rev_make_filled,rev_make_gated,cont_take{flow_hdr},rev_ladder,ladder_rungs,ladder_inval"
+            "day,l_ns,range_max,sweep_margin,fire_ts,dir_up,range_lo,range_hi,range_width_bps,mid,entry_px,oi_drop_pct,net_flow,class,cont_ext_bps,rev_back_bps,decision_ms,imb_start,imb_end,rev_confirm,cont_confirm,rev_take,rev_make,rev_make_filled,rev_make_gated,cont_take{flow_hdr},rev_ladder,ladder_rungs,ladder_inval,ladder_exit_ts"
         ).map_err(|e| format!("dump: {e}"))?;
         for col in &pooled {
             for c in col {
@@ -1691,7 +1693,7 @@ fn run() -> Result<(), String> {
                 };
                 writeln!(
                     f,
-                    "{},{},{},{},{},{},{:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{},{:.2},{:.2},{},{:.4},{:.4},{},{},{},{},{},{},{}{flow_cols},{},{},{}",
+                    "{},{},{},{},{},{},{:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{},{:.2},{:.2},{},{:.4},{:.4},{},{},{},{},{},{},{}{flow_cols},{},{},{},{}",
                     c.day, c.l_ns, c.range_max, c.sweep_margin, c.fire_ts, c.dir_up,
                     c.range_lo, c.range_hi, c.range_width_bps, c.mid, c.entry_px,
                     c.oi_drop_pct, c.net_flow, c.class, c.cont_ext_bps, c.rev_back_bps,
@@ -1704,7 +1706,8 @@ fn run() -> Result<(), String> {
                     c.cont_take.map_or("NA".to_string(), |x| format!("{x:.3}")),
                     c.rev_ladder.map_or("NA".to_string(), |x| format!("{x:.3}")),
                     c.ladder_rungs,
-                    c.ladder_inval
+                    c.ladder_inval,
+                    c.ladder_exit_ts
                 ).map_err(|e| format!("dump: {e}"))?;
             }
         }
@@ -2043,7 +2046,7 @@ fn simulate_ladder(
     target_bps: f64,
     invalid_bps: f64,
     hold_ns: u64,
-) -> Option<(f64, usize, bool)> {
+) -> Option<(f64, usize, bool, u64)> {
     if entry_px <= 0.0 || n_rungs == 0 {
         return None;
     }
@@ -2078,16 +2081,17 @@ fn simulate_ladder(
             px <= deepest * (1.0 - invalid_bps / 10_000.0)
         };
         if invalid_bps > 0.0 && inval {
-            return Some((signed, f, true));
+            return Some((signed, f, true, ts));
         }
         if target_bps > 0.0 && signed >= target_bps {
-            return Some((signed, f, false));
+            return Some((signed, f, false, ts));
         }
         if ts.saturating_sub(entry_t) >= hold_ns {
-            return Some((signed, f, false));
+            return Some((signed, f, false, ts));
         }
     }
-    Some((last, last_f, false))
+    let tail_ts = path[start..].last().map_or(entry_t, |&(ts, _)| ts);
+    Some((last, last_f, false, tail_ts))
 }
 
 #[cfg(test)]
@@ -2153,7 +2157,7 @@ mod tests {
         // overshoots to 100.35 (fills all 3, avg 100.15) then reverts to 100.0 ->
         // short from avg -> ~+15bps -> target 10 hit.
         let path = vec![(0u64, 100.0), (1_000_000_000, 100.35), (2_000_000_000, 100.0)];
-        let (bps, rungs, inval) = simulate_ladder(&path, 0, 100.0, true, 3, 30.0, 10.0, 50.0, 30_000_000_000).unwrap();
+        let (bps, rungs, inval, _ets) = simulate_ladder(&path, 0, 100.0, true, 3, 30.0, 10.0, 50.0, 30_000_000_000).unwrap();
         assert_eq!(rungs, 3, "overshoot fills all rungs");
         assert!(!inval, "did not invalidate");
         assert!(bps >= 10.0, "reverted to target from the laddered avg, got {bps}");
@@ -2163,7 +2167,7 @@ mod tests {
     fn ladder_invalidation_is_full_size_loss() {
         // Price blows THROUGH the whole ladder + invalidation -> full-size stop loss.
         let path = vec![(0u64, 100.0), (1_000_000_000, 100.6)];
-        let (bps, _r, inval) = simulate_ladder(&path, 0, 100.0, true, 3, 30.0, 200.0, 20.0, 30_000_000_000).unwrap();
+        let (bps, _r, inval, _ets) = simulate_ladder(&path, 0, 100.0, true, 3, 30.0, 200.0, 20.0, 30_000_000_000).unwrap();
         assert!(inval, "blew through the ladder = invalidation");
         assert!(bps < 0.0, "full-size run-over is a real loss, got {bps}");
     }

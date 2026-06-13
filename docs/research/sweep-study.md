@@ -439,3 +439,16 @@ First real, OOS-validated per-trade edge. The ladder (trader's idea) + correct m
 (6 vs 9) + letting it run is what unlocked it - exactly the execution fixes he insisted
 on. Euro is genuinely positive even non-compounded with modest drawdown. Next = a proper
 concurrency-capped position-sizing sim + live paper, NOT more parameter hunting.
+## Concurrency-capped sizing sim - PASSED (concurrency is a non-issue)
+
+Event-driven sim from the ladder dumps (entry + exit times). MAX concurrent open
+positions across the whole 1492-trade window = ONLY 2 (30m cooldown + fast resolution
+-> signals rarely overlap within a coin; basically ETH + BTC at most). So a cap of 2
+skips zero trades and compounding is legitimate. EUR500, ~222d window:
+- cap3 / 1x notional (safe): -> EUR2501 (+400%), maxDD 5.6%, worst single -EUR25.
+- cap2 / 2x notional: -> EUR11970 (+2294%), maxDD 11%, worst single -EUR233.
+- cap1 / 4x notional (aggressive): -> EUR59584, maxDD 25%.
+The earlier sequential-compounded EUR260k was inflated by ignoring time; the proper
+event-driven number is +400% conservative / +2294% at 2x, single-digit-to-11% DD.
+Remaining gates before live: partial fills, taker-exit slippage, maker-fill realism as
+size grows, regime coverage, and a LIVE PAPER run. First genuine deployable candidate.
