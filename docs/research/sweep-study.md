@@ -452,3 +452,17 @@ The earlier sequential-compounded EUR260k was inflated by ignoring time; the pro
 event-driven number is +400% conservative / +2294% at 2x, single-digit-to-11% DD.
 Remaining gates before live: partial fills, taker-exit slippage, maker-fill realism as
 size grows, regime coverage, and a LIVE PAPER run. First genuine deployable candidate.
+## Ladder REALISTIC SIZING - retraction (account blows up under real fills)
+
+Fill distribution (5-order ladder, 1492 trades): 1 order 40%, 2=22%, 3=12%, 4=8%,
+all-5=18% (avg 2.4/5). EUR with 20% margin x 20x, max-2-concurrent:
+- FIXED (every trade = full 20% size regardless of fills) = +47909% = FANTASY (a
+  1-order partial fill is NOT a full position; unachievable with a passive ladder).
+- SCALE (5 orders of 4% each, deployed grows with fills = the REAL ladder) = EUR500
+  -> EUR36 (-93%), maxDD 95% = ACCOUNT BLOWN.
+The +400%/+11bps reported earlier used FIXED/equal-weight = WRONG. Realistic ladder
+LOSES: small wins on shallow pokes (40% fill 1 order), big losses on deep fills (18%
+fill all 5 = breakouts hitting the stop at full size). Per-euro expectancy negative.
+The reversion read is real (~70% revert) but un-sizeable - size only lands on the deep
+breakouts. SWEEP + LADDER CLOSED. Always report fill-rate + size-weighted EUR for any
+scale-in.

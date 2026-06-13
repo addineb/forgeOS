@@ -766,3 +766,20 @@ reproducible, coinflip loses on real data.
   Feb + May-Jun), (5) LIVE PAPER run. This is now the FIRST genuine deployable CANDIDATE. NEXT = live
   paper run on the AWS Tokyo box (HL), tiny size, the ladder sweep logic. scripts: _concsim.ps1; CSVs
   /root/runs/lad_eth.csv,lad_btc.csv.
+- *** LADDER REALISTIC-SIZING CORRECTION (2026-06-13) - RETRACTS the "deployable candidate" claim. ***
+  Trader asked the right question: did price fill ALL orders, and what is the % size per trade. FILL
+  DISTRIBUTION (5-order ladder, 1492 trades): 1 order=40%, 2=22%, 3=12%, 4=8%, ALL 5=18%; avg 2.4/5.
+  EUR with HIS sizing 20% margin x 20x, max-2-concurrent, two sizing models: (a) FIXED (every trade
+  counted as full 20% size regardless of fills) = +47909% (THE FANTASY - treats a 1-order partial fill
+  as full size, NOT achievable with a passive limit ladder); (b) SCALE = 5 real orders of 4% each,
+  deployed grows as they fill (THE REALISTIC LADDER) = EUR500 -> EUR36 = -93%, maxDD 94.7% = ACCOUNT
+  BLOWN. *** The earlier +400%/+11bps used the FIXED (equal-weight) accounting = WRONG; realistic ladder
+  LOSES. *** ROOT CAUSE: you win SMALL on shallow pokes (40% fill only 1 order = tiny position, revert)
+  and lose BIG on deep fills (18% fill all 5 = disproportionately real BREAKOUTS that hit the stop at
+  FULL size). The ladder puts the MOST capital on exactly the losing trades; per-euro-deployed expectancy
+  is NEGATIVE (= the size-weighted -6..-11bps found earlier, now in stark EUR). The reversion read is REAL
+  (~70% of pokes revert) but lives in the SHALLOW pokes that are too small to size; size only lands on the
+  deep breakouts. *** EDGE IS REAL-BUT-UN-SIZEABLE. Sweep+ladder CLOSED. *** No sizing that adds size on
+  deeper fills can be positive (per-euro neg). Single-entry-at-poke = the shallow version = the breakeven
+  reclaim already tested. PERMANENT LESSON reinforced: always report FILL-RATE + per-euro SIZE-WEIGHTED
+  EUR, never per-trade equal-weight, for any ladder/scale-in. scripts _fillsim.ps1.
