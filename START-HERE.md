@@ -54,3 +54,6 @@ No local Rust toolchain. All build/test/sweep runs on the Hetzner box
 (root@167.233.57.140) - scp changed files there, build with cargo at $HOME/.cargo/bin.
 Gates before trusting any number: `cargo clippy --release -p forgelag --all-targets
 -- -D warnings` clean + `cargo test --release -p forgelag` green + the null-edge gate.
+- REPORTING STYLE (he asked for this explicitly): lead with a one-line clear VERDICT
+  (say good or bad); if there is good AND bad news, give the BAD news FIRST; keep it short
+  and in plain trading terms; never bury or omit anything important. No hype/rollercoaster.

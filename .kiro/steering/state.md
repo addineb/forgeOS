@@ -544,3 +544,8 @@ reproducible, coinflip loses on real data.
   the NEXT edge: must be BIGGER per-trade (>>9bps), latency-robust (react to printed flow), and likely
   NOT symmetric mean-reversion (the momentum/continuation/overshoot tail kept running us over -> maybe
   trade WITH the forced continuation, not against it - UNTESTED).
+- *** COMMUNICATION RULE (trader request 2026-06-12, ALWAYS follow) ***: report results
+  STRAIGHTFORWARD + SHORT + simple terms. LEAD with a one-line clear VERDICT (good or bad,
+  say which). When there is both good and bad news, state the BAD FIRST. No hype, no
+  emotional rollercoaster, no burying the lede. Never omit anything important, but keep it
+  tight. He gets lost when a result is ambiguous - always make positive-vs-negative explicit.
