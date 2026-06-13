@@ -340,6 +340,48 @@ fn passes_magnitude(gate_spike_bps: f64, oi_drop_pct: f64, min_spike_bps: f64, m
         && (min_oidrop_pct <= 0.0 || oi_drop_pct >= min_oidrop_pct)
 }
 
+/// Top-N depth imbalance in [-1, 1]: `(bid - ask) / (bid + ask)`. Positive = more
+/// bid depth (book leans up). Copied from gapscope so the two tools agree exactly.
+#[must_use]
+fn imbalance(bid_depth: f64, ask_depth: f64) -> f64 {
+    let t = bid_depth + ask_depth;
+    if t <= 0.0 { 0.0 } else { (bid_depth - ask_depth) / t }
+}
+
+/// Top-N (bid_depth, ask_depth) in base units. Copied from gapscope.
+#[must_use]
+fn top_depth(book: &OrderBook, top_n: usize) -> (f64, f64) {
+    let bid: f64 = book.bids_iter().take(top_n).map(|(_, q)| q.to_f64()).sum();
+    let ask: f64 = book.asks_iter().take(top_n).map(|(_, q)| q.to_f64()).sum();
+    (bid, ask)
+}
+
+/// Tweak 3 Part A confirm gate. A DOWN cascade was HIT on the BID (forced sells
+/// consumed bids); LIQUIDITY RETURNING on the hit side = bid depth re-filling =>
+/// top-N imbalance RISES (toward bid). An UP cascade was hit on the ASK => a
+/// revert is supported when imbalance FALLS (toward ask). Returns true when the
+/// toward-hit-side imbalance shift over the confirm window >= `min_shift`. Pure.
+#[must_use]
+fn confirm_revert(imb_start: f64, imb_end: f64, dir_down: bool, min_shift: f64) -> bool {
+    let toward_hit = if dir_down { imb_end - imb_start } else { imb_start - imb_end };
+    toward_hit >= min_shift
+}
+
+/// Tweak 3 Part B maker-fill feasibility. During the reversion leg (AT/after the
+/// spike peak), did an aggressive HL trade PRINT THROUGH a resting maker `level`,
+/// in the direction that fills a passive order capturing the reversion? Reuses
+/// gapscope's "trade prints through a resting level" idea. DOWN cascade reverts
+/// UP: a maker SELL at `level` fills when an aggressive BUY prints at >= level. UP
+/// cascade reverts DOWN: a maker BUY at `level` fills on an aggressive SELL <=
+/// level. `trades` = (ts, price, buy_aggr) ascending. Pure (only the measured
+/// forward window is read; no lookahead beyond the cascade's own horizon).
+#[must_use]
+fn maker_fills_through(trades: &[(u64, f64, bool)], peak_ts: u64, level: f64, dir_down: bool) -> bool {
+    trades.iter().any(|&(ts, px, buy)| {
+        ts >= peak_ts && if dir_down { buy && px >= level } else { !buy && px <= level }
+    })
+}
+
 // ----------------------------------------------------------------------------
 // configuration + per-cascade record
 // ----------------------------------------------------------------------------
@@ -364,6 +406,11 @@ struct Cfg {
     exhaust_decel: f64,
     min_spike_bps: f64,
     min_oidrop_pct: f64,
+    ob_confirm: bool,
+    confirm_ns: u64,
+    confirm_imb: f64,
+    maker_fill: bool,
+    maker_fee_bps: f64,
 }
 
 /// One detected cascade and its characterisation (scalars only; the forward path
@@ -399,6 +446,19 @@ struct CascadeStat {
     /// The no-lookahead gate spike used by the filter: |price move from
     /// window-start to fire| in bps (realized at detection, NOT the forward peak).
     gate_spike_bps: f64,
+    /// Tweak 3 Part A: did the post-fire book CONFIRM a revert (top-N imbalance
+    /// shifted back toward the HIT side within the confirm window)? Always true
+    /// when --ob-confirm is OFF (baseline). When false (ob-confirm ON) = skipped.
+    confirm_ok: bool,
+    /// Top-N depth imbalance at the fire and at the confirm-window-end (anchor).
+    imb_start: f64,
+    imb_end: f64,
+    /// Toward-hit-side imbalance shift over the confirm window (the confirm dial).
+    imb_shift: f64,
+    /// Tweak 3 Part B (measurement only): would a resting MAKER at the baseline /
+    /// post-spike level have FILLED on the way back (tape traded through it)?
+    maker_fill_base: bool,
+    maker_fill_spike: bool,
 }
 
 /// Pending cascade being collected over its forward window.
@@ -410,6 +470,8 @@ struct Pending {
     price_move_bps: f64,
     net_flow: f64,
     end_ts: u64,
+    imb_start: f64,
+    imb_end: Option<f64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -434,9 +496,10 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
 
     let mut state = State::Armed;
     let mut blocked_until = 0u64;
-    let mut cur = Pending { fire_ts: 0, dir_down: false, baseline: 0.0, oi_drop_pct: 0.0, price_move_bps: 0.0, net_flow: 0.0, end_ts: 0 };
+    let mut cur = Pending { fire_ts: 0, dir_down: false, baseline: 0.0, oi_drop_pct: 0.0, price_move_bps: 0.0, net_flow: 0.0, end_ts: 0, imb_start: 0.0, imb_end: None };
     let mut cur_path: Vec<(u64, f64)> = Vec::new();
     let mut cur_opath: Vec<(u64, f64)> = Vec::new();
+    let mut cur_trades: Vec<(u64, f64, bool)> = Vec::new();
     let mut out: Vec<CascadeStat> = Vec::new();
 
     for ev in evs {
@@ -465,6 +528,9 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
                     let q = ev.qty.to_f64();
                     let signed = if aggr == Side::Bid { q } else { -q };
                     flow.push_back((now, signed));
+                    if cfg.maker_fill && matches!(state, State::Collecting) {
+                        cur_trades.push((now, ev.price.to_f64(), aggr == Side::Bid));
+                    }
                 }
             }
             (_, LagKind::OpenInterest) => oi_now = ev.aux,
@@ -497,10 +563,15 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
                         cur_opath.push((now, oi_now));
                     }
                 }
+                if cur.imb_end.is_none() && now >= cur.fire_ts.saturating_add(cfg.confirm_ns) {
+                    let (bd, ad) = top_depth(&book, cfg.top_n);
+                    cur.imb_end = Some(imbalance(bd, ad));
+                }
                 if now >= cur.end_ts {
-                    out.push(finalize(&cur, &cur_path, &cur_opath, cfg, day, d_oi, p_move));
+                    out.push(finalize(&cur, &cur_path, &cur_opath, &cur_trades, cfg, day, d_oi, p_move));
                     cur_path.clear();
                     cur_opath.clear();
+                    cur_trades.clear();
                     state = State::Armed;
                 }
             }
@@ -523,9 +594,15 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
                                     price_move_bps: pm,
                                     net_flow: net,
                                     end_ts: now.saturating_add(cfg.forward_ns),
+                                    imb_start: {
+                                        let (bd, ad) = top_depth(&book, cfg.top_n);
+                                        imbalance(bd, ad)
+                                    },
+                                    imb_end: None,
                                 };
                                 cur_path.clear();
                                 cur_opath.clear();
+                                cur_trades.clear();
                                 cur_path.push((now, mic_n));
                                 cur_opath.push((now, oi_now));
                                 blocked_until = now.saturating_add(cfg.cooldown_ns);
@@ -542,7 +619,8 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
 }
 
 /// Finalise a collected cascade into scalar statistics.
-fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], cfg: &Cfg, day: &str, d_oi: f64, p_move: f64) -> CascadeStat {
+#[allow(clippy::too_many_arguments)]
+fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], trades: &[(u64, f64, bool)], cfg: &Cfg, day: &str, d_oi: f64, p_move: f64) -> CascadeStat {
     let rev = measure_reversion(path, cur.fire_ts, cur.baseline, cur.dir_down);
     let reverted = rev.revert_frac >= cfg.revert_frac;
     // Choose the fade ENTRY ANCHOR: baseline fades at the fire; --exhaust waits for
@@ -555,12 +633,38 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], cfg: &Cf
     // filtered cascade is still detected + characterised but yields NO fade entry.
     let gate_spike_bps = cur.price_move_bps.abs();
     let passed_mag = passes_magnitude(gate_spike_bps, cur.oi_drop_pct, cfg.min_spike_bps, cfg.min_oidrop_pct);
-    let exhaust_ts = if !passed_mag {
+    // Tweak 3 Part A: order-book REVERT-vs-TREND confirm (NO-LOOKAHEAD). imb_start
+    // is read at the fire, imb_end at the confirm-window-end (= the entry anchor);
+    // both are <= the entry time, so the gate uses ONLY at/before-entry book state.
+    let imb_start = cur.imb_start;
+    let imb_end = cur.imb_end.unwrap_or(imb_start);
+    let imb_shift = if cur.dir_down { imb_end - imb_start } else { imb_start - imb_end };
+    let confirm_ok = !cfg.ob_confirm || confirm_revert(imb_start, imb_end, cur.dir_down, cfg.confirm_imb);
+    // Entry anchor: magnitude + confirm gates first (fail => no entry). With
+    // --ob-confirm we DELAY entry to the confirm-window-end (latency is slack) so
+    // the same delays (0/800/2000ms) are applied AFTER the confirm read.
+    let exhaust_ts = if !passed_mag || !confirm_ok {
         None
     } else if cfg.exhaust {
         find_exhaustion(path, oi_path, cur.fire_ts, cur.dir_down, cfg.exhaust_stall_ns, cfg.exhaust_decel)
+    } else if cfg.ob_confirm {
+        Some(cur.fire_ts.saturating_add(cfg.confirm_ns))
     } else {
         Some(cur.fire_ts)
+    };
+    // Tweak 3 Part B (measurement only; NEVER gates trading): would a resting MAKER
+    // have FILLED on the way back? "tape trades through a resting level" reused from
+    // gapscope. peak = spike extreme; levels = pre-cascade baseline / post-spike.
+    let peak_ts = cur.fire_ts.saturating_add(rev.peak_ns);
+    let s_dir = if cur.dir_down { -1.0 } else { 1.0 };
+    let extreme_px = cur.baseline * (1.0 + s_dir * rev.spike_bps / 10_000.0);
+    let (maker_fill_base, maker_fill_spike) = if cfg.maker_fill {
+        (
+            maker_fills_through(trades, peak_ts, cur.baseline, cur.dir_down),
+            maker_fills_through(trades, peak_ts, extreme_px, cur.dir_down),
+        )
+    } else {
+        (false, false)
     };
     let fades: Vec<Option<f64>> = match exhaust_ts {
         Some(anchor) => cfg
@@ -594,6 +698,12 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], cfg: &Cf
         exhaust_ns,
         passed_mag,
         gate_spike_bps,
+        confirm_ok,
+        imb_start,
+        imb_end,
+        imb_shift,
+        maker_fill_base,
+        maker_fill_spike,
     }
 }
 // ----------------------------------------------------------------------------
@@ -664,6 +774,40 @@ fn report_pooled(label: &str, ds: &[&CascadeStat], cfg: &Cfg, num_days: usize) {
             pass as f64 / n as f64 * 100.0,
             if gs.is_empty() { 0.0 } else { mean(&gs) }
         );
+    }
+    if cfg.ob_confirm {
+        let pass = ds.iter().filter(|d| d.confirm_ok).count();
+        let sh: Vec<f64> = ds.iter().map(|d| d.imb_shift).collect();
+        let shp: Vec<f64> = ds.iter().filter(|d| d.confirm_ok).map(|d| d.imb_shift).collect();
+        println!(
+            "OB-CONFIRM (window {}  min-imb-shift {:.2})  confirmed {pass}/{n} = {:.0}%   skipped {}   imb-shift mean(all) {:+.3}  mean(confirmed) {:+.3}",
+            fmt_ns(cfg.confirm_ns), cfg.confirm_imb,
+            pass as f64 / n as f64 * 100.0,
+            n - pass,
+            mean(&sh),
+            if shp.is_empty() { 0.0 } else { mean(&shp) }
+        );
+    }
+    if cfg.maker_fill {
+        let revd: Vec<&CascadeStat> = ds.iter().copied().filter(|d| d.reverted).collect();
+        let nr = revd.len();
+        if nr > 0 {
+            let fb = revd.iter().filter(|d| d.maker_fill_base).count();
+            let fsp = revd.iter().filter(|d| d.maker_fill_spike).count();
+            let gross: Vec<f64> = revd.iter().map(|d| d.revert_bps).collect();
+            let g = mean(&gross);
+            println!(
+                "MAKER-FILL (Part B, measurement only; reverted n={nr})  baseline-level filled {fb}/{nr} = {:.0}%   post-spike-level filled {fsp}/{nr} = {:.0}%",
+                fb as f64 / nr as f64 * 100.0,
+                fsp as f64 / nr as f64 * 100.0
+            );
+            println!(
+                "  reversion capture (gross) mean {:+.2}bps   NET maker(-{:.1}) {:+.2}bps   vs NET taker(-9) {:+.2}bps",
+                g, cfg.maker_fee_bps, g - cfg.maker_fee_bps, g - 9.0
+            );
+        } else {
+            println!("MAKER-FILL (Part B)  no reverted cascades to measure");
+        }
     }
     let down = ds.iter().filter(|d| d.dir_down).count();
     println!("direction                     DOWN {down}  UP {}", n - down);
@@ -748,6 +892,11 @@ fn run() -> Result<(), String> {
         exhaust_decel: 0.5,
         min_spike_bps: 0.0,
         min_oidrop_pct: 0.0,
+        ob_confirm: false,
+        confirm_ns: 800_000_000,
+        confirm_imb: 0.10,
+        maker_fill: false,
+        maker_fee_bps: 1.5,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut oi_drops: Vec<f64> = vec![0.5];
@@ -788,6 +937,11 @@ fn run() -> Result<(), String> {
             "--exhaust-decel" => cfg.exhaust_decel = val()?.parse().map_err(|e| format!("exhaust-decel: {e}"))?,
             "--min-spike" => cfg.min_spike_bps = val()?.parse().map_err(|e| format!("min-spike: {e}"))?,
             "--min-oidrop" => cfg.min_oidrop_pct = val()?.parse().map_err(|e| format!("min-oidrop: {e}"))?,
+            "--ob-confirm" => cfg.ob_confirm = true,
+            "--ob-confirm-window" => cfg.confirm_ns = parse_dur(&val()?)?,
+            "--ob-confirm-imb" => cfg.confirm_imb = val()?.parse().map_err(|e| format!("ob-confirm-imb: {e}"))?,
+            "--maker-fill" => cfg.maker_fill = true,
+            "--maker-fee" => cfg.maker_fee_bps = val()?.parse().map_err(|e| format!("maker-fee: {e}"))?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -828,6 +982,20 @@ fn run() -> Result<(), String> {
         );
     } else {
         println!("MAGNITUDE FILTER OFF (baseline): fade every detected cascade");
+    }
+    if cfg.ob_confirm {
+        println!(
+            "OB-CONFIRM ON (Tweak 3 Part A): fade only if top-{} depth imbalance shifts >= {:.2} back toward the HIT side within {} of the fire; entry DELAYED to confirm-window-end + delays (no-lookahead: book read <= entry). Non-confirming cascades SKIPPED.",
+            cfg.top_n, cfg.confirm_imb, fmt_ns(cfg.confirm_ns)
+        );
+    } else {
+        println!("OB-CONFIRM OFF (baseline): no order-book revert gate");
+    }
+    if cfg.maker_fill {
+        println!(
+            "MAKER-FILL MEASURE ON (Tweak 3 Part B): for reverted cascades, report whether the HL tape traded THROUGH the baseline / post-spike level (maker-fillable) + maker-fee(-{:.1}bps)-adjusted capture. Measurement only, never gates trading.",
+            cfg.maker_fee_bps
+        );
     }
     println!("SWEEP oi-drop {:?}%  x  price-move {:?}bps", oi_drops, price_moves);
 
@@ -885,7 +1053,7 @@ fn run() -> Result<(), String> {
     if let Some(path) = &dump {
         use std::io::Write;
         let mut f = std::fs::File::create(path).map_err(|e| format!("dump: {e}"))?;
-        let mut hdr = String::from("day,oi_drop_thr,price_move_thr,fire_ts,dir_down,oi_drop_pct,price_move_bps,net_flow,spike_bps,revert_bps,revert_frac,reverted,full_revert,exhausted,exhaust_ms,tth_ms,ttf_ms,peak_ms,passed_mag,gate_spike_bps");
+        let mut hdr = String::from("day,oi_drop_thr,price_move_thr,fire_ts,dir_down,oi_drop_pct,price_move_bps,net_flow,spike_bps,revert_bps,revert_frac,reverted,full_revert,exhausted,exhaust_ms,tth_ms,ttf_ms,peak_ms,passed_mag,gate_spike_bps,confirm_ok,imb_start,imb_end,imb_shift,maker_fill_base,maker_fill_spike");
         for &dl in &cfg.delays_ns {
             hdr.push_str(&format!(",fade_{}", fmt_ns(dl)));
         }
@@ -893,7 +1061,7 @@ fn run() -> Result<(), String> {
         for col in &pooled {
             for c in col {
                 let mut line = format!(
-                    "{},{},{},{},{},{:.4},{:.3},{:.4},{:.3},{:.3},{:.4},{},{},{},{},{},{},{:.0},{},{:.3}",
+                    "{},{},{},{},{},{:.4},{:.3},{:.4},{:.3},{:.3},{:.4},{},{},{},{},{},{},{:.0},{},{:.3},{},{:.4},{:.4},{:.4},{},{}",
                     c.day, c.d_oi, c.p_move, c.fire_ts, c.dir_down, c.oi_drop_pct, c.price_move_bps, c.net_flow,
                     c.spike_bps, c.revert_bps, c.revert_frac, c.reverted, c.full_revert,
                     c.exhausted,
@@ -902,7 +1070,13 @@ fn run() -> Result<(), String> {
                     c.ttf_ns.map_or(-1.0, |x| x as f64 / 1e6),
                     c.peak_ns as f64 / 1e6,
                     c.passed_mag,
-                    c.gate_spike_bps
+                    c.gate_spike_bps,
+                    c.confirm_ok,
+                    c.imb_start,
+                    c.imb_end,
+                    c.imb_shift,
+                    c.maker_fill_base,
+                    c.maker_fill_spike
                 );
                 for fv in &c.fades {
                     match fv {
@@ -1093,5 +1267,43 @@ mod tests {
         );
         // sanity: had we (wrongly) gated on the forward peak it would have passed.
         assert!(passes_magnitude(rev.spike_bps, 1.0, 20.0, 0.0));
+    }
+
+    #[test]
+    fn confirm_revert_gate() {
+        // DOWN cascade hit the BID; a revert is supported when bid depth RETURNS =>
+        // imbalance RISES (imb_end > imb_start). A +0.30 shift passes a 0.10 thr.
+        assert!(confirm_revert(-0.20, 0.10, true, 0.10), "bid returned => confirm");
+        // imbalance keeps LEANING ask (depth stays pulled / thins) => no confirm.
+        assert!(!confirm_revert(-0.20, -0.40, true, 0.10), "bid kept thinning => skip");
+        // UP cascade hit the ASK; revert supported when ask depth returns => imb FALLS.
+        assert!(confirm_revert(0.20, -0.10, false, 0.10), "ask returned => confirm");
+        assert!(!confirm_revert(0.20, 0.40, false, 0.10), "ask kept thinning => skip");
+        // exact boundary is inclusive (>=).
+        assert!(confirm_revert(0.0, 0.10, true, 0.10));
+    }
+
+    #[test]
+    fn maker_fills_through_level() {
+        // DOWN cascade, reversion is UP; peak at t=1s. A maker SELL rests at baseline
+        // 100.0 and fills iff an aggressive BUY prints >= 100 AFTER the peak.
+        let trades = vec![
+            (500_000_000u64, 99.0, true),   // before peak: ignored
+            (1_500_000_000, 99.5, true),    // after peak but below level: no fill
+            (2_000_000_000, 100.2, true),   // after peak, buy through 100 => FILL
+        ];
+        assert!(maker_fills_through(&trades, 1_000_000_000, 100.0, true), "tape traded up through baseline");
+        // VACUUM: price re-quotes back but no aggressive buy prints through the level.
+        let vacuum = vec![
+            (1_500_000_000u64, 99.5, true),
+            (2_000_000_000, 99.8, false),   // a SELL, wrong side
+        ];
+        assert!(!maker_fills_through(&vacuum, 1_000_000_000, 100.0, true), "no trade through => vacuum");
+        // UP cascade, reversion DOWN: maker BUY at baseline fills on a SELL print <= level.
+        let up = vec![(2_000_000_000u64, 99.7, false)];
+        assert!(maker_fills_through(&up, 1_000_000_000, 100.0, false));
+        // before-peak trades never fill (no-lookahead within the reversion leg).
+        let early = vec![(900_000_000u64, 100.5, true)];
+        assert!(!maker_fills_through(&early, 1_000_000_000, 100.0, true));
     }
 }

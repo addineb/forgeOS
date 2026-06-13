@@ -504,3 +504,24 @@ reproducible, coinflip loses on real data.
   but gapscope warned post-cascade HL = re-quote vacuum / pulled walls -> maker adverse selection risk.
   NEXT (isolated): tweak 3 gapscope-confirm (does liquidity come back=revert vs stay pulled=trend; also
   tells if a maker could rest post-cascade). docs/research/oi-cascade-study.md Tweak 2 section.
+- TWEAK 3 order-book confirm + maker-fill feasibility (oiscope --ob-confirm/--ob-confirm-window/
+  --ob-confirm-imb + --maker-fill/--maker-fee, all default OFF; build+clippy(-Dwarnings,all-targets)+
+  101 tests green [99->101, oiscope 11->13], baseline byte-preserved) TESTED ISOLATED 10d ETH+BTC.
+  PART A confirm gate = revert if top-5 depth IMBALANCE shifts back toward the HIT side within an
+  800ms window (no-lookahead: book read at fire + window-end, entry DELAYED to window-end+delays so
+  read<=entry; reuses gapscope imbalance). *** This is the FIRST REAL SELECTIVITY filter (skips
+  ~50-64%, knob-bite MONOTONIC ETH 52->36% / BTC 63->37% across imb 0.00->0.20) - unlike tweak1
+  exhaustion (fired 100%=timing only). *** It cuts ETH worst tail ~half (-78->-39bps) + lifts every
+  cell +2-3bps (ETH dead->flat, best 0.5/5 +1.35@2s t~1); FIRMS BTC oi0.5/move10 to +5.80bps gross
+  t3.03 @2s (BEST honest knob-bite-valid TAKER gross in the study, tail 0%). BUT net-of-9bps-taker
+  STILL NEGATIVE at trustable n (ETH ~-8..-12, BTC ~-3.2); only n~1-4 cells clear the fee = too thin.
+  TAKER-fade-with-confirm = still NO. PART B maker-fill (measurement only, on REVERTED cascades):
+  a maker resting at the pre-cascade BASELINE FILLS in ~53-71% of reverted cascades (rest = re-quote
+  vacuum) => post-cascade HL is NOT a total vacuum (softens gapscope worry); post-spike-level fill
+  100% is MECHANICAL (ignore). Reversion gross +18-32bps, net maker(-1.5) +16-30bps - BUT conditioned
+  on revert (LOOKAHEAD) + excludes the trender tail = FEASIBILITY UPPER BOUND, not tradeable. *** VERDICT
+  isolated: neither part a green light; BINDING CONSTRAINT confirmed = the ~9bps TAKER FEE (BTC has a
+  clean +5.8bps gross t3 reversion we still can't take as taker). The fee-beating path = MAKER entry
+  that PRE-SELECTS reverters via the confirm gate -> the ONE combined test left worth running
+  (ob-confirm gate + maker fill TOGETHER). *** docs/research/oi-cascade-study.md Tweak 3 section; logs
+  /root/runs/oiscope_ob/{ETH,BTC}_{base,obconfirm,maker}.log + _kb_imb*.log.

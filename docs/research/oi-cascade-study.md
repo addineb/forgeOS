@@ -435,3 +435,146 @@ the thr15-20 band holds net-positive on a larger sample, or (b) pairing with the
 gapscope-confirm (tweak 3) to keep count while lifting quality. ETH is dead for
 the fade in any size bucket. Logs/CSVs: /root/runs/oiscope_mag/{eth,btc}_dump.csv
 + {eth,btc}_base.log + {eth,btc}_confirm_ms*.log.
+---
+
+## Tweak 3: order-book confirm + maker-fill feasibility (isolated)
+
+Tested ALONE (exhaustion OFF, magnitude OFF). Both new parts default OFF so the
+baseline is byte-preserved (VERIFIED: with all flags off the pooled numbers
+reproduce the baseline study EXACTLY - ETH oi0.2/move5 n=335 fade@0ms -1.61
+fade@2s -1.25; BTC oi0.2/move5 n=235 fade@2s +1.03 t+1.91). Build + clippy
+(-D warnings, --all-targets) + tests all green on the box; oiscope unit tests
+11 -> 13 (2 new: confirm-revert gate + maker-fill-through, incl a no-lookahead /
+pre-peak assertion); full forgelag suite 99 -> 101 green.
+
+Reuses gapscope's order-book primitives: top-N depth `imbalance()` and the
+"trade prints through a resting level" idea (sacred core untouched).
+
+### PART A - REVERT-vs-TREND confirm gate (--ob-confirm, default OFF)
+
+THE RULE. A DOWN cascade was HIT on the BID (forced sells ate bids); an UP
+cascade was hit on the ASK. After the fire we watch whether LIQUIDITY RETURNS to
+the hit side = top-N depth imbalance shifts back toward that side. We read the
+imbalance at the fire (`imb_start`) and again at the end of a confirm window
+(`imb_end`); the toward-hit shift = `imb_end-imb_start` (down) / `imb_start-
+imb_end` (up). --ob-confirm only takes the fade if that shift >= --ob-confirm-imb
+(default 0.10); non-confirming cascades are SKIPPED (no trade). New flags:
+  --ob-confirm            enable the gate (default OFF / baseline-preserving).
+  --ob-confirm-window <d> confirm window (default 800ms).
+  --ob-confirm-imb <f>    min toward-hit imbalance shift (default 0.10).
+
+NO-LOOKAHEAD (the crux). The confirm reads book state only at the fire and at
+fire+window. Entry is DELAYED to the confirm-window-end (latency is slack here),
+and the same 0/800/2000ms delays are applied AFTER that anchor. So the entry time
+is always >= the confirm read time => the gate uses ONLY book state at-or-before
+entry. (Window 800ms <= the ~15-23s reversion half-life, so the delay costs little.)
+
+KNOB-BITE (VALID - and it is a real SELECTIVITY filter, unlike tweak1). Cell
+oi0.2/move10, varying --ob-confirm-imb, traded set moves MONOTONICALLY:
+| min-imb-shift | ETH confirmed | BTC confirmed |
+|---|---|---|
+| 0.00 | 90/174 = 52% | 47/75 = 63% |
+| 0.05 | 80/174 = 46% | 40/75 = 53% |
+| 0.10 | 75/174 = 43% | 31/75 = 41% |
+| 0.20 | 63/174 = 36% | 28/75 = 37% |
+Unlike tweak1 (exhaustion fired on 100% = timing only), the confirm gate SKIPS
+~50-64% of cascades and the count moves with the dial. It genuinely separates a
+subset. Fees: TAKER fade, ~9bps round-trip. "gross" = captured bps; NET = gross-9.
+
+A/B - ETH (gross fade bps; conf = --ob-confirm @ imb0.10/win800ms; left tail @0ms)
+| oi/move | nBase | conf% | base@0 | conf@0 | base@2s | conf@2s (t) | NET conf@2s | conf <-30%@0 | conf worst@0 |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.2/5  | 335 | 47% | -1.61 | +0.53 | -1.25 | +0.12 (t+0.13) | -8.88 | 3%  | -38.6 |
+| 0.2/10 | 174 | 43% | -3.18 | +0.54 | -2.70 | -0.49 (t-0.32) | -9.49 | 4%  | -39.4 |
+| 0.2/20 | 35  | 51% | -6.57 | -6.02 | -5.25 | -2.95 (t-0.71) | -11.95| 17% | -64.5 |
+| 0.5/5  | 104 | 51% | -2.38 | +0.66 | -0.72 | +1.35 (t+0.99) | -7.65 | 0%  | -26.1 |
+| 0.5/10 | 63  | 44% | -4.37 | -1.27 | -2.84 | -1.90 (t-0.85) | -10.90| 4%  | -32.0 |
+| 0.5/20 | 12  | 42% | -13.91| -3.75 | -4.86 | -1.68 (t-0.26) | -10.68| 0%  | -26.1 |
+
+ETH read: ob-confirm is the strongest tail-cutter yet. It LIFTS the mean by ~+2-3bps
+on every cell, cuts the worst trade from ~-78bps (baseline) to ~-39bps, and flips
+the looser cells from clearly-negative to ~flat/slightly-positive (best = 0.5/5
++1.35bps @2s, tail 0%). It is doing exactly what the thesis wanted - liquidity
+RETURNING predicts a revert, liquidity STAYING pulled = the trender tail we skip.
+BUT: t-stats are ~0-1 (not significant) and NO ETH cell clears the 9bps taker fee -
+NET of 9bps is still ~-8 to -12bps everywhere. ETH taker-fade-with-confirm: improved
+from "dead" to "flat", still NOT tradeable.
+
+A/B - BTC (gross fade bps; left tail @0ms)
+| oi/move | nBase | conf% | base@0 | conf@0 | base@2s | conf@2s (t) | NET conf@2s | conf <-30%@0 | conf worst@0 |
+|---|---|---|---|---|---|---|---|---|---|
+| 0.2/5  | 235 | 49% | +0.05 | +1.16 | +1.03 | +0.40 (t+0.52) | -8.60 | 0% | -23.0 |
+| 0.2/10 | 75  | 41% | +0.75 | +3.34 | +2.07 | +2.87 (t+1.80) | -6.13 | 0% | -13.2 |
+| 0.2/20 | 9   | 44% | +5.41 | +10.98| +5.36 | +10.93 (n~4)   | +1.93 | 0% | +10.4 |
+| 0.5/5  | 66  | 45% | -0.28 | -0.49 | +0.58 | -1.54 (t-0.88) | -10.54| 0% | -16.8 |
+| 0.5/10 | 30  | 37% | +2.29 | +5.99 | +3.01 | +5.80 (t+3.03) | -3.20 | 0% | -8.9  |
+| 0.5/20 | 3   | 33% | +11.59| +11.48| +10.64| +10.18 (n~1)   | +1.18 | 0% | +11.5 |
+
+BTC read: ob-confirm consistently LIFTS the gross mean (+2-3bps) and FIRMS the t -
+the standout is oi0.5/move10: +3.01bps t2.12 (base) -> +5.80bps t3.03 (confirm) at
+2s, tail 0%, worst -8.9bps (traded n ~11). That ~+5.8bps gross at t3 is the best
+honest, knob-bite-valid TAKER number in the whole study. BUT net of 9bps it is
+still ~-3.2bps (SUB-FEE). The only cells that clear the fee (0.2/20, 0.5/20 net
+~+1-2bps) collapse to n~1-4 over 10 days = too thin to trust (tiny-n t artifacts).
+So the confirm makes BTC cleaner/firmer but, at any trustable n, the TAKER fade is
+STILL ~3bps under the fee wall.
+
+### PART B - post-cascade MAKER-FILL feasibility (--maker-fill, MEASUREMENT ONLY)
+
+METHOD (reuses gapscope's "trade prints through a resting level"). For each
+cascade we record the aggressive HL trades over the forward window. After the
+spike peak (the reversion leg) we ask: did the tape PRINT THROUGH a resting maker
+level, in the reversion direction? Two levels: (1) the pre-cascade BASELINE and
+(2) the POST-SPIKE extreme. DOWN cascade reverts UP -> a maker SELL at the level
+fills when an aggressive BUY prints >= level; UP cascade reverts DOWN -> a maker
+BUY fills on an aggressive SELL <= level. Reported on cascades that REVERTED.
+Maker fee taken as ~1.5bps vs ~9bps taker (--maker-fee, default 1.5).
+
+| asset cell | reverted n | baseline-level FILLED | post-spike FILLED | gross revert | NET maker(-1.5) | NET taker(-9) |
+|---|---|---|---|---|---|---|
+| ETH 0.2/5  | 203 | 126/203 = 62% | 203/203 = 100% | +25.05 | +23.55 | +16.05 |
+| ETH 0.2/10 | 104 | 61/104  = 59% | 104/104 = 100% | +31.77 | +30.27 | +22.77 |
+| ETH 0.5/10 | 34  | 19/34   = 56% | 34/34   = 100% | +26.18 | +24.68 | +17.18 |
+| BTC 0.2/5  | 138 | 85/138  = 62% | 138/138 = 100% | +17.83 | +16.33 | +8.83  |
+| BTC 0.2/10 | 45  | 24/45   = 53% | 45/45   = 100% | +23.18 | +21.68 | +14.18 |
+| BTC 0.5/10 | 17  | 12/17   = 71% | 17/17   = 100% | +23.42 | +21.92 | +14.42 |
+
+HONEST reading of Part B (do NOT over-read these big positives):
+- The 100% post-spike fill is MECHANICAL/tautological - the spike extreme is by
+  definition a traded price, so "a trade printed through it on the way back" is
+  ~always true. It only says a maker resting AT the spike level always gets filled
+  (it is where the forced flow printed). Ignore it as an edge signal.
+- The MEANINGFUL number is the BASELINE-level fill: in ~53-71% of reverted cascades
+  the recovery actually TRADES BACK THROUGH the pre-cascade level (a resting maker
+  there fills); the other ~30-45% re-quote back WITHOUT trading through = the
+  re-quote VACUUM gapscope warned about. So post-cascade HL is NOT a total vacuum -
+  a maker fills the majority of reverters, partially softening the gapscope worry.
+- The "+18-32bps gross, net maker +16-30bps" looks fee-beating, but it is measured
+  ONLY on cascades that REVERTED. Selecting on the revert outcome is LOOKAHEAD; and
+  revert_bps is the idealized peak recovery (perfect exit), and it EXCLUDES the
+  ~40-50% of cascades that TREND (where a resting maker fills and then gets run
+  over). So this is a FEASIBILITY UPPER BOUND, not a tradeable number.
+
+### Verdicts (isolated Tweak 3)
+(A) Does ob-confirm make the TAKER fade clear fees? NO - but it is the best tweak
+    so far. It is a REAL selectivity filter (skips ~50-64%, knob-bite monotonic,
+    unlike tweak1), it cuts ETH's worst tail roughly in half (-78 -> -39bps) and
+    lifts every cell ~+2-3bps, and it firms BTC oi0.5/move10 to +5.8bps gross t3.03
+    (best honest taker gross in the study). But at trustable n NEITHER asset clears
+    the ~9bps taker round-trip: ETH still net ~-8 to -12, BTC still net ~-3. Only
+    n~1-4 cells clear it. Taker fade with confirm = still sub-fee.
+(B) Would a MAKER fade FILL on BTC reverting cascades, and does maker-fee math turn
+    BTC's reversion net-positive? FILL: YES, partially - a maker resting at the
+    pre-cascade baseline fills in ~53-71% of reverted BTC cascades (the rest =
+    re-quote vacuum). FEE MATH: on reverters the maker fee (1.5bps) is trivially
+    beaten by the ~18-23bps reversion - BUT that is conditioned on reversion
+    (lookahead) and ignores the trender tail, so it is an upper bound, not proof.
+    The honest takeaway: maker fills DO happen post-cascade (not a pure vacuum), and
+    the binding constraint remains the same as tweak2 - it is the TAKER FEE, and the
+    fee-beating path (maker entry that PRE-SELECTS reverters via the confirm gate)
+    is now the one combined test left worth running. Isolated, neither part is a
+    green light; together (ob-confirm gate PLUS maker fill) is the next experiment.
+
+Knob-bite: confirm dial moves the trade set monotonically (52->36% ETH, 63->37%
+BTC across imb 0.00->0.20). Logs: /root/runs/oiscope_ob/{ETH,BTC}_{base,obconfirm,
+maker}.log + {ETH,BTC}_kb_imb*.log.
