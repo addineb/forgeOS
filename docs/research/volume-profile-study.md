@@ -66,3 +66,30 @@ NEXT: build the absorption/impact orderflow confirm AT the LVN and re-test (loca
 confirm), 61d train + 36d OOS, fee 6. Honest caveat: depth-imbalance confirms have been
 weak in past studies, but those were at arbitrary edges; this tests it at a real
 structural level = the trader's actual method.
+## Orderflow CONFIRM at the LVN (method-1 test) - DOES NOT separate
+
+vpscope --confirm-window 20s: after price touches the LVN, read the aggressive flow
+over the next 20s (no-lookahead, entry at the window-end) - ABSORBED = heavy push-
+direction volume but price does NOT move away (low impact -> hypothesised REVERT) vs
+PUSH-THROUGH = price ran away on little volume (high impact -> continue). 61d train +
+36d OOS, ETH+BTC, 1h & 2h profiles, fee 6.
+
+### VERDICT (bad): the confirm does NOT work - flat-to-INVERTED, no usable separation.
+- P(reversion | absorbed) is at or BELOW the base rate in almost every cell (lift -2
+  to -14pp; only a couple of tiny-n cells positive). The hypothesis (absorption ->
+  revert) does not hold - if anything it is mildly inverted.
+- The CONFIRMED trade (enter after the 20s confirm, gated absorbed) is net-NEGATIVE
+  everywhere (-3.8 to -9bps net of 6); the "absorbed" gate is usually WORSE than
+  "push-through". On BTC the push-through cells are the less-bad ones (gross +2-3,
+  still net-negative) = the opposite of the thesis = noise, not signal.
+
+### What this means
+This is the SECOND natural orderflow confirm to fail to separate reversion from
+continuation (the first = depth-imbalance, failed in every earlier study). A simple,
+single-window orderflow metric at a level does NOT add directional edge in this data.
+The LVN stays a coin flip. Either the confirm must be a DIFFERENT observable (CVD
+divergence, absorption-at-a-specific-price, resting-wall stacking/spoofing, a multi-bar
+rejection pattern) or the trader's discretionary read is not reducible to one window
+metric. Next move requires the trader to name the SPECIFIC observable he reads, so we
+test that one precisely rather than guessing (guessing = overfitting). vpscope confirm
+infra is in place and reusable. Logs /root/runs/vpcf/.

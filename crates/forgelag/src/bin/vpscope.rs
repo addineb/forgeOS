@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use forge_book::OrderBook;
-use forge_core::{Event, EventKind, UnixNanos};
+use forge_core::{Event, EventKind, Side, UnixNanos};
 use forgelag::{load_window, FeedConfig, LagEvent, LagKind, Role};
 
 // ----------------------------------------------------------------------------
@@ -288,6 +288,57 @@ fn classify_vp(path: &[(u64, f64)], entry_ts: u64, dist_to_poc: f64, long: bool,
     }
     (class, max_fav, max_adv)
 }
+
+/// p-th percentile (0..100) of a slice (sorts a copy). 0.0 for empty. Pure.
+#[must_use]
+fn percentile(v: &[f64], p: f64) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mut s: Vec<f64> = v.to_vec();
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let idx = ((p / 100.0) * (s.len() as f64 - 1.0)).round() as usize;
+    s[idx.min(s.len() - 1)]
+}
+
+/// ORDERFLOW CONFIRM over [fire_ts, anchor_ts] (no-lookahead, window-end <= entry).
+/// `push_buy` = the aggressor side that pushes AWAY from value (continuation);
+/// `away_up` = the away direction is UP. Returns (push_vol, away_disp_bps,
+/// impact_ratio, absorption_ratio): ABSORBED = lots of push volume but price did
+/// NOT move away (low impact / high absorption -> predicts REVERT); PUSH-THROUGH =
+/// price ran away on little volume (high impact -> predicts CONTINUE). Pure.
+#[must_use]
+fn confirm_flow(
+    trades: &[(u64, f64, bool, f64)],
+    path: &[(u64, f64)],
+    fire_ts: u64,
+    anchor_ts: u64,
+    fire_px: f64,
+    away_up: bool,
+    push_buy: bool,
+) -> (f64, f64, f64, f64) {
+    let eps = 1e-9;
+    let mut pv = 0.0f64;
+    for &(ts, _px, buy, q) in trades {
+        if ts < fire_ts || ts > anchor_ts {
+            continue;
+        }
+        if buy == push_buy && q.is_finite() && q > 0.0 {
+            pv += q;
+        }
+    }
+    let mut end_px = fire_px;
+    for &(ts, px) in path {
+        if ts < fire_ts || ts > anchor_ts {
+            continue;
+        }
+        end_px = px;
+    }
+    let s = if away_up { 1.0 } else { -1.0 };
+    let away = if fire_px > 0.0 { s * (end_px - fire_px) / fire_px * 10_000.0 } else { 0.0 };
+    let absn = away.abs().max(eps);
+    (pv, away, absn / pv.max(eps), pv / absn)
+}
 // ----------------------------------------------------------------------------
 // config + one detected LVN reversion + per-day replay
 // ----------------------------------------------------------------------------
@@ -308,6 +359,7 @@ struct Cfg {
     min_dist_bps: f64,
     min_trades: usize,
     fee_bps: f64,
+    confirm_ns: u64,
 }
 
 /// One detected LVN-reversion candidate + its forward characterisation (scalars).
@@ -328,6 +380,11 @@ struct Det {
     revert_mag: f64,
     cont_mag: f64,
     revert_take: Option<f64>,
+    // orderflow confirm over [fire, anchor] (no-lookahead) + the confirmed-entry trade.
+    push_vol: f64,
+    impact_ratio: f64,
+    absorption_ratio: f64,
+    revert_take_confirm: Option<f64>,
 }
 
 #[derive(Default)]
@@ -338,6 +395,7 @@ struct PendingV {
     poc_px: f64,
     dist_to_poc_bps: f64,
     lvn_vol_frac: f64,
+    anchor_ts: u64,
     end_ts: u64,
 }
 
@@ -363,6 +421,7 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, nbins: usize, lvn
     let mut blocked_until = 0u64;
     let mut cur = PendingV::default();
     let mut cur_path: Vec<(u64, f64)> = Vec::new();
+    let mut cur_trades: Vec<(u64, f64, bool, f64)> = Vec::new();
     let mut out: Vec<Det> = Vec::new();
 
     for ev in evs {
@@ -385,10 +444,15 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, nbins: usize, lvn
                     }
                 }
             }
-            (Role::Exec, LagKind::Trade) if ev.side.is_some() => {
-                let q = ev.qty.to_f64();
-                if q > 0.0 {
-                    vptrades.push_back((now, ev.price.to_f64(), q));
+            (Role::Exec, LagKind::Trade) => {
+                if let Some(aggr) = ev.side {
+                    let q = ev.qty.to_f64();
+                    if q > 0.0 {
+                        vptrades.push_back((now, ev.price.to_f64(), q));
+                        if matches!(state, St::Collecting) {
+                            cur_trades.push((now, ev.price.to_f64(), aggr == Side::Bid, q));
+                        }
+                    }
                 }
             }
             _ => {}
@@ -414,6 +478,18 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, nbins: usize, lvn
                     let (class, rev_mag, cont_mag) =
                         classify_vp(&cur_path, cur.fire_ts, cur.dist_to_poc_bps, cur.long, cfg.class_thr_bps);
                     let revert_take = first_touch(&cur_path, cur.fire_ts, cur.long, cur.dist_to_poc_bps, cfg.stop_bps, cfg.hold_ns);
+                    // ORDERFLOW CONFIRM over [fire, anchor] (push = away from value).
+                    let push_buy = !cur.long;
+                    let (push_vol, _disp, impact_ratio, absorption_ratio) =
+                        confirm_flow(&cur_trades, &cur_path, cur.fire_ts, cur.anchor_ts, cur.entry_px, !cur.long, push_buy);
+                    // CONFIRMED trade: enter at the anchor (after the confirm window) toward POC.
+                    let revert_take_confirm = match cur_path.iter().find(|&&(ts, _)| ts >= cur.anchor_ts) {
+                        Some(&(_, epx)) if epx > 0.0 => {
+                            let dist_a = (cur.poc_px - epx).abs() / epx * 10_000.0;
+                            first_touch(&cur_path, cur.anchor_ts, cur.long, dist_a, cfg.stop_bps, cfg.hold_ns)
+                        }
+                        _ => None,
+                    };
                     out.push(Det {
                         day: day.to_string(),
                         l_ns,
@@ -429,8 +505,13 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, nbins: usize, lvn
                         revert_mag: rev_mag,
                         cont_mag,
                         revert_take,
+                        push_vol,
+                        impact_ratio,
+                        absorption_ratio,
+                        revert_take_confirm,
                     });
                     cur_path.clear();
+                    cur_trades.clear();
                     state = St::Armed;
                 }
             }
@@ -454,9 +535,11 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, nbins: usize, lvn
                                         poc_px: pf.poc_px,
                                         dist_to_poc_bps: dist,
                                         lvn_vol_frac: pf.vol_frac(m),
-                                        end_ts: now.saturating_add(cfg.forward_ns),
+                                        anchor_ts: now.saturating_add(cfg.confirm_ns),
+                                        end_ts: now.saturating_add(cfg.confirm_ns).saturating_add(cfg.forward_ns),
                                     };
                                     cur_path.clear();
+                                    cur_trades.clear();
                                     cur_path.push((now, m));
                                     blocked_until = now.saturating_add(cfg.cooldown_ns);
                                     state = St::Collecting;
@@ -535,6 +618,29 @@ fn report_cell(label: &str, ds: &[&Det], cfg: &Cfg, num_days: usize) {
     // split by distance (is a FAR-from-value node a better fade?).
     let med_d = median(&dist);
     report_trades("revert-TAKER (far>=med dist)", &caps_of(ds, |s| if s.dist_to_poc_bps >= med_d { s.revert_take } else { None }), cfg.fee_bps);
+
+    // ---- ORDERFLOW CONFIRM (method-1): does ABSORPTION at the LVN predict reversion? ----
+    let decided: Vec<&&Det> = ds.iter().filter(|s| s.class != 0).collect();
+    if decided.len() >= 20 {
+        let base_rev = decided.iter().filter(|s| s.class == 1).count() as f64 / decided.len() as f64 * 100.0;
+        let imps: Vec<f64> = decided.iter().map(|s| s.impact_ratio).collect();
+        println!(
+            "ORDERFLOW CONFIRM (absorption over [fire,+{}], no-lookahead): base reversion {:.0}%   median impact {:.4}",
+            fmt_ns(cfg.confirm_ns), base_rev, median(&imps)
+        );
+        for pc in [20.0, 40.0, 60.0] {
+            let thr = percentile(&imps, pc);
+            let w: Vec<&&Det> = decided.iter().filter(|s| s.impact_ratio <= thr).copied().collect();
+            let pr = if w.is_empty() { 0.0 } else { w.iter().filter(|s| s.class == 1).count() as f64 / w.len() as f64 * 100.0 };
+            println!("    ABSORBED (impact<=p{:.0} {:.4})  P(reversion) {:.0}%  (n={})  vs base {:.0}%  lift {:+.0}pp", pc, thr, pr, w.len(), base_rev, pr - base_rev);
+        }
+        let all_imps: Vec<f64> = ds.iter().map(|s| s.impact_ratio).collect();
+        let med_imp = median(&all_imps);
+        println!("CONFIRMED reversion trade (taker, enter at anchor AFTER the confirm window; net {:.1}bps):", cfg.fee_bps);
+        report_trades("revert-confirm (all)", &caps_of(ds, |s| s.revert_take_confirm), cfg.fee_bps);
+        report_trades("revert-confirm (absorbed)", &caps_of(ds, |s| if s.impact_ratio <= med_imp { s.revert_take_confirm } else { None }), cfg.fee_bps);
+        report_trades("revert-confirm (push-thru)", &caps_of(ds, |s| if s.impact_ratio > med_imp { s.revert_take_confirm } else { None }), cfg.fee_bps);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -559,6 +665,7 @@ fn run() -> Result<(), String> {
         min_dist_bps: 15.0,
         min_trades: 200,
         fee_bps: 6.0,
+        confirm_ns: 20_000_000_000,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![2 * 3_600_000_000_000];
@@ -593,6 +700,7 @@ fn run() -> Result<(), String> {
             "--min-dist" => cfg.min_dist_bps = val()?.parse().map_err(|e| format!("min-dist: {e}"))?,
             "--min-trades" => cfg.min_trades = val()?.parse().map_err(|e| format!("min-trades: {e}"))?,
             "--fee" => cfg.fee_bps = val()?.parse().map_err(|e| format!("fee: {e}"))?,
+            "--confirm-window" => cfg.confirm_ns = parse_dur(&val()?)?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -735,6 +843,23 @@ mod tests {
         let (class, _fav, adv) = classify_vp(&path, 0, 100.0, false, 40.0);
         assert_eq!(class, -1, "ran away = continuation");
         assert!(adv > 40.0, "adverse excursion measured, got {adv}");
+    }
+
+    #[test]
+    fn confirm_flow_absorbed_vs_push() {
+        // SHORT reversion (price above value, away = UP, push aggressor = BUY).
+        // ABSORBED: heavy aggressive BUY volume but price barely moved up.
+        let trades = vec![(1_000_000_000u64, 100.0, true, 100.0), (2_000_000_000, 100.0, true, 100.0)];
+        let path = vec![(0u64, 100.0), (3_000_000_000, 100.001)];
+        let (pv, _away, impact, absn) = confirm_flow(&trades, &path, 0, 3_000_000_000, 100.0, true, true);
+        assert!((pv - 200.0).abs() < 1e-9, "push volume counted, got {pv}");
+        assert!(impact < 0.1, "absorbed = low impact, got {impact}");
+        assert!(absn > 50.0, "absorbed = high absorption, got {absn}");
+        // PUSH-THROUGH: little volume, big up move -> high impact.
+        let trades2 = vec![(1_000_000_000u64, 100.0, true, 1.0)];
+        let path2 = vec![(0u64, 100.0), (3_000_000_000, 101.0)];
+        let (_pv2, _a2, impact2, _ab2) = confirm_flow(&trades2, &path2, 0, 3_000_000_000, 100.0, true, true);
+        assert!(impact2 > 50.0, "easy push = high impact, got {impact2}");
     }
 
     #[test]

@@ -707,3 +707,14 @@ reproducible, coinflip loses on real data.
   location+confirm on 61d train + 36d OOS at fee 6. Caveat: depth-imbalance confirms were weak before
   but at arbitrary edges; LVN is a real structural level = fair test of his method. docs/research/
   volume-profile-study.md.
+- VP LVN ORDERFLOW CONFIRM (method-1, vpscope --confirm-window 20s: absorption=heavy push-vol+low
+  price-impact -> hypothesised REVERT, vs push-through=high impact -> continue; entry at window-end,
+  no-lookahead; clippy+7 tests green) = DOES NOT SEPARATE. 61d train + 36d OOS, ETH+BTC, 1h/2h. Bad:
+  P(reversion|absorbed) at/BELOW base in nearly every cell (lift -2..-14pp; hypothesis flat-to-INVERTED);
+  CONFIRMED trade net-negative everywhere (-3.8..-9 net of 6bps), "absorbed" gate usually WORSE than
+  "push-through" (BTC push-thru gross +2-3 = opposite of thesis = noise). SECOND natural orderflow
+  confirm to fail to separate (first = depth-imbalance, failed every prior study). A simple single-window
+  orderflow metric at a level adds NO directional edge here; LVN stays a coin flip. NEXT requires the
+  trader to NAME the specific observable he reads (CVD divergence / absorption-at-price / resting-wall
+  stacking-spoof / multi-bar rejection) so we test THAT precisely (blind variant-hunting = overfit).
+  vpscope confirm infra reusable. docs/research/volume-profile-study.md; logs /root/runs/vpcf/.
