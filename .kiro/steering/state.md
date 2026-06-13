@@ -678,3 +678,16 @@ reproducible, coinflip loses on real data.
   sample caught the overfit BEFORE risking euros (process working). *** DURABLE/REUSABLE: (1) reclaim entry,
   (2) structural wick-stop, (3) LESSON: a 10-day separator MUST be re-checked at 60d+/OOS before trust.
   0 euros. docs/research/sweep-study.md "Test A @ SCALE" section; logs /root/runs/rcval/.
+- VOLUME-PROFILE LVN MEAN-REVERSION (NEW tool vpscope, branch forgelag, analysis-only, sacred core
+  untouched; rolling NO-LOOKAHEAD volume profile -> POC/value-area/LVN; clippy+6 tests green) STEP 1
+  (location ALONE, taker) = NO EDGE at scale. Built per trader's LVN-reversion idea. 61d train Nov-Dec25
+  + 36d OOS Feb-Jun26, ETH+BTC, grid lookback{1,2,3,4h}x lvn-frac{0.15,0.25}. Bad: revert-TAKER "all"
+  gross ~0 EVERY cell (-4..+1.6bps), NET -8..-13 after 9bps; win 47-62% but RR 0.65-1.0 (reach-POC
+  target often unmet, losers run). The 2-day smoke (+5-6 net) was SMALL-SAMPLE NOISE - confirmed
+  instantly at scale (sweep lesson again). Mild CONSISTENT structure: shorter lookback (1h) reverts more
+  (55-58%, holds train+OOS); BTC "far-from-value" LVNs gross-positive BOTH periods (+2..+6) but BELOW
+  the fee; ETH thin/far sign-flips train<->OOS = noise. SAME WALL = ~9bps taker vs ~0-6bps gross.
+  Location alone NOT tradeable as taker. NEXT (planned step2 = add exhaustion timing) is a LONG SHOT
+  (location gross~0 + exhaustion already collapsed at scale); honest = taker microstructure @9bps
+  structurally dead, escapes = lower-fee/maker (but LVN=thin=adverse sel) or much bigger moves.
+  docs/research/volume-profile-study.md; logs /root/runs/vpval/.
