@@ -291,7 +291,7 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[forgelag::LagEvent]) -> Vec<Disloc> {
         }
 
         // ---- oracle observe (maintains the validated rolling baseline) ----
-        let ctx = LagCtx { now, exec_book: &book, ref_px, funding: 0.0, lead_px: 0.0, position_qty: 0 };
+        let ctx = LagCtx { now, exec_book: &book, ref_px, funding: 0.0, oi: 0.0, lead_px: 0.0, position_qty: 0 };
         oracle.observe(&ctx);
 
         // ---- event-resolution instantaneous dev using the oracle baseline ----

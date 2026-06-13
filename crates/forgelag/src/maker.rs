@@ -973,7 +973,7 @@ mod quote_tests {
     // tests never call observe (they force the oracle), so the book is just a
     // placeholder to satisfy the borrow.
     fn ctx(now: u64, pos: i64, book: &OrderBook) -> LagCtx<'_> {
-        LagCtx { now, exec_book: book, ref_px: 0.0, funding: 0.0, lead_px: 0.0, position_qty: pos }
+        LagCtx { now, exec_book: book, ref_px: 0.0, funding: 0.0, oi: 0.0, lead_px: 0.0, position_qty: pos }
     }
 
     fn qm(c: QuoteConfig, pos_cap: i64, skew: f64, q: i64) -> QuoteManager {
@@ -1427,7 +1427,7 @@ mod maker_quoter_tests {
     // ref_px 0.0 so the on_event observe() is a no-op for the oracle (these unit
     // tests force the oracle directly); the book is just a borrow placeholder.
     fn ctx(now: u64, pos: i64, book: &OrderBook) -> LagCtx<'_> {
-        LagCtx { now, exec_book: book, ref_px: 0.0, funding: 0.0, lead_px: 0.0, position_qty: pos }
+        LagCtx { now, exec_book: book, ref_px: 0.0, funding: 0.0, oi: 0.0, lead_px: 0.0, position_qty: pos }
     }
 
     #[test]
@@ -1904,7 +1904,7 @@ mod maker_quoter_stale_tests {
     }
 
     fn ctx(now: u64, pos: i64, book: &OrderBook) -> LagCtx<'_> {
-        LagCtx { now, exec_book: book, ref_px: 0.0, funding: 0.0, lead_px: 0.0, position_qty: pos }
+        LagCtx { now, exec_book: book, ref_px: 0.0, funding: 0.0, oi: 0.0, lead_px: 0.0, position_qty: pos }
     }
 
     // Task-7 scenario: while IN POSITION with a STALE oracle, the strategy must

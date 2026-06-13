@@ -441,3 +441,21 @@ reproducible, coinflip loses on real data.
   risked. docs/research/gap-close-study.md (+ per-dislocation CSVs on box /root/runs/gapscope/).
   NEXT LEAD = Type C forced-flow / LIQUIDATION CASCADES (CHD liq data) - a forced-flow edge that
   does not need to out-race a reversion or provide liquidity into a vacuum.
+- *** NEW LEAD: OI-DROP FORCED-FLOW on HL (2026-06-12, liquidation-cascade pivot) ***. Original
+  plan (CHD HL liquidations) = DEAD: CHD does NOT carry Hyperliquid liquidations (verified airtight
+  - Oct-10 2025 mega-cascade shows 0 HL liq rows while Binance liq = thousands same day; ABSENCE not
+  sparseness). CHD HL ids = hyperliquid_futures/_spot only, no liq feed. DO NOT re-shop HL liq on CHD.
+  CHD liquidations DO exist for binance_futures etc (schema: received_time ns, event_time ms, side
+  BUY/SELL=liq order side, price, quantity, ...). CHD FILE-PATH FORMAT (corrected, from SDK):
+  <exchange>/<YYYY-MM-DD>/<HH>/<SYMBOL>_<type>.parquet.zst (HH is a DIR, file=SYMBOL_type; NOT
+  <hh>_<type>). PIVOT CHOSEN (option 1): reconstruct the liquidation footprint from HL-NATIVE
+  open_interest (CHD HAS hyperliquid_futures open_interest, dense ~83k rows/day; cols received_time,
+  symbol, sum_open_interest, sum_open_interest_value, timestamp). THESIS: sharp OI DROP + price SPIKE
+  + one-sided aggressive flow = forced deleveraging (cascade) -> big SLOWER-reverting overshoot we can
+  REACT to (latency far less binding than the Lagshot micro-race - different edge shape, doesn't repeat
+  the trap). CAVEAT: OI drop can be voluntary deleverage too -> require OI-drop + price-spike + one-
+  sided flow TOGETHER as the high-confidence cascade signal. Rejected option 2 (CEX liq lead + trade HL
+  leg) = risks repeating Lagshot latency trap. ETH first then BTC. PLAN: (A) converter open_interest
+  stage + pull ETH/BTC (same 10 days) + feed.rs OI event wiring; (B) cascade study (oiscope) = detect
+  cascades + characterize overshoot/reversion (time, size, tradeable at our latency?); (C) if pulse ->
+  spec + build with honesty gates. gapscope is reusable for the post-cascade book behavior.

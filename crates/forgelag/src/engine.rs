@@ -30,6 +30,8 @@ pub struct LagCtx<'a> {
     pub ref_px: f64,
     /// Latest HL funding rate (per-hour rate), 0.0 until the first funding tick.
     pub funding: f64,
+    /// Latest HL open interest (coin units), 0.0 until the first OI tick.
+    pub oi: f64,
     /// Latest cross-asset LEAD price (e.g. BTC), 0.0 until the first lead trade.
     pub lead_px: f64,
     /// Our signed position (raw qty): + long, - short.
@@ -267,6 +269,7 @@ pub struct LagEngine<S: LagStrategy> {
     ref_px: f64,
     ref_last: Vec<f64>,
     funding: f64,
+    oi: f64,
     lead_px: f64,
     acct: Account,
     strat: S,
@@ -302,6 +305,7 @@ impl<S: LagStrategy> LagEngine<S> {
             ref_px: 0.0,
             ref_last: Vec::new(),
             funding: 0.0,
+            oi: 0.0,
             lead_px: 0.0,
             acct: Account::new(),
             strat,
@@ -553,6 +557,7 @@ impl<S: LagStrategy> LagEngine<S> {
             (Role::Lead, LagKind::Trade) => self.lead_px = ev.price.to_f64(),
             (Role::Lead, LagKind::BookDelta) => {}
             (_, LagKind::Funding) => self.funding = ev.aux,
+            (_, LagKind::OpenInterest) => self.oi = ev.aux,
         }
 
         self.buf.clear();
@@ -562,6 +567,7 @@ impl<S: LagStrategy> LagEngine<S> {
                 exec_book: &self.book,
                 ref_px: self.ref_px,
                 funding: self.funding,
+                oi: self.oi,
                 lead_px: self.lead_px,
                 position_qty: self.acct.net_qty(),
             };

@@ -47,6 +47,8 @@ pub enum LagKind {
     Trade,
     /// A funding-rate update (rate carried in aux).
     Funding,
+    /// A Hyperliquid open-interest update (OI in coin units carried in aux).
+    OpenInterest,
 }
 
 /// One normalized multi-venue event. Timestamps are Unix NANOSECONDS.
@@ -214,6 +216,31 @@ fn push_funding(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), St
     Ok(())
 }
 
+fn push_oi(path: &Path, lat: u64, out: &mut Vec<LagEvent>) -> Result<(), String> {
+    for b in read_batches(path)? {
+        let ts = col_i64(&b, "ts")?;
+        let oi = col_f64(&b, "oi")?;
+        for i in 0..b.num_rows() {
+            let exch = ms_to_ns(ts.value(i))?;
+            // HL-native conditioning data (like funding): not a tradeable leg, so
+            // Role::Reference. The engine match ignores role for OpenInterest. OI (coin
+            // units) rides in aux; price/qty are zero (oi_usd is unused - CHD omits it).
+            out.push(LagEvent {
+                role: Role::Reference,
+                kind: LagKind::OpenInterest,
+                exch_ts: exch,
+                local_ts: exch.saturating_add(lat),
+                side: None,
+                price: Price::from_raw(0),
+                qty: Qty::from_raw(0),
+                src: 0,
+                aux: oi.value(i),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Load + merge one day window into a deterministic, time-ordered stream.
 ///
 /// # Errors
@@ -251,6 +278,11 @@ pub fn load_window(cfg: &FeedConfig) -> Result<Vec<LagEvent>, String> {
         let fnd = cfg.root.join(&cfg.coin).join("funding").join(&cfg.date).join(format!("{hh}.parquet"));
         if fnd.exists() {
             push_funding(&fnd, cfg.exec_latency_ns, &mut evs)?;
+        }
+        // EXEC venue (HL) open interest -> forced-flow / cascade conditioning.
+        let oi = cfg.root.join(&cfg.coin).join("oi").join(&cfg.date).join(format!("{hh}.parquet"));
+        if oi.exists() {
+            push_oi(&oi, cfg.exec_latency_ns, &mut evs)?;
         }
     }
     evs.sort_by(|a, b| {
