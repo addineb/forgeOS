@@ -691,3 +691,19 @@ reproducible, coinflip loses on real data.
   (location gross~0 + exhaustion already collapsed at scale); honest = taker microstructure @9bps
   structurally dead, escapes = lower-fee/maker (but LVN=thin=adverse sel) or much bigger moves.
   docs/research/volume-profile-study.md; logs /root/runs/vpval/.
+- *** VP LVN RESEARCH-ON-FILES + FEE CORRECTION (2026-06-13, vpscope --fee configurable [default 6 =
+  taker-in+maker-out], --dump added; clippy+6 tests green). CORRECTS the prior "fee wall" framing. ***
+  Dumped 661 ETH LVN detections (61d, 1h profile) and analysed the file directly: MOVES ARE BIG (mean
+  favourable toward value 70bps, mean adverse away 76bps) so a 6-9bps fee is TRIVIAL at this scale -
+  the trader is RIGHT that 5/15/1h structure covers fees. The real binding constraint is DIRECTION: a
+  raw LVN touch is a ~COIN FLIP (fav 70 ~= adv 76, ratio 0.92; bigger excursion toward value 327 vs
+  away 334 = 49/51); every target/stop combo (T30-60 x S15-30) approx gross ~ -1..+0.2bps, clean-losses
+  ~2x clean-wins (thin nodes get traversed as often as they reject - that's WHY they're thin). No fee
+  or stop tuning fixes a coin flip. *** This VALIDATES trader method-1: the level is only the TRIGGER
+  (coin flip alone); the EDGE is the ORDERFLOW CONFIRM (absorption/rejection on heavy volume = revert
+  vs push-through on thin = continue) he adds BY HAND and we never mechanised at the LVN. SELF-CORRECTION:
+  I over-attributed failures to fees; at his scale the move covers the fee, the binding constraint is
+  the directional confirm. *** NEXT = build absorption/impact orderflow confirm AT the LVN, re-test
+  location+confirm on 61d train + 36d OOS at fee 6. Caveat: depth-imbalance confirms were weak before
+  but at arbitrary edges; LVN is a real structural level = fair test of his method. docs/research/
+  volume-profile-study.md.

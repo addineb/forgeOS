@@ -22,9 +22,6 @@ use forge_book::OrderBook;
 use forge_core::{Event, EventKind, UnixNanos};
 use forgelag::{load_window, FeedConfig, LagEvent, LagKind, Role};
 
-/// Full taker round-trip fee (taker in + taker out) in bps (realistic HL).
-const TAKER_RT_FEE_BPS: f64 = 9.0;
-
 // ----------------------------------------------------------------------------
 // small parse / math helpers (mirror sweepscope/oiscope conventions)
 // ----------------------------------------------------------------------------
@@ -310,6 +307,7 @@ struct Cfg {
     stop_bps: f64,
     min_dist_bps: f64,
     min_trades: usize,
+    fee_bps: f64,
 }
 
 /// One detected LVN-reversion candidate + its forward characterisation (scalars).
@@ -530,13 +528,13 @@ fn report_cell(label: &str, ds: &[&Det], cfg: &Cfg, num_days: usize) {
         median(&rmag), median(&cmag), cfg.stop_bps
     );
     println!("REVERSION trade (taker, enter at the LVN toward POC; run-overs IN, net 9bps):");
-    report_trades("revert-TAKER (all)", &caps_of(ds, |s| s.revert_take), TAKER_RT_FEE_BPS);
+    report_trades("revert-TAKER (all)", &caps_of(ds, |s| s.revert_take), cfg.fee_bps);
     // split by node thinness (does a THINNER node revert better? = knob-bite probe).
     let med_vf = median(&vf);
-    report_trades("revert-TAKER (thin<=med)", &caps_of(ds, |s| if s.lvn_vol_frac <= med_vf { s.revert_take } else { None }), TAKER_RT_FEE_BPS);
+    report_trades("revert-TAKER (thin<=med)", &caps_of(ds, |s| if s.lvn_vol_frac <= med_vf { s.revert_take } else { None }), cfg.fee_bps);
     // split by distance (is a FAR-from-value node a better fade?).
     let med_d = median(&dist);
-    report_trades("revert-TAKER (far>=med dist)", &caps_of(ds, |s| if s.dist_to_poc_bps >= med_d { s.revert_take } else { None }), TAKER_RT_FEE_BPS);
+    report_trades("revert-TAKER (far>=med dist)", &caps_of(ds, |s| if s.dist_to_poc_bps >= med_d { s.revert_take } else { None }), cfg.fee_bps);
 }
 
 // ----------------------------------------------------------------------------
@@ -560,12 +558,14 @@ fn run() -> Result<(), String> {
         stop_bps: 40.0,
         min_dist_bps: 15.0,
         min_trades: 200,
+        fee_bps: 6.0,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![2 * 3_600_000_000_000];
     let mut nbins_list: Vec<usize> = vec![50];
     let mut lvn_fracs: Vec<f64> = vec![0.20];
     let mut hold: Option<u64> = None;
+    let mut dump: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -592,6 +592,8 @@ fn run() -> Result<(), String> {
             "--stop" => cfg.stop_bps = val()?.parse().map_err(|e| format!("stop: {e}"))?,
             "--min-dist" => cfg.min_dist_bps = val()?.parse().map_err(|e| format!("min-dist: {e}"))?,
             "--min-trades" => cfg.min_trades = val()?.parse().map_err(|e| format!("min-trades: {e}"))?,
+            "--fee" => cfg.fee_bps = val()?.parse().map_err(|e| format!("fee: {e}"))?,
+            "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
     }
@@ -650,6 +652,24 @@ fn run() -> Result<(), String> {
         println!("\n==================== L={}  nbins={b}  lvn-frac={f} ====================", fmt_ns(l));
         let all: Vec<&Det> = pooled[ci].iter().collect();
         report_cell("POOLED (all days)", &all, &cfg, num_days);
+    }
+    if let Some(path) = &dump {
+        use std::io::Write;
+        let mut fh = std::fs::File::create(path).map_err(|e| format!("dump: {e}"))?;
+        writeln!(fh, "day,l_ns,nbins,lvn_frac,fire_ts,long,entry_px,poc_px,dist_to_poc_bps,lvn_vol_frac,class,revert_mag,cont_mag,revert_take").map_err(|e| format!("dump: {e}"))?;
+        for col in &pooled {
+            for c in col {
+                writeln!(
+                    fh,
+                    "{},{},{},{},{},{},{:.4},{:.4},{:.2},{:.4},{},{:.2},{:.2},{}",
+                    c.day, c.l_ns, c.nbins, c.lvn_frac, c.fire_ts, c.long, c.entry_px, c.poc_px,
+                    c.dist_to_poc_bps, c.lvn_vol_frac, c.class, c.revert_mag, c.cont_mag,
+                    c.revert_take.map_or("NA".to_string(), |x| format!("{x:.3}"))
+                ).map_err(|e| format!("dump: {e}"))?;
+            }
+        }
+        let total: usize = pooled.iter().map(Vec::len).sum();
+        eprintln!("dumped {total} detections to {path}");
     }
     Ok(())
 }

@@ -37,3 +37,32 @@ collapsed at scale in the sweep study. If tried, gate hard and judge on net + OO
 Deeper truth reasserted: taker microstructure at 9bps is structurally dead for us; the
 only escapes are lower fees / maker (but an LVN is thin = adverse selection) or much
 bigger per-trade moves. Logs /root/runs/vpval/.
+## RESEARCH-ON-FILES correction (fee is NOT the wall here; direction is)
+
+Made the fee configurable (--fee, default 6 = taker-in + maker-out for a target exit)
+and dumped every detection (--dump). Analysed 661 ETH LVN detections (61 train days,
+1h profile) directly from the file.
+
+KEY FINDING (corrects the earlier "fee wall" framing):
+- The MOVES ARE BIG: mean favourable excursion toward value = 70bps, mean adverse
+  (away) = 76bps. A 6-9bps fee is trivial against a ~70bps move - the trader is right
+  that at 5/15/1h structure scale the fee is easily covered.
+- The real problem is DIRECTION: a raw LVN touch is a ~COIN FLIP. Favourable 70 vs
+  adverse 76 (ratio 0.92); the bigger excursion was toward value 327 times vs away 334
+  = 49/51. Across every target/stop combo (T 30-60 x S 15-30) approx gross ~ -1..+0.2bps
+  because clean-losses outnumber clean-wins ~2:1. Thin nodes get TRAVERSED about as
+  often as they reject (that is WHY they are thin) - no fee or stop tuning fixes a coin
+  flip.
+
+IMPLICATION (validates the trader's method-1): the LVN/level is only the TRIGGER (a
+coin flip alone). The EDGE is the ORDERFLOW CONFIRM he applies by hand - is aggressive
+flow ABSORBED/rejected at the node (price stalls on heavy volume -> revert to value) or
+does it PUSH THROUGH (high impact on thin liquidity -> continue). That confirm has NOT
+been mechanised at the LVN yet. Correction logged: prior "doesn't cover fees" verdicts
+over-attributed to fees; at this structure scale the move covers the fee and the binding
+constraint is the directional confirm.
+
+NEXT: build the absorption/impact orderflow confirm AT the LVN and re-test (location +
+confirm), 61d train + 36d OOS, fee 6. Honest caveat: depth-imbalance confirms have been
+weak in past studies, but those were at arbitrary edges; this tests it at a real
+structural level = the trader's actual method.
