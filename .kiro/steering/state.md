@@ -734,3 +734,19 @@ reproducible, coinflip loses on real data.
   read we never found. *** PERMANENT LESSON: judge any grid/ladder/DCA SIZE-WEIGHTED, never per-trade -
   per-trade hides that losers are bigger than winners (the prior-project lie class). size-weighted +
   worst-case now in sweepscope. *** docs/research/sweep-study.md "Ladder" section; logs /root/runs/lad*.
+- *** LADDER CORRECTION + FIRST OOS-VALIDATED EDGE (2026-06-13). Trader clarified the ladder = ONE
+  trade (fixed position, rungs only set the AVG ENTRY), not one-trade-per-rung -> my size-weighted
+  (per-rung) NEGATIVE view was the WRONG lens for his sizing (that lens only applies if deeper fills
+  add risk = grid/martingale). Under FIXED-SIZE-per-trade (risk capped to the invalidation), PER-TRADE
+  equal-weight is correct. *** RESULT (97 days full, ETH r120/i30 + BTC r80/i30, lookback15m margin5,
+  rungs5, fee6): ETH n=905 win72% net +11.2bps t=10.5; BTC n=587 win70% net +10.6bps t=9.5; ~15
+  combined trades/day; worst single -106bps. Validated IN + OUT of sample (train 61d -> OOS 36d both
+  hold) = the ONLY OOS-replicating edge in the whole project. EUR (NON-COMPOUNDED fixed notional, no
+  sequential-compound lie): EUR500/~3mo -> 1x +163% DD3.4%, 2x +326% DD5%, 4x +653% DD9.4%. The
+  sequential-compounded EUR260k/+51858% = FANTASY (rejected: ~15 overlapping trades/day can't compound
+  serially nor all carry full size). UNLOCKED by the trader's execution fixes: ladder entry + correct
+  maker fee (6 vs 9) + let it run. NOT yet deployable - GATES: (1) concurrency-capped sizing sim
+  (can't 4x every concurrent trade -> realistic ~1x-2x line), (2) partial fills, (3) maker-fill realism,
+  (4) slippage + -106bps tail, (5) live paper. NEXT = build a concurrency-capped position-sizing sim +
+  live paper, NOT more param hunting. docs/research/sweep-study.md "Ladder CORRECTION" section; CSVs
+  /root/runs/lad_eth.csv,lad_btc.csv; per-config logs /root/runs/lad*.

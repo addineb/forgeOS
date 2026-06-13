@@ -407,3 +407,35 @@ per-trade equal-weighting hides that losers are bigger than winners. This is the
 class of bug that made the prior project lie. The size-weighted + worst-case check is
 now in sweepscope and must be used for any future ladder/scale-in test. Logs
 /root/runs/ladhunt, /root/runs/ladoos, /root/runs/ladsw.
+## Ladder CORRECTION (per-trade sizing = the right lens) + EUR/drawdown
+
+Trader clarified: the ladder is ONE trade (fixed position; rungs only set the average
+entry), NOT one-trade-per-rung. So the SIZE-WEIGHTED (per-rung) view above was the wrong
+lens for how he sizes - it only applies if deeper fills add MORE risk (grid/martingale).
+Under fixed-size-per-trade (the ladder just improves the average entry, total position
+fixed/risk-capped to the invalidation), the PER-TRADE equal-weight is correct.
+
+### Result (97 days full, ETH r120/i30 + BTC r80/i30, fee 6, lookback 15m, margin 5)
+- PER-TRADE EDGE (validated IN + OUT of sample): ETH n=905 win 72% net +11.2bps t=10.5;
+  BTC n=587 win 70% net +10.6bps t=9.5. Combined ~15 trades/day. Worst single -106bps.
+  This is the strongest, only OOS-replicating edge in the whole project.
+- EUR (NON-COMPOUNDED, fixed notional per trade - removes the sequential-compounding
+  lie; trades overlap so you CANNOT compound them serially): EUR500 over ~3 months ->
+  1x notional +163% (maxDD 3.4%), 2x +326% (maxDD 5%), 4x +653% (maxDD 9.4%).
+- SEQUENTIAL-COMPOUNDED (EUR260k / +51,858%) = FANTASY, rejected: ~15 overlapping
+  trades/day cannot be compounded serially and cannot all carry full size concurrently.
+
+### Honest gates remaining before this is trusted (NOT yet deployable)
+1. CONCURRENCY/sizing model: ~15 overlapping trades/day; total exposure must be capped
+   (can't put 4x on every concurrent trade) - the realistic euro is nearer the 1x-2x
+   line with a concurrency cap.
+2. PARTIAL FILLS: each trade treated at full size; partial-fill winners are smaller.
+3. MAKER-FILL realism: rungs assumed to fill on touch (fine for tiny retail size).
+4. SLIPPAGE + the -106bps worst-trade tail (already in the additive curve + maxDD).
+5. Regime coverage (Nov-Dec + Feb/May/Jun) and a LIVE paper run.
+
+### Verdict
+First real, OOS-validated per-trade edge. The ladder (trader's idea) + correct maker fee
+(6 vs 9) + letting it run is what unlocked it - exactly the execution fixes he insisted
+on. Euro is genuinely positive even non-compounded with modest drawdown. Next = a proper
+concurrency-capped position-sizing sim + live paper, NOT more parameter hunting.

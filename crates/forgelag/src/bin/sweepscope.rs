@@ -1673,7 +1673,7 @@ fn run() -> Result<(), String> {
         };
         writeln!(
             f,
-            "day,l_ns,range_max,sweep_margin,fire_ts,dir_up,range_lo,range_hi,range_width_bps,mid,entry_px,oi_drop_pct,net_flow,class,cont_ext_bps,rev_back_bps,decision_ms,imb_start,imb_end,rev_confirm,cont_confirm,rev_take,rev_make,rev_make_filled,rev_make_gated,cont_take{flow_hdr}"
+            "day,l_ns,range_max,sweep_margin,fire_ts,dir_up,range_lo,range_hi,range_width_bps,mid,entry_px,oi_drop_pct,net_flow,class,cont_ext_bps,rev_back_bps,decision_ms,imb_start,imb_end,rev_confirm,cont_confirm,rev_take,rev_make,rev_make_filled,rev_make_gated,cont_take{flow_hdr},rev_ladder,ladder_rungs,ladder_inval"
         ).map_err(|e| format!("dump: {e}"))?;
         for col in &pooled {
             for c in col {
@@ -1691,7 +1691,7 @@ fn run() -> Result<(), String> {
                 };
                 writeln!(
                     f,
-                    "{},{},{},{},{},{},{:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{},{:.2},{:.2},{},{:.4},{:.4},{},{},{},{},{},{},{}{flow_cols}",
+                    "{},{},{},{},{},{},{:.4},{:.4},{:.2},{:.4},{:.4},{:.4},{:.4},{},{:.2},{:.2},{},{:.4},{:.4},{},{},{},{},{},{},{}{flow_cols},{},{},{}",
                     c.day, c.l_ns, c.range_max, c.sweep_margin, c.fire_ts, c.dir_up,
                     c.range_lo, c.range_hi, c.range_width_bps, c.mid, c.entry_px,
                     c.oi_drop_pct, c.net_flow, c.class, c.cont_ext_bps, c.rev_back_bps,
@@ -1701,7 +1701,10 @@ fn run() -> Result<(), String> {
                     c.rev_make.map_or("NA".to_string(), |x| format!("{x:.3}")),
                     c.rev_make_filled,
                     c.rev_make_gated.map_or("NA".to_string(), |x| format!("{x:.3}")),
-                    c.cont_take.map_or("NA".to_string(), |x| format!("{x:.3}"))
+                    c.cont_take.map_or("NA".to_string(), |x| format!("{x:.3}")),
+                    c.rev_ladder.map_or("NA".to_string(), |x| format!("{x:.3}")),
+                    c.ladder_rungs,
+                    c.ladder_inval
                 ).map_err(|e| format!("dump: {e}"))?;
             }
         }
