@@ -272,3 +272,166 @@ the same set, just later, without fixing the fat tail. Not tradeable on its own.
 modest tail-trim + the fact that the stall window is the live dial are worth carrying
 into the later combined tests with the magnitude filter / gapscope confirm.) Logs:
 /root/runs/oiscope_exh/{eth,btc}_{base,exh}.log + eth_cell_*.log.
+---
+
+## Tweak 2: magnitude filter (isolated)
+
+Tested ALONE (exhaustion OFF, no gapscope-confirm - those are separate). Default
+OFF so baseline behavior is byte-preserved (verified: with the filter off the
+pooled numbers reproduce the baseline study EXACTLY, e.g. ETH oi0.2/move5 n=335,
+fade@0ms -1.61 t-2.08, worst -78.2, <-30bps 4%). Build + clippy(-D warnings,
+all-targets) + tests all green on the box; oiscope unit tests 9 -> 11 (2 new
+magnitude-gate tests incl a NO-LOOKAHEAD assertion), full forgelag suite 97 -> 99.
+
+### The exact rule + flags (read the no-lookahead note carefully)
+Thesis: only the BIGGEST cascades overshoot far enough that the reversion clears
+the ~9bps taker fee floor; small cascades give tiny reverts that never pay for
+themselves and just add noise. So FILTER to fade only large cascades.
+
+New flags (default OFF / baseline-preserving):
+  --min-spike <bps>    only fade a cascade whose GATE-SPIKE >= this (primary dial).
+  --min-oidrop <pct>   also require the realized OI-drop% >= this (secondary gate).
+A cascade below either threshold is still DETECTED + CHARACTERISED but produces NO
+trade (all fade entries = None / skipped). Everything else (detection grid, fade
+direction, delays 0/800/2000ms, exit = 10bps revert target / 30s hold, fee
+accounting) is EXACTLY baseline.
+
+*** NO-LOOKAHEAD GATE-SPIKE DEFINITION (this is the honest crux) ***
+The gate spike is the price move REALIZED from the cascade window-start to the
+FIRE/detection moment = |price_move_bps| (window-start microprice -> fire
+microprice). This is already printed at the instant we decide to enter - it uses
+ONLY information at/before entry. It is NOT the forward peak excursion
+(`Reversion::spike_bps`), which looks across the full 60s forward horizon and
+would be LOOKAHEAD. The unit test `magnitude_gate_uses_realized_move_not_forward_
+peak` constructs a cascade with a small (12bps) realized move but a large (60bps)
+FORWARD peak and asserts the gate FILTERS it (uses the realized 12, ignores the
+future 60). The gate is delay-independent (judged at the fire), so the passing
+SET is identical across the 0/800/2000ms entries - one clean n per cell.
+
+CONSEQUENCE (important for reading the sweep): the realized window move is much
+SMALLER than the forward-peak "spike" reported in the baseline tables. In the
+ETH oi0.2/move5 cell the forward-peak spike mean is ~23bps but the gate-spike
+(realized move) distribution is min5 / median7 / p90 16 / max47 bps. So a
+--min-spike of 20/30/50/80 (forward-peak scale) nearly EMPTIES the set
+(>=30bps keeps 3/335 on ETH, >=80 keeps 0). The honest filter therefore has to
+be swept on the REALIZED-move scale (here 8..30bps) where the dial actually
+bites. Reported below on that scale.
+
+### Knob-bite (valid - confirmed in-tool AND by post-processing the dump)
+The --min-spike dial moves the trade set monotonically. In-tool runs:
+ETH oi0.2/move5: 335 (off) -> 3 (>=30bps) -> 0 (>=80bps).
+BTC oi0.2/move5: 235 (off) -> 1 (>=30bps).
+These in-tool "passed X/N" counts and per-delay means match the dump
+post-processing exactly (e.g. ETH >=30 n=3 mean -26.32 @0ms; BTC >=30 n=1 +11.87)
+- the gate and the sweep agree. Knob-bite confirmed.
+
+Fees: TAKER fade, HL taker round-trip ~9bps. "gross" = captured bps; NET = gross
+- 9. Below: gross at delays 0/800ms/2s + NET at 2s (consistently the best,
+latency-robust delay) + left-tail (<-30bps share and worst trade, at 0ms).
+
+### A/B + threshold sweep - ETH (gross fade bps; net = gross-9)
+ETH base oi-drop>=0.2% / move>=5bps (the largest set, n=335 off):
+| min-spike | nPass | gross@0 | gross@800 | gross@2s | NET@2s | <-30%@0 | worst@0 |
+|---|---|---|---|---|---|---|---|
+| 0 (off) | 335 | -1.61 (t-2.1) | -1.28 | -1.25 (t-1.6) | -10.25 | 4%  | -78.2 |
+| 8       | 127 | -3.11 (t-1.9) | -3.22 | -3.56 (t-2.3) | -12.56 | 8%  | -78.2 |
+| 10      | 89  | -3.17 (t-1.6) | -3.31 | -3.26 (t-1.7) | -12.26 | 9%  | -78.2 |
+| 12      | 57  | -2.20 (t-0.8) | -2.41 | -2.76 (t-1.0) | -11.76 | 11% | -78.2 |
+| 15      | 37  | -4.04 (t-1.0) | -3.56 | -4.01 (t-1.0) | -13.01 | 16% | -78.2 |
+| 20      | 20  | -8.67 (t-1.4) | -7.77 | -7.34 (t-1.2) | -16.34 | 25% | -73.8 |
+| 30      | 3   | -26.32(t-1.1) | -24.99| -28.17(t-1.1) | -37.17 | 33% | -70.4 |
+
+ETH base oi-drop>=0.2% / move>=10bps (baseline headline cell, n=174 off):
+| min-spike | nPass | gross@0 | gross@2s | NET@2s | <-30%@0 | worst@0 |
+|---|---|---|---|---|---|---|
+| 0 (off) | 174 | -3.18 (t-2.4) | -2.70 (t-2.1) | -11.70 | 7%  | -78.2 |
+| 12      | 72  | -3.70 (t-1.5) | -4.36 (t-1.8) | -13.36 | 11% | -78.2 |
+| 15      | 39  | -4.89 (t-1.2) | -5.30 (t-1.4) | -14.30 | 15% | -78.2 |
+| 20      | 19  | -11.79(t-1.9) | -10.31(t-1.6) | -19.31 | 26% | -73.8 |
+| 30      | 3   | -26.32(t-1.1) | -28.17(t-1.1) | -37.17 | 33% | -70.4 |
+
+ETH base oi-drop>=0.5% / move>=10bps (n=63 off):
+| min-spike | nPass | gross@0 | gross@2s | NET@2s | <-30%@0 | worst@0 |
+|---|---|---|---|---|---|---|
+| 0 (off) | 63 | -4.37 (t-2.2) | -2.84 (t-1.6) | -11.84 | 8%  | -71.3 |
+| 12      | 25 | -9.41 (t-2.3) | -7.08 (t-2.2) | -16.08 | 16% | -71.3 |
+| 15      | 16 | -9.40 (t-1.6) | -5.80 (t-1.5) | -14.80 | 19% | -71.3 |
+| 20      | 10 | -18.20(t-2.3) | -8.30 (t-1.5) | -17.30 | 30% | -71.3 |
+| 30      | 3  | -14.61(t-1.0) | +2.04 (t+0.2) | -6.96  | 33% | -35.9 |
+
+ETH read: filtering to bigger realized moves makes the fade WORSE, not better.
+The mean falls monotonically (-1.6 -> -8.7 -> -26 at >=30) and the LEFT TAIL
+FATTENS (<-30bps 4% -> 16% -> 25% -> 33%; worst trade stays ~-78bps). The biggest
+cascades on ETH TREND harder - they are exactly the forced moves that keep going,
+not the ones that snap back. Every ETH cell is net-negative at every threshold,
+and increasingly so. Thesis REFUTED for ETH (confirms the baseline note: ETH's
+bigger spikes overshoot/trend, they don't revert).
+
+### A/B + threshold sweep - BTC (gross fade bps; net = gross-9)
+BTC base oi-drop>=0.2% / move>=5bps (n=235 off):
+| min-spike | nPass | gross@0 | gross@800 | gross@2s | NET@2s | <-30%@0 | worst@0 |
+|---|---|---|---|---|---|---|---|
+| 0 (off) | 235 | +0.05 (t+0.1) | +0.57 | +1.03 (t+1.9) | -7.97 | 0% | -27.0 |
+| 8       | 62  | +1.74 (t+1.4) | +2.53 | +2.86 (t+2.4) | -6.14 | 0% | -27.0 |
+| 10      | 39  | +2.80 (t+1.9) | +3.58 | +3.56 (t+2.4) | -5.44 | 0% | -27.0 |
+| 12      | 27  | +3.25 (t+1.7) | +4.20 | +4.42 (t+2.5) | -4.58 | 0% | -27.0 |
+| 15      | 13  | +5.71 (t+2.5) | +5.72 | +5.93 (t+2.6) | -3.07 | 0% | -12.8 |
+| 20      | 4   | +11.66 (n=4)  | +10.96| +11.44 (n=4)  | +2.44 | 0% | +11.5 |
+| 30      | 1   | +11.87 (n=1)  | +10.82| +10.44 (n=1)  | +1.44 | 0% | +11.9 |
+
+BTC base oi-drop>=0.2% / move>=10bps (baseline headline cell, n=75 off):
+| min-spike | nPass | gross@0 | gross@2s | NET@2s | <-30%@0 | worst@0 |
+|---|---|---|---|---|---|---|
+| 0 (off) | 75 | +0.75 (t+0.7) | +2.07 (t+2.0) | -6.93 | 0% | -27.0 |
+| 12      | 34 | +3.18 (t+1.9) | +4.36 (t+2.8) | -4.64 | 0% | -27.0 |
+| 15      | 16 | +5.43 (t+2.6) | +6.19 (t+3.0) | -2.81 | 0% | -12.8 |
+| 20      | 5  | +11.35 (n=5)  | +12.05 (n=5)  | +3.05 | 0% | +10.1 |
+| 30      | 1  | +11.87 (n=1)  | +10.44 (n=1)  | +1.44 | 0% | +11.9 |
+
+BTC base oi-drop>=0.5% / move>=10bps (n=30 off):
+| min-spike | nPass | gross@0 | gross@2s | NET@2s | <-30%@0 | worst@0 |
+|---|---|---|---|---|---|---|
+| 0 (off) | 30 | +2.29 (t+1.4) | +3.01 (t+2.1) | -5.99 | 0% | -17.4 |
+| 12      | 14 | +1.97 (t+0.7) | +3.53 (t+1.7) | -5.47 | 0% | -17.4 |
+| 15      | 7  | +5.56 (t+1.6) | +4.16 (t+1.5) | -4.84 | 0% | -7.5  |
+| 20      | 2  | +11.99 (n=2)  | +10.95 (n=2)  | +1.95 | 0% | +11.5 |
+| 30      | 0  | (none)        | (none)        | -     | -  | -     |
+
+BTC read: this is the one direction with a real signal, and the filter behaves
+EXACTLY as the thesis hoped - QUALITY scales cleanly with magnitude: gross mean,
+win%, and t-stat ALL rise monotonically with --min-spike, and the left tail stays
+~0% throughout (BTC big cascades do NOT trend like ETH's). At a STATISTICALLY
+MEANINGFUL count (thr15, n=13-16, t~2.5-3.0) gross is ~+5.7-6.2bps - the best
+honest gross anywhere in the whole study - BUT net of 9bps it is still ~-3bps
+(SUB-FEE). Only at thr>=20 does gross clear the fee (~+11-12bps, net +2-3bps) -
+but there n COLLAPSES to 4-5 over 10 days (~0.5 trades/day) and the eye-popping
+t-stats (+24..+143) are a tiny-n artifact (4-5 near-identical ~+11bps winners),
+NOT real significance. At thr30 n=1. So the fee-clearing only appears on a handful
+of trades too thin to trust.
+
+### Verdict on Tweak 2 (isolated): NO - it does not make the fade tradeable.
+- Does filtering to LARGE cascades lift the reversion above the ~9bps fee floor?
+  * ETH: NO - the opposite. Bigger realized moves TREND harder; mean falls to
+    -8..-26bps and the left tail fattens to 25-33% <-30bps. Net-negative and
+    worsening at every threshold. The big cascades are trenders, not reverters.
+  * BTC: quality genuinely improves with size (mean/win%/t all rise, tail ~0),
+    and the very biggest moves (>=20bps realized) DO clear the fee net +2-3bps -
+    but only at n=4-5 over 10 days (~0.5/day), too thin to trust; the t there is a
+    tiny-n artifact. At any meaningful count (thr<=15, n>=13) it is still net
+    ~-3bps, sub-fee.
+- Knob-bite: VALID. --min-spike moves the set monotonically (335->3->0 ETH;
+  235->1 BTC), in-tool counts match the dump exactly.
+- So as an ISOLATED change: NOT tradeable. ETH gets worse; BTC gets better-quality
+  but either sub-fee (at trustable n) or fee-clearing-but-too-thin (at n<=5).
+
+CONCLUSION: the magnitude filter is a CLEAN, no-lookahead, knob-bite-valid dial,
+and it surfaces one honest nugget - on BTC the reversion QUALITY rises smoothly
+with cascade size while the left tail stays flat (the structural opposite of ETH,
+where size = trend). But alone it does not clear the taker fee at any count we can
+trust. The asymmetry (BTC scales with size + no tail; ETH trends with size) is the
+real finding to carry into the combined tests: a BTC-only magnitude-gated fade is
+the only sub-thread with a pulse, and it needs either (a) more days to see whether
+the thr15-20 band holds net-positive on a larger sample, or (b) pairing with the
+gapscope-confirm (tweak 3) to keep count while lifting quality. ETH is dead for
+the fade in any size bucket. Logs/CSVs: /root/runs/oiscope_mag/{eth,btc}_dump.csv
++ {eth,btc}_base.log + {eth,btc}_confirm_ms*.log.

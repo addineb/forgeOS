@@ -328,6 +328,18 @@ fn find_exhaustion(
     None
 }
 
+/// Decide whether a cascade PASSES the magnitude filter (Tweak 2). Uses ONLY
+/// information realized AT or before the entry decision: `gate_spike_bps` = the
+/// |detection-window price move| (window-start -> fire, already printed) and the
+/// realized `oi_drop_pct`. It NEVER reads the forward peak (`Reversion::spike_bps`),
+/// which would be lookahead. A threshold <= 0 disables that leg (baseline = both
+/// off => always passes => byte-preserved). Pure.
+#[must_use]
+fn passes_magnitude(gate_spike_bps: f64, oi_drop_pct: f64, min_spike_bps: f64, min_oidrop_pct: f64) -> bool {
+    (min_spike_bps <= 0.0 || gate_spike_bps >= min_spike_bps)
+        && (min_oidrop_pct <= 0.0 || oi_drop_pct >= min_oidrop_pct)
+}
+
 // ----------------------------------------------------------------------------
 // configuration + per-cascade record
 // ----------------------------------------------------------------------------
@@ -350,6 +362,8 @@ struct Cfg {
     exhaust: bool,
     exhaust_stall_ns: u64,
     exhaust_decel: f64,
+    min_spike_bps: f64,
+    min_oidrop_pct: f64,
 }
 
 /// One detected cascade and its characterisation (scalars only; the forward path
@@ -379,6 +393,12 @@ struct CascadeStat {
     exhausted: bool,
     /// ns from fire to the exhaustion point (None if never / exhaust off).
     exhaust_ns: Option<u64>,
+    /// True if the cascade PASSED the magnitude filter (always true when the
+    /// filter is OFF). When false the cascade was magnitude-skipped (no fades).
+    passed_mag: bool,
+    /// The no-lookahead gate spike used by the filter: |price move from
+    /// window-start to fire| in bps (realized at detection, NOT the forward peak).
+    gate_spike_bps: f64,
 }
 
 /// Pending cascade being collected over its forward window.
@@ -528,7 +548,16 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], cfg: &Cf
     // Choose the fade ENTRY ANCHOR: baseline fades at the fire; --exhaust waits for
     // the exhaustion point (forced flow runs out) and only then fades. If exhaustion
     // never fires within the horizon, the cascade is SKIPPED (no entries).
-    let exhaust_ts = if cfg.exhaust {
+    //
+    // MAGNITUDE FILTER (Tweak 2, default OFF). Gate on info realized AT/before the
+    // entry decision ONLY: the detection-window move (window-start -> fire) and the
+    // OI-drop% - both known at the fire. NEVER the forward peak (lookahead). A
+    // filtered cascade is still detected + characterised but yields NO fade entry.
+    let gate_spike_bps = cur.price_move_bps.abs();
+    let passed_mag = passes_magnitude(gate_spike_bps, cur.oi_drop_pct, cfg.min_spike_bps, cfg.min_oidrop_pct);
+    let exhaust_ts = if !passed_mag {
+        None
+    } else if cfg.exhaust {
         find_exhaustion(path, oi_path, cur.fire_ts, cur.dir_down, cfg.exhaust_stall_ns, cfg.exhaust_decel)
     } else {
         Some(cur.fire_ts)
@@ -563,6 +592,8 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], cfg: &Cf
         fades,
         exhausted,
         exhaust_ns,
+        passed_mag,
+        gate_spike_bps,
     }
 }
 // ----------------------------------------------------------------------------
@@ -622,6 +653,16 @@ fn report_pooled(label: &str, ds: &[&CascadeStat], cfg: &Cfg, num_days: usize) {
             ex as f64 / n as f64 * 100.0,
             n - ex,
             if exn.is_empty() { 0.0 } else { median(&exn) }
+        );
+    }
+    if cfg.min_spike_bps > 0.0 || cfg.min_oidrop_pct > 0.0 {
+        let pass = ds.iter().filter(|d| d.passed_mag).count();
+        let gs: Vec<f64> = ds.iter().filter(|d| d.passed_mag).map(|d| d.gate_spike_bps).collect();
+        println!(
+            "MAGNITUDE FILTER (min-spike {:.0}bps  min-oidrop {:.2}%)  passed {pass}/{n} = {:.0}%   gate-spike(passed) mean {:.1}bps",
+            cfg.min_spike_bps, cfg.min_oidrop_pct,
+            pass as f64 / n as f64 * 100.0,
+            if gs.is_empty() { 0.0 } else { mean(&gs) }
         );
     }
     let down = ds.iter().filter(|d| d.dir_down).count();
@@ -705,6 +746,8 @@ fn run() -> Result<(), String> {
         exhaust: false,
         exhaust_stall_ns: 2_000_000_000,
         exhaust_decel: 0.5,
+        min_spike_bps: 0.0,
+        min_oidrop_pct: 0.0,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut oi_drops: Vec<f64> = vec![0.5];
@@ -743,6 +786,8 @@ fn run() -> Result<(), String> {
             "--exhaust" => cfg.exhaust = true,
             "--exhaust-stall" => cfg.exhaust_stall_ns = parse_dur(&val()?)?,
             "--exhaust-decel" => cfg.exhaust_decel = val()?.parse().map_err(|e| format!("exhaust-decel: {e}"))?,
+            "--min-spike" => cfg.min_spike_bps = val()?.parse().map_err(|e| format!("min-spike: {e}"))?,
+            "--min-oidrop" => cfg.min_oidrop_pct = val()?.parse().map_err(|e| format!("min-oidrop: {e}"))?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -775,6 +820,14 @@ fn run() -> Result<(), String> {
         );
     } else {
         println!("EXHAUSTION OFF (baseline): fade immediately at fire + delays");
+    }
+    if cfg.min_spike_bps > 0.0 || cfg.min_oidrop_pct > 0.0 {
+        println!(
+            "MAGNITUDE FILTER ON: fade only cascades with realized detection move >= {:.0}bps AND OI-drop >= {:.2}% (no-lookahead: gate = window-start->fire move, NOT forward peak)",
+            cfg.min_spike_bps, cfg.min_oidrop_pct
+        );
+    } else {
+        println!("MAGNITUDE FILTER OFF (baseline): fade every detected cascade");
     }
     println!("SWEEP oi-drop {:?}%  x  price-move {:?}bps", oi_drops, price_moves);
 
@@ -832,7 +885,7 @@ fn run() -> Result<(), String> {
     if let Some(path) = &dump {
         use std::io::Write;
         let mut f = std::fs::File::create(path).map_err(|e| format!("dump: {e}"))?;
-        let mut hdr = String::from("day,oi_drop_thr,price_move_thr,fire_ts,dir_down,oi_drop_pct,price_move_bps,net_flow,spike_bps,revert_bps,revert_frac,reverted,full_revert,exhausted,exhaust_ms,tth_ms,ttf_ms,peak_ms");
+        let mut hdr = String::from("day,oi_drop_thr,price_move_thr,fire_ts,dir_down,oi_drop_pct,price_move_bps,net_flow,spike_bps,revert_bps,revert_frac,reverted,full_revert,exhausted,exhaust_ms,tth_ms,ttf_ms,peak_ms,passed_mag,gate_spike_bps");
         for &dl in &cfg.delays_ns {
             hdr.push_str(&format!(",fade_{}", fmt_ns(dl)));
         }
@@ -840,14 +893,16 @@ fn run() -> Result<(), String> {
         for col in &pooled {
             for c in col {
                 let mut line = format!(
-                    "{},{},{},{},{},{:.4},{:.3},{:.4},{:.3},{:.3},{:.4},{},{},{},{},{},{},{:.0}",
+                    "{},{},{},{},{},{:.4},{:.3},{:.4},{:.3},{:.3},{:.4},{},{},{},{},{},{},{:.0},{},{:.3}",
                     c.day, c.d_oi, c.p_move, c.fire_ts, c.dir_down, c.oi_drop_pct, c.price_move_bps, c.net_flow,
                     c.spike_bps, c.revert_bps, c.revert_frac, c.reverted, c.full_revert,
                     c.exhausted,
                     c.exhaust_ns.map_or(-1.0, |x| x as f64 / 1e6),
                     c.tth_ns.map_or(-1.0, |x| x as f64 / 1e6),
                     c.ttf_ns.map_or(-1.0, |x| x as f64 / 1e6),
-                    c.peak_ns as f64 / 1e6
+                    c.peak_ns as f64 / 1e6,
+                    c.passed_mag,
+                    c.gate_spike_bps
                 );
                 for fv in &c.fades {
                     match fv {
@@ -995,5 +1050,48 @@ mod tests {
             (3_000_000_000, 880.0),
         ];
         assert!(find_exhaustion(&price, &oi, 0, true, 1_000_000_000, 0.5).is_none());
+    }
+
+    #[test]
+    fn magnitude_gate_filters_small_keeps_large() {
+        // OFF (both thresholds 0) => every cascade passes (baseline byte-preserved).
+        assert!(passes_magnitude(5.0, 0.1, 0.0, 0.0));
+        assert!(passes_magnitude(200.0, 9.9, 0.0, 0.0));
+        // min-spike 20: a 12bps realized move is filtered, a 35bps move passes.
+        assert!(!passes_magnitude(12.0, 1.0, 20.0, 0.0));
+        assert!(passes_magnitude(35.0, 1.0, 20.0, 0.0));
+        // boundary is inclusive (>=).
+        assert!(passes_magnitude(20.0, 1.0, 20.0, 0.0));
+        // min-oidrop leg gates independently (AND of both legs).
+        assert!(!passes_magnitude(50.0, 0.3, 20.0, 0.5));
+        assert!(passes_magnitude(50.0, 0.6, 20.0, 0.5));
+    }
+
+    #[test]
+    fn magnitude_gate_uses_realized_move_not_forward_peak() {
+        // NO-LOOKAHEAD assertion. A cascade fires with only a SMALL realized
+        // detection move (window-start -> fire), here 12bps, but its FORWARD path
+        // overshoots to a big ~60bps peak afterwards. measure_reversion reports that
+        // 60bps forward peak (lookahead). The gate must IGNORE the forward peak and
+        // use ONLY the realized 12bps: at min-spike 20 it must FILTER this cascade,
+        // even though the (future) spike is 60.
+        let realized_move_bps = 12.0;
+        let base = 100.0;
+        // DOWN cascade path peaking ~60bps below baseline AFTER the fire.
+        let fwd = vec![
+            (0u64, 99.88),
+            (1_000_000_000, 99.7),
+            (2_000_000_000, 99.4),
+            (3_000_000_000, 99.7),
+        ];
+        let rev = measure_reversion(&fwd, 0, base, true);
+        assert!(rev.spike_bps > 50.0, "forward peak ~60bps (lookahead), got {}", rev.spike_bps);
+        // The gate uses the realized move, NOT rev.spike_bps:
+        assert!(
+            !passes_magnitude(realized_move_bps, 1.0, 20.0, 0.0),
+            "must filter on realized 12bps, not the 60bps forward peak"
+        );
+        // sanity: had we (wrongly) gated on the forward peak it would have passed.
+        assert!(passes_magnitude(rev.spike_bps, 1.0, 20.0, 0.0));
     }
 }

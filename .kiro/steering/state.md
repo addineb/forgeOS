@@ -490,3 +490,17 @@ reproducible, coinflip loses on real data.
   (wait 2.5->5.9s); DECEL nearly inert (price-stall leg binds). LESSON: "exhaustion" != selectivity (all
   cascades stall once); still cannot separate reverters from trenders. NEXT (isolated, one-by-one): tweak
   2 magnitude filter, then tweak 3 gapscope confirm. docs/research/oi-cascade-study.md Tweak 1 section.
+- TWEAK 2 magnitude filter (oiscope --min-spike/--min-oidrop, default OFF; build+clippy+99 tests green,
+  baseline byte-preserved) TESTED ISOLATED 10d ETH+BTC = NOT tradeable alone. NO-LOOKAHEAD gate =
+  |realized window-start->fire move| (NOT the forward peak; unit-tested). Knob-bite valid (ETH 335->3->0;
+  BTC 235->1; in-tool counts == dump). *** KEY ASYMMETRY: ETH bigger=WORSE (size=TREND; mean -1.6->-28,
+  tail 4%->33% <-30bps) = dead any size; BTC bigger=BETTER quality, left tail stays ~0% (structural
+  OPPOSITE of ETH). *** BTC min-spike15 (n=13-16, t~2.5-3.0) gross ~+5.7-6.2bps = BEST honest gross in
+  the whole study, BUT net-of-9bps-taker ~-3bps (SUB-FEE); only thr>=20 clears fee (gross ~+11-12, net
+  +2-3) at n=4-5/10d = too thin (tiny-n t artifact). VERDICT alone = NO. *** BINDING CONSTRAINT has
+  shifted: it is now the ~9bps TAKER FEE, not the signal - BTC HAS a clean size-scaling no-tail reversion
+  (~+6bps gross) we just can't take at 9bps. *** Implications: (1) BTC is the only asset with a pulse
+  (ETH dead for the fade); (2) the lever that matters most may be FEE (maker entry) not more selectivity -
+  but gapscope warned post-cascade HL = re-quote vacuum / pulled walls -> maker adverse selection risk.
+  NEXT (isolated): tweak 3 gapscope-confirm (does liquidity come back=revert vs stay pulled=trend; also
+  tells if a maker could rest post-cascade). docs/research/oi-cascade-study.md Tweak 2 section.
