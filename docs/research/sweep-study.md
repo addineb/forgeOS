@@ -284,3 +284,31 @@ TAKER FEE (gross +4 < fee 9). Same wall as every prior lead. The only escape on 
 setup = CUT THE FEE: a MAKER entry (~6bps RT) gated on EXHAUSTION (which picks the
 80-90% reverters, so resting limits should dodge most of the run-over/adverse selection
 that killed the earlier maker test) + the structural/flow exit. Logs /root/runs/optab*.
+## Option A maker (fee escape) - REJECTED (adverse selection)
+
+Test (sweepscope --maker-rev + --rr/--stop-buffer, default OFF; clippy clean, 32
+tests incl new maker test green). Resting-limit REVERSAL at the swept edge (~6bps RT
+vs 9bps taker), structural wick stop, EXHAUSTION hold-gate. 10 days ETH+BTC.
+
+VERDICT (bad): WORSE than the taker - GROSS goes NEGATIVE before fees. Every cell,
+both assets: maker fills ~100% (the aggressive poke ALWAYS trades through the resting
+edge) but GROSS -8 to -10bps, win 10-21%, t -5 to -10. NET-of-6 ~ -14 to -16bps. The
+EXHAUSTION hold-gate does NOT help: the fill happens AT the poke (before the 60s
+confirm window), so the gate only flattens at the window-end = locks in the adverse
+move (gate cells are MORE negative, RR collapses to 0.2-0.9). This is textbook ADVERSE
+SELECTION: the resting limit fills precisely because price is pushing THROUGH it
+(continuation in that instant); on the ~60% reverters it works, but the fill bias is
+to the wrong side -> gross-negative. The cheaper maker fee is irrelevant when gross is
+already deeply negative. Confirms the earlier maker-fade kill on a different setup.
+
+### SWEEP LEAD - EXHAUSTED (both doors closed, evidence-based)
+- TAKER (Option A struct): stop-bleed FIXED, gross turned +4bps at trustable n, but the
+  9bps taker fee eats it -> net -5. Best version, still sub-fee.
+- MAKER (fee escape): cheaper fee but fills into the knife (adverse selection) ->
+  gross -8 -> net -14. Worse.
+DURABLE WINS to carry forward: (1) EXHAUSTION/flow-deceleration is a REAL no-lookahead
+directional read (+15-30pp P(reversal), both assets) - the first separator that beats
+random; (2) the dynamic STRUCTURAL WICK-STOP fixes stop-bleed (turns the taker reversal
+gross-positive). Both are reusable for a future edge that is BIGGER per trade (>>9bps)
+or runs on LOWER fees. The sweep reversal itself is ~a-few-bps gross = below the fee
+floor, same wall as every prior lead. No deployable strategy here. 0 euros risked.

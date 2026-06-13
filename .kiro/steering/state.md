@@ -635,3 +635,18 @@ reproducible, coinflip loses on real data.
   lead. *** NEXT puzzle piece = CUT THE FEE: MAKER entry (~6bps RT) gated on EXHAUSTION (picks the 80-90%
   reverters -> should dodge the run-over/adverse-selection that killed the earlier maker test) + structural
   exit. docs/research/sweep-study.md "Option A / Option B" section; logs /root/runs/optab*.
+- MAKER FEE-ESCAPE (sweepscope --maker-rev + structural stop + EXH hold-gate; default OFF, clippy+32
+  tests green) = REJECTED, WORSE than taker. Bad-first: GROSS goes NEGATIVE before fees on every cell
+  both assets (-8 to -10bps, win 10-21%, t -5..-10, NET-of-6 ~ -14..-16). Maker fills ~100% (the
+  aggressive poke always trades THROUGH the resting edge) = textbook ADVERSE SELECTION (fills precisely
+  on the wrong side / continuation instant). EXHAUSTION hold-gate does NOT help - fill is AT the poke
+  (before the 60s confirm), so the gate only flattens at window-end = locks the adverse move (gated
+  cells MORE negative, RR ->0.2-0.9). Cheaper 6bps fee irrelevant when gross is deeply negative.
+  *** SWEEP LEAD EXHAUSTED - both doors closed: TAKER (struct stop) gross +4 but 9bps fee -> net -5;
+  MAKER 6bps fee but adverse-selection gross -8 -> net -14. The reversal is only a-few-bps gross =
+  below the fee floor (SAME WALL as every lead). No deployable strategy; 0 euros risked. *** DURABLE
+  WINS to reuse: (1) EXHAUSTION/flow-deceleration = real no-lookahead directional read (+15-30pp
+  P(reversal), both assets, first separator to beat random); (2) dynamic STRUCTURAL WICK-STOP fixes
+  stop-bleed (turns the taker reversal gross-positive). Both reusable for a FUTURE edge that is BIGGER
+  per trade (>>9bps) or runs on LOWER fees. docs/research/sweep-study.md "Option A maker" section;
+  logs /root/runs/maker/.

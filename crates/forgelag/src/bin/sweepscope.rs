@@ -625,6 +625,7 @@ struct Cfg {
     flow_exit: bool,
     flow_exit_win_ns: u64,
     flow_exit_k: f64,
+    maker_rev: bool,
 }
 
 /// One detected sweep and its full characterisation (scalars only; the forward
@@ -695,6 +696,11 @@ struct SweepStat {
     rev_take_struct: Option<f64>,
     struct_stop_bps: f64,
     rev_take_flowexit: Option<f64>,
+    // OPTION A maker (fee escape): structural-stop reversal MAKER, ungated + EXH-gated.
+    rev_make_struct_all: Option<f64>,
+    rev_make_struct_all_filled: bool,
+    rev_make_struct: Option<f64>,
+    rev_make_struct_filled: bool,
 }
 
 /// Pending sweep being collected over its forward window.
@@ -976,6 +982,23 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
     } else {
         None
     };
+    // OPTION A maker (fee escape): structural-stop reversal MAKER, ungated + EXH-gated.
+    let (rev_make_struct_all, rev_make_struct_all_filled) = if cfg.maker_rev {
+        match simulate_maker_reversal_struct(path, trades, cur.fire_ts, cur.fire_ts, edge, dir_up, cfg.rev_target_bps, cfg.rr_mult, cfg.stop_buffer_bps, cfg.hold_ns, None) {
+            Some((_, bps, _)) => (Some(bps), true),
+            None => (None, false),
+        }
+    } else {
+        (None, false)
+    };
+    let (rev_make_struct, rev_make_struct_filled) = if cfg.maker_rev {
+        match simulate_maker_reversal_struct(path, trades, cur.fire_ts, cur.fire_ts, edge, dir_up, cfg.rev_target_bps, cfg.rr_mult, cfg.stop_buffer_bps, cfg.hold_ns, Some((anchor, state_exhausted))) {
+            Some((_, bps, _)) => (Some(bps), true),
+            None => (None, false),
+        }
+    } else {
+        (None, false)
+    };
     SweepStat {
         day: day.to_string(),
         l_ns,
@@ -1022,6 +1045,10 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
         rev_take_struct,
         struct_stop_bps,
         rev_take_flowexit,
+        rev_make_struct_all,
+        rev_make_struct_all_filled,
+        rev_make_struct,
+        rev_make_struct_filled,
     }
 }
 
@@ -1170,8 +1197,8 @@ fn report_pooled(label: &str, ds: &[&SweepStat], cfg: &Cfg, num_days: usize) {
     report_trades("cont-TAKER (+follow gate)", &caps_of(ds, |s| if s.cont_confirm { s.cont_take } else { None }), TAKER_RT_FEE_BPS);
 
     // ----- OPTION A/B dynamic-exit REVERSAL variants (only when ON; additive) -----
-    if cfg.dyn_stop || cfg.flow_exit {
-        println!("(A2) DYNAMIC-EXIT REVERSAL (taker; structural wick stop / flow-reaccel exit)");
+    if cfg.dyn_stop || cfg.flow_exit || cfg.maker_rev {
+        println!("(A2) DYNAMIC-EXIT REVERSAL (taker structural/flow-exit + maker fee-escape)");
         if cfg.dyn_stop {
             let sds: Vec<f64> = ds.iter().filter(|s| s.struct_stop_bps.is_finite()).map(|s| s.struct_stop_bps).collect();
             println!(
@@ -1186,6 +1213,17 @@ fn report_pooled(label: &str, ds: &[&SweepStat], cfg: &Cfg, num_days: usize) {
             report_trades("rev-TAKER flowexit (all)", &caps_of(ds, |s| s.rev_take_flowexit), TAKER_RT_FEE_BPS);
             report_trades("rev-TAKER flowexit (+EXH)", &caps_of(ds, |s| if s.state_exhausted { s.rev_take_flowexit } else { None }), TAKER_RT_FEE_BPS);
             report_trades("rev-TAKER flowexit (+ABS|EXH)", &caps_of(ds, |s| if s.state_absorbed || s.state_exhausted { s.rev_take_flowexit } else { None }), TAKER_RT_FEE_BPS);
+        }
+        if cfg.maker_rev {
+            let mk_fee = cfg.maker_fee_bps + TAKER_EXIT_FEE_BPS;
+            let filled = ds.iter().filter(|s| s.rev_make_struct_all_filled).count();
+            let gfilled = ds.iter().filter(|s| s.rev_make_struct_filled).count();
+            println!(
+                "    MAKER rest @ swept edge (fee escape ~{:.1}bps RT vs {:.0} taker): filled {}/{}  (EXH-gated kept {})",
+                mk_fee, TAKER_RT_FEE_BPS, filled, ds.len(), gfilled
+            );
+            report_trades("rev-MAKER struct (all)", &caps_of(ds, |s| if s.rev_make_struct_all_filled { s.rev_make_struct_all } else { None }), mk_fee);
+            report_trades("rev-MAKER struct (+EXH gate)", &caps_of(ds, |s| if s.rev_make_struct_filled { s.rev_make_struct } else { None }), mk_fee);
         }
     }
 
@@ -1362,6 +1400,7 @@ fn run() -> Result<(), String> {
         flow_exit: false,
         flow_exit_win_ns: 10_000_000_000,
         flow_exit_k: 2.0,
+        maker_rev: false,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![30 * 60_000_000_000];
@@ -1422,6 +1461,7 @@ fn run() -> Result<(), String> {
             "--flow-exit" => cfg.flow_exit = true,
             "--flow-exit-win" => cfg.flow_exit_win_ns = parse_dur(&val()?)?,
             "--flow-exit-k" => cfg.flow_exit_k = val()?.parse().map_err(|e| format!("flow-exit-k: {e}"))?,
+            "--maker-rev" => cfg.maker_rev = true,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -1452,10 +1492,11 @@ fn run() -> Result<(), String> {
         "ORDERFLOW CONFIRM: absorption shift >= {:.2} (reversal) / follow-through return <= {:.2} (continuation), read at fire+{}",
         cfg.confirm_imb, cfg.confirm_trend_max, fmt_ns(cfg.confirm_ns)
     );
-    if cfg.dyn_stop || cfg.flow_exit {
+    if cfg.dyn_stop || cfg.flow_exit || cfg.maker_rev {
         println!(
-            "DYNAMIC EXIT ON: dyn-stop {} (buffer {:.0}bps, rr {:.2})  flow-exit {} (win {}, k {:.2})",
-            cfg.dyn_stop, cfg.stop_buffer_bps, cfg.rr_mult, cfg.flow_exit, fmt_ns(cfg.flow_exit_win_ns), cfg.flow_exit_k
+            "DYNAMIC EXIT ON: dyn-stop {} (buffer {:.0}bps, rr {:.2})  flow-exit {} (win {}, k {:.2})  maker-rev {} (fee ~{:.1}bps RT)",
+            cfg.dyn_stop, cfg.stop_buffer_bps, cfg.rr_mult, cfg.flow_exit, fmt_ns(cfg.flow_exit_win_ns), cfg.flow_exit_k,
+            cfg.maker_rev, cfg.maker_fee_bps + TAKER_EXIT_FEE_BPS
         );
     }
     let lb_lbl: Vec<String> = lookbacks.iter().map(|&l| fmt_ns(l)).collect();
@@ -1721,6 +1762,99 @@ fn first_touch_flow_exit(
     Some(last)
 }
 
+/// OPTION A (maker) - REVERSAL MAKER resting at the swept `edge`, exit by a
+/// STRUCTURAL wick stop (beyond the adverse extreme over [fire, fill] + buffer),
+/// target = `rr` * stop (or fixed `target_bps` when rr<=0). Fill rule + no-lookahead
+/// hold-gate identical to `simulate_maker_reversal`. Fee escape ~6bps RT (maker in +
+/// taker out) vs ~9bps taker. Returns (fill_ts, signed_bps, stop_dist_bps). Pure.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn simulate_maker_reversal_struct(
+    path: &[(u64, f64)],
+    trades: &[(u64, f64, bool, f64)],
+    arm_ts: u64,
+    fire_ts: u64,
+    edge: f64,
+    dir_up: bool,
+    target_bps: f64,
+    rr: f64,
+    buffer_bps: f64,
+    hold_ns: u64,
+    hold_gate: Option<(u64, bool)>,
+) -> Option<(u64, f64, f64)> {
+    if edge <= 0.0 || path.is_empty() {
+        return None;
+    }
+    let mut fill_ts: Option<u64> = None;
+    for &(ts, px, buy, _q) in trades {
+        if ts < arm_ts {
+            continue;
+        }
+        let through = if dir_up { buy && px >= edge } else { !buy && px <= edge };
+        if through {
+            fill_ts = Some(ts);
+            break;
+        }
+    }
+    let fill_ts = fill_ts?;
+    let mut force_exit_ts: Option<u64> = None;
+    if let Some((ce, ok)) = hold_gate {
+        if !ok {
+            if fill_ts > ce {
+                return None;
+            }
+            force_exit_ts = Some(ce);
+        }
+    }
+    // structural stop: adverse wick over [fire, fill] (no-lookahead).
+    let mut wick = edge;
+    for &(ts, px) in path {
+        if ts < fire_ts || ts > fill_ts {
+            continue;
+        }
+        if dir_up {
+            if px > wick {
+                wick = px;
+            }
+        } else if px < wick {
+            wick = px;
+        }
+    }
+    let raw = if dir_up {
+        (wick - edge) / edge * 10_000.0
+    } else {
+        (edge - wick) / edge * 10_000.0
+    };
+    let stop_dist = raw.max(0.0) + buffer_bps;
+    let tgt = if rr > 0.0 { rr * stop_dist } else { target_bps };
+    let s = if dir_up { -1.0 } else { 1.0 };
+    let mut last = 0.0f64;
+    let mut started = false;
+    for &(ts, px) in path {
+        if ts < fill_ts {
+            continue;
+        }
+        started = true;
+        let signed = s * (px - edge) / edge * 10_000.0;
+        last = signed;
+        if tgt > 0.0 && signed >= tgt {
+            return Some((fill_ts, signed, stop_dist));
+        }
+        if stop_dist > 0.0 && signed <= -stop_dist {
+            return Some((fill_ts, signed, stop_dist));
+        }
+        if let Some(fe) = force_exit_ts {
+            if ts >= fe {
+                return Some((fill_ts, signed, stop_dist));
+            }
+        }
+        if ts.saturating_sub(fill_ts) >= hold_ns {
+            return Some((fill_ts, signed, stop_dist));
+        }
+    }
+    if started { Some((fill_ts, last, stop_dist)) } else { Some((fill_ts, 0.0, stop_dist)) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1764,6 +1898,18 @@ mod tests {
         let trades = vec![(1_500_000_000u64, 100.4, true, 100.0)];
         let cap = first_touch_flow_exit(&path, &trades, 0, true, false, 40.0, 30_000_000_000, 1_000_000_000, 0.001, 1.0).unwrap();
         assert!(cap >= 40.0, "rode the reversal to target with no break-flow re-accel, got {cap}");
+    }
+
+    #[test]
+    fn maker_struct_rides_snapback_with_structural_stop() {
+        // UP sweep: rest SELL at edge 101; forced BUY through at 101.2 (t=0.5s) fills.
+        // wick over [fire,fill] ~ 101.2 -> stop beyond it; price snaps to 100 = win.
+        let path = vec![(0u64, 101.2), (500_000_000, 101.0), (1_000_000_000, 100.5), (2_000_000_000, 100.0)];
+        let trades = vec![(500_000_000u64, 101.2, true, 1.0)];
+        let (fts, bps, sd) = simulate_maker_reversal_struct(&path, &trades, 0, 0, 101.0, true, 0.0, 2.0, 5.0, 30_000_000_000, None).unwrap();
+        assert_eq!(fts, 500_000_000);
+        assert!(bps > 0.0, "rode the snapback short, got {bps}");
+        assert!(sd > 5.0, "structural stop includes the wick excursion, got {sd}");
     }
 
     #[test]
