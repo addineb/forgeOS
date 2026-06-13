@@ -627,6 +627,11 @@ struct Cfg {
     flow_exit_k: f64,
     maker_rev: bool,
     reclaim: bool,
+    ladder: bool,
+    rungs: usize,
+    ladder_range_bps: f64,
+    ladder_invalid_bps: f64,
+    ladder_fee_bps: f64,
 }
 
 /// One detected sweep and its full characterisation (scalars only; the forward
@@ -705,6 +710,10 @@ struct SweepStat {
     // TEST A reclaim entry (wait for re-entry into the range, stop beyond the wick).
     rev_take_reclaim: Option<f64>,
     reclaim_stop_bps: f64,
+    // LADDER (grid) reversal entry into the dislocation.
+    rev_ladder: Option<f64>,
+    ladder_rungs: usize,
+    ladder_inval: bool,
 }
 
 /// Pending sweep being collected over its forward window.
@@ -1012,6 +1021,15 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
     } else {
         (None, f64::NAN)
     };
+    // LADDER (grid) reversal: maker rungs INTO the dislocation, full-size run-overs IN.
+    let (rev_ladder, ladder_rungs, ladder_inval) = if cfg.ladder {
+        match simulate_ladder(path, cur.fire_ts, cur.entry_px, dir_up, cfg.rungs, cfg.ladder_range_bps, cfg.rev_target_bps, cfg.ladder_invalid_bps, cfg.hold_ns) {
+            Some((bps, r, inv)) => (Some(bps), r, inv),
+            None => (None, 0, false),
+        }
+    } else {
+        (None, 0, false)
+    };
     SweepStat {
         day: day.to_string(),
         l_ns,
@@ -1064,6 +1082,9 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
         rev_make_struct_filled,
         rev_take_reclaim,
         reclaim_stop_bps,
+        rev_ladder,
+        ladder_rungs,
+        ladder_inval,
     }
 }
 
@@ -1252,6 +1273,38 @@ fn report_pooled(label: &str, ds: &[&SweepStat], cfg: &Cfg, num_days: usize) {
             report_trades("rev-TAKER reclaim (+ABS|EXH)", &caps_of(ds, |s| if s.state_absorbed || s.state_exhausted { s.rev_take_reclaim } else { None }), TAKER_RT_FEE_BPS);
         }
     }
+    if cfg.ladder {
+        let lfee = cfg.ladder_fee_bps;
+        println!(
+            "(A3) LADDER reversal (maker rungs INTO the dislocation; {} rungs over {:.0}bps, invalidation {:.0}bps beyond deepest, fee {:.1}bps):",
+            cfg.rungs, cfg.ladder_range_bps, cfg.ladder_invalid_bps, lfee
+        );
+        let lad = caps_of(ds, |s| s.rev_ladder);
+        let nlad = lad.len();
+        let rungs: Vec<f64> = ds.iter().filter(|s| s.rev_ladder.is_some()).map(|s| s.ladder_rungs as f64).collect();
+        let invals = ds.iter().filter(|s| s.rev_ladder.is_some() && s.ladder_inval).count();
+        let worst = lad.iter().copied().fold(f64::INFINITY, f64::min);
+        println!(
+            "    avg rungs filled {:.1}/{}   invalidation-hit {}/{} = {:.0}%   WORST trade {:+.0}bps (full-size run-over)",
+            if rungs.is_empty() { 0.0 } else { mean(&rungs) }, cfg.rungs, invals, nlad,
+            if nlad > 0 { invals as f64 / nlad as f64 * 100.0 } else { 0.0 }, worst
+        );
+        // SIZE-WEIGHTED (euro-realistic): each rung = fixed euro size, so weight the
+        // net per-trade bps by the number of FILLED rungs. Winners fill partial size
+        // (~2-3 rungs); full-size run-overs fill all 5 - this is the honest euro edge.
+        let sw_num: f64 = ds.iter().filter_map(|s| s.rev_ladder.map(|b| (b - lfee) * s.ladder_rungs as f64)).sum();
+        let sw_den: f64 = ds.iter().filter(|s| s.rev_ladder.is_some()).map(|s| s.ladder_rungs as f64).sum();
+        let sw = if sw_den > 0.0 { sw_num / sw_den } else { 0.0 };
+        // worst-case in euro terms = the largest (rungs * |loss|) single trade.
+        let worst_euro = ds.iter().filter_map(|s| s.rev_ladder.map(|b| b * s.ladder_rungs as f64)).fold(f64::INFINITY, f64::min);
+        println!(
+            "    *** SIZE-WEIGHTED net (euro-realistic, per unit filled size): {:+.1}bps   worst-case full-size hit: {:+.0} bps-units ***",
+            sw, worst_euro
+        );
+        report_trades("rev-LADDER (all)", &lad, lfee);
+        report_trades("rev-LADDER (+EXH)", &caps_of(ds, |s| if s.state_exhausted { s.rev_ladder } else { None }), lfee);
+        report_trades("rev-LADDER (+ABS|EXH)", &caps_of(ds, |s| if s.state_absorbed || s.state_exhausted { s.rev_ladder } else { None }), lfee);
+    }
 
     // ----- NEW flow-vs-impact separator (only when ON; additive, byte-preserved) -----
     if cfg.flow_on {
@@ -1428,6 +1481,11 @@ fn run() -> Result<(), String> {
         flow_exit_k: 2.0,
         maker_rev: false,
         reclaim: false,
+        ladder: false,
+        rungs: 5,
+        ladder_range_bps: 40.0,
+        ladder_invalid_bps: 20.0,
+        ladder_fee_bps: 6.0,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![30 * 60_000_000_000];
@@ -1490,6 +1548,11 @@ fn run() -> Result<(), String> {
             "--flow-exit-k" => cfg.flow_exit_k = val()?.parse().map_err(|e| format!("flow-exit-k: {e}"))?,
             "--maker-rev" => cfg.maker_rev = true,
             "--reclaim" => cfg.reclaim = true,
+            "--ladder" => cfg.ladder = true,
+            "--rungs" => cfg.rungs = val()?.parse().map_err(|e| format!("rungs: {e}"))?,
+            "--ladder-range" => cfg.ladder_range_bps = val()?.parse().map_err(|e| format!("ladder-range: {e}"))?,
+            "--ladder-invalid" => cfg.ladder_invalid_bps = val()?.parse().map_err(|e| format!("ladder-invalid: {e}"))?,
+            "--ladder-fee" => cfg.ladder_fee_bps = val()?.parse().map_err(|e| format!("ladder-fee: {e}"))?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -1955,6 +2018,75 @@ fn first_touch_reclaim(
     Some((last, stop_dist))
 }
 
+/// LADDER (grid) reversal entry: rest `n_rungs` maker limit rungs INTO the
+/// dislocation, from the sweep extreme `entry_px` out across `range_bps` in the
+/// AWAY direction (UP sweep -> sell rungs ABOVE; DOWN sweep -> buy rungs BELOW).
+/// A rung fills (maker) once price extends to its level; the average entry = mean
+/// of the FILLED rungs (equal size, so a deeper overshoot = better average for the
+/// reversion). Exit by the FIRST of: `target_bps` favourable from the avg entry
+/// (revert toward value), `invalid_bps` beyond the DEEPEST rung (invalidation =
+/// FULL-SIZE stop, the trend ran us over), or `hold_ns`. Returns
+/// (signed_bps_on_avg_entry, rungs_filled, hit_invalidation); rung 0 sits at
+/// `entry_px` so there is always >=1 fill. Run-overs counted at full size. Pure.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn simulate_ladder(
+    path: &[(u64, f64)],
+    fire_ts: u64,
+    entry_px: f64,
+    dir_up: bool,
+    n_rungs: usize,
+    range_bps: f64,
+    target_bps: f64,
+    invalid_bps: f64,
+    hold_ns: u64,
+) -> Option<(f64, usize, bool)> {
+    if entry_px <= 0.0 || n_rungs == 0 {
+        return None;
+    }
+    let away = if dir_up { 1.0 } else { -1.0 };
+    let levels: Vec<f64> = (0..n_rungs)
+        .map(|k| {
+            let frac = if n_rungs > 1 { k as f64 / (n_rungs as f64 - 1.0) } else { 0.0 };
+            entry_px * (1.0 + away * frac * range_bps / 10_000.0)
+        })
+        .collect();
+    let deepest = entry_px * (1.0 + away * range_bps / 10_000.0);
+    let rs = if dir_up { -1.0 } else { 1.0 }; // reversion side: short for UP sweep.
+    let start = path.iter().position(|&(ts, _)| ts >= fire_ts)?;
+    let entry_t = path[start].0;
+    let mut maxext = entry_px;
+    let mut last = 0.0f64;
+    let mut last_f = 1usize;
+    for &(ts, px) in &path[start..] {
+        if dir_up {
+            if px > maxext { maxext = px; }
+        } else if px < maxext {
+            maxext = px;
+        }
+        let f = levels.iter().filter(|&&l| if dir_up { l <= maxext } else { l >= maxext }).count().max(1);
+        let avg = levels[..f].iter().sum::<f64>() / f as f64;
+        let signed = rs * (px - avg) / avg * 10_000.0;
+        last = signed;
+        last_f = f;
+        let inval = if dir_up {
+            px >= deepest * (1.0 + invalid_bps / 10_000.0)
+        } else {
+            px <= deepest * (1.0 - invalid_bps / 10_000.0)
+        };
+        if invalid_bps > 0.0 && inval {
+            return Some((signed, f, true));
+        }
+        if target_bps > 0.0 && signed >= target_bps {
+            return Some((signed, f, false));
+        }
+        if ts.saturating_sub(entry_t) >= hold_ns {
+            return Some((signed, f, false));
+        }
+    }
+    Some((last, last_f, false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2010,6 +2142,27 @@ mod tests {
         assert_eq!(fts, 500_000_000);
         assert!(bps > 0.0, "rode the snapback short, got {bps}");
         assert!(sd > 5.0, "structural stop includes the wick excursion, got {sd}");
+    }
+
+    #[test]
+    fn ladder_fills_deeper_and_reverts() {
+        // UP sweep, entry 100; 3 rungs over 30bps (levels 100/100.15/100.30). Price
+        // overshoots to 100.35 (fills all 3, avg 100.15) then reverts to 100.0 ->
+        // short from avg -> ~+15bps -> target 10 hit.
+        let path = vec![(0u64, 100.0), (1_000_000_000, 100.35), (2_000_000_000, 100.0)];
+        let (bps, rungs, inval) = simulate_ladder(&path, 0, 100.0, true, 3, 30.0, 10.0, 50.0, 30_000_000_000).unwrap();
+        assert_eq!(rungs, 3, "overshoot fills all rungs");
+        assert!(!inval, "did not invalidate");
+        assert!(bps >= 10.0, "reverted to target from the laddered avg, got {bps}");
+    }
+
+    #[test]
+    fn ladder_invalidation_is_full_size_loss() {
+        // Price blows THROUGH the whole ladder + invalidation -> full-size stop loss.
+        let path = vec![(0u64, 100.0), (1_000_000_000, 100.6)];
+        let (bps, _r, inval) = simulate_ladder(&path, 0, 100.0, true, 3, 30.0, 200.0, 20.0, 30_000_000_000).unwrap();
+        assert!(inval, "blew through the ladder = invalidation");
+        assert!(bps < 0.0, "full-size run-over is a real loss, got {bps}");
     }
 
     #[test]

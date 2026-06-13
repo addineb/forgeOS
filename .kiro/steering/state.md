@@ -718,3 +718,19 @@ reproducible, coinflip loses on real data.
   trader to NAME the specific observable he reads (CVD divergence / absorption-at-price / resting-wall
   stacking-spoof / multi-bar rejection) so we test THAT precisely (blind variant-hunting = overfit).
   vpscope confirm infra reusable. docs/research/volume-profile-study.md; logs /root/runs/vpcf/.
+- *** LADDER (grid) ENTRY on the sweep reversal (trader's method; sweepscope simulate_ladder: N maker
+  rungs INTO the dislocation, avg entry = filled rungs, hard invalidation = full-size stop, run-overs IN;
+  clippy + 38 tests green; fee 6) = PER-TRADE LIE, euro-realistic NEGATIVE. *** Per-trade (each trade=1
+  unit) looked like the BEST result ever: net +8..+12bps, win 69-73%, t 5-9, REPLICATED OOS (BTC r120
+  train +10.9 -> OOS +12.2). It was a SIZE ILLUSION: ladder fills PARTIAL size (~2 rungs) on winners,
+  FULL size (5 rungs) on the invalidation run-overs. SIZE-WEIGHTED (euro-realistic, weight by deployed
+  capital) = EVERY one of 36 configs (rungs{3,5} x range{40,80,120} x invalid{10,20,40}) BOTH assets
+  NEGATIVE -5.0..-11.2bps, NONE positive; worst-case full-size hit -115..-563 bps-units. ROOT CAUSE:
+  deep overshoots fill the most rungs (most size) but are disproportionately real BREAKOUTS that don't
+  revert -> ladder loads max size into the losers; no stop/range/rung fixes it (whole space swept).
+  CONSTRUCTIVE: the ladder DID fix the FEE (6 vs 9) and ENTRY-TIMING (per-trade flipped breakeven->strongly
+  positive) = the trader was RIGHT those were real problems; the remaining killer is the SIZE asymmetry
+  (averaging up into trends), intrinsic to a fixed-per-rung grid, needs a deep-end reversal-vs-continuation
+  read we never found. *** PERMANENT LESSON: judge any grid/ladder/DCA SIZE-WEIGHTED, never per-trade -
+  per-trade hides that losers are bigger than winners (the prior-project lie class). size-weighted +
+  worst-case now in sweepscope. *** docs/research/sweep-study.md "Ladder" section; logs /root/runs/lad*.

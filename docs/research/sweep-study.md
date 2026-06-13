@@ -374,3 +374,36 @@ the overfit BEFORE any euros were risked - the process working (unlike the prior
 that lied). Durable, reusable across future leads: (1) reclaim entry, (2) structural
 wick-stop, (3) the lesson that a 10-day separator MUST be re-checked at 60d+ / OOS
 before trust. 0 euros risked.
+## Ladder (grid) entry on the sweep reversal - PER-TRADE LIE, euro-realistic NEGATIVE
+
+Built the trader's LADDER entry (simulate_ladder: N maker rungs INTO the dislocation
+from the sweep extreme, average entry = mean of FILLED rungs, exit toward value, HARD
+invalidation = full-size stop, run-overs counted; clippy + 38 tests green). Fee 6bps
+(maker in + taker out). 61d train + 36d OOS, ETH+BTC.
+
+### The trap, caught by size-weighting
+PER-TRADE (each trade = 1 unit) looked like the best result ever: net +8 to +12bps,
+win 69-73%, t 5-9, and it REPLICATED OOS (BTC r120 train +10.9 -> OOS +12.2). It was a
+LIE. The ladder fills PARTIAL size (~2 rungs) on winners but FULL size (5 rungs) on the
+big invalidation run-overs. Weighting P&L by the capital actually deployed (SIZE-
+WEIGHTED, euro-realistic):
+- EVERY one of 36 configs (rungs{3,5} x range{40,80,120} x invalid{10,20,40}), BOTH
+  assets = NEGATIVE: -5.0 to -11.2bps. NONE positive.
+- worst-case full-size hit -115 to -563 bps-units (5 rungs x ~100bps).
+ROOT CAUSE: deep overshoots fill the most rungs (most size) but are disproportionately
+real BREAKOUTS that do NOT revert -> the ladder loads maximum size into the losers.
+No stop/range/rung setting fixes it (swept the whole space).
+
+### What it DID prove (constructive)
+The ladder fixed the FEE (6 vs 9) and the ENTRY-TIMING (per-trade flipped from breakeven
+to strongly positive) -> those WERE real problems the trader correctly identified. The
+remaining, unbeatable killer on THIS setup is the SIZE asymmetry (averaging up into
+trends), which is intrinsic to a fixed-per-rung grid and needs a directional read
+(reversal vs continuation at the deep end) we have never found.
+
+### Lesson (permanent)
+A variable-size entry (grid/ladder/DCA) MUST be judged SIZE-WEIGHTED, never per-trade -
+per-trade equal-weighting hides that losers are bigger than winners. This is the exact
+class of bug that made the prior project lie. The size-weighted + worst-case check is
+now in sweepscope and must be used for any future ladder/scale-in test. Logs
+/root/runs/ladhunt, /root/runs/ladoos, /root/runs/ladsw.
