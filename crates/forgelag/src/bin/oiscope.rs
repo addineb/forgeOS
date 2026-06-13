@@ -382,6 +382,104 @@ fn maker_fills_through(trades: &[(u64, f64, bool)], peak_ts: u64, level: f64, di
     })
 }
 
+/// Taker side of the urgent revert EXIT (the maker fade exits by crossing). Used by
+/// the Tweak-4 net fee accounting (maker entry + taker exit ~= 6bps round-trip).
+const TAKER_EXIT_FEE_BPS: f64 = 4.5;
+
+/// Tweak 4 (COMBINED) - the HONEST maker-in-path cascade fade. PROVIDE liquidity INTO
+/// the forced flow: rest a maker limit at `arm_px` offset INTO the cascade direction
+/// (a BID below market for a DOWN cascade, an ASK above market for an UP cascade).
+///
+/// FILL RULE (no free fill, no lookahead): the order fills ONLY when the HL tape
+/// actually TRADES THROUGH the resting limit in the filling direction at/after
+/// `arm_ts` - i.e. an aggressive SELL prints at/below our BID (DOWN) or an aggressive
+/// BUY prints at/above our ASK (UP). If the tape never trades through within the
+/// cascade horizon -> NO FILL -> None (no trade, no cost). The fill price is the maker
+/// LIMIT (`level`) - the aggressor crosses to us, no price improvement.
+///
+/// Once filled we mark forward to the SAME exit rule as the taker fade (revert target
+/// bps via the favorable move OR `max_hold`, then mark-to-market). TRENDERS that fill
+/// as price blows through and KEEP GOING against us return a real NEGATIVE capture -
+/// every armed+filled cascade contributes its true signed bps (NOT revert-conditioned).
+///
+/// `hold_gate` = Some((confirm_end_ts, confirm_ok)) wires --ob-confirm as a HOLD/KEEP
+/// gate (no-lookahead: the confirm is read at `confirm_end_ts` <= the decision it
+/// gates): if the book did NOT confirm a revert by the window-end, a still-resting
+/// order is CANCELLED (no fill) and an already-filled position is FLATTENED at the
+/// window-end (cut the likely trender early) instead of held to the revert target.
+/// Returns (fill_ts, signed_bps) or None if never filled. Pure.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn simulate_maker_fade(
+    path: &[(u64, f64)],
+    trades: &[(u64, f64, bool)],
+    arm_ts: u64,
+    arm_px: f64,
+    dir_down: bool,
+    offset_bps: f64,
+    revert_target_bps: f64,
+    max_hold_ns: u64,
+    hold_gate: Option<(u64, bool)>,
+) -> Option<(u64, f64)> {
+    if arm_px <= 0.0 || path.is_empty() {
+        return None;
+    }
+    let s = if dir_down { -1.0 } else { 1.0 };
+    // resting limit INTO the cascade direction: below market for DOWN, above for UP.
+    let level = arm_px * (1.0 + s * offset_bps / 10_000.0);
+    if level <= 0.0 {
+        return None;
+    }
+    // FILL: first aggressive print that trades THROUGH the resting limit at/after arm.
+    let mut fill_ts: Option<u64> = None;
+    for &(ts, px, buy) in trades {
+        if ts < arm_ts {
+            continue;
+        }
+        let through = if dir_down { !buy && px <= level } else { buy && px >= level };
+        if through {
+            fill_ts = Some(ts);
+            break;
+        }
+    }
+    let fill_ts = fill_ts?;
+    // HOLD-GATE: bail orders the book did not confirm by the window-end.
+    let mut force_exit_ts: Option<u64> = None;
+    if let Some((ce, confirm_ok)) = hold_gate {
+        if !confirm_ok {
+            if fill_ts > ce {
+                return None; // still resting at the confirm read -> CANCELLED.
+            }
+            force_exit_ts = Some(ce); // filled before the cut -> flatten at the read.
+        }
+    }
+    // EXIT: identical to the taker fade, entry at the maker LIMIT (level). Favorable
+    // = price moves back our way; a trender that runs over returns a real loss.
+    let fade_sign = if dir_down { 1.0 } else { -1.0 };
+    let mut last_fav = 0.0f64;
+    let mut started = false;
+    for &(ts, px) in path {
+        if ts < fill_ts {
+            continue;
+        }
+        started = true;
+        let fav = fade_sign * (px - level) / level * 10_000.0;
+        last_fav = fav;
+        if fav >= revert_target_bps {
+            return Some((fill_ts, fav));
+        }
+        if let Some(fe) = force_exit_ts {
+            if ts >= fe {
+                return Some((fill_ts, fav));
+            }
+        }
+        if ts.saturating_sub(fill_ts) >= max_hold_ns {
+            return Some((fill_ts, fav));
+        }
+    }
+    if started { Some((fill_ts, last_fav)) } else { Some((fill_ts, 0.0)) }
+}
+
 // ----------------------------------------------------------------------------
 // configuration + per-cascade record
 // ----------------------------------------------------------------------------
@@ -411,6 +509,9 @@ struct Cfg {
     confirm_imb: f64,
     maker_fill: bool,
     maker_fee_bps: f64,
+    maker_fade: bool,
+    maker_offset_bps: f64,
+    maker_armgate: bool,
 }
 
 /// One detected cascade and its characterisation (scalars only; the forward path
@@ -459,6 +560,16 @@ struct CascadeStat {
     /// post-spike level have FILLED on the way back (tape traded through it)?
     maker_fill_base: bool,
     maker_fill_spike: bool,
+    /// Tweak 4 (COMBINED honest maker-in-path fade): was a resting maker order ARMED
+    /// for this cascade (true unless an arming-gate skipped a non-confirming cascade)?
+    maker_armed: bool,
+    /// Did the maker order FILL (HL tape actually traded THROUGH the resting limit)?
+    maker_filled: bool,
+    /// Signed bps captured by the filled maker fade (entry at the limit, taker exit;
+    /// INCLUDES trender losses). None if never filled / not armed.
+    maker_capture: Option<f64>,
+    /// ns from fire to the maker fill (None if never filled).
+    maker_fill_ns: Option<u64>,
 }
 
 /// Pending cascade being collected over its forward window.
@@ -528,7 +639,7 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], d_oi: f64, p_move: f64) -> V
                     let q = ev.qty.to_f64();
                     let signed = if aggr == Side::Bid { q } else { -q };
                     flow.push_back((now, signed));
-                    if cfg.maker_fill && matches!(state, State::Collecting) {
+                    if (cfg.maker_fill || cfg.maker_fade) && matches!(state, State::Collecting) {
                         cur_trades.push((now, ev.price.to_f64(), aggr == Side::Bid));
                     }
                 }
@@ -666,6 +777,44 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], trades: 
     } else {
         (false, false)
     };
+    // Tweak 4 (COMBINED, default OFF): the HONEST maker-in-path cascade fade. Rest a
+    // maker limit INTO the forced flow at the FIRE; it FILLS only when the HL tape
+    // actually trades THROUGH the limit (no free fill, no lookahead). Once filled, mark
+    // forward to the SAME exit as the taker fade so TRENDERS that fill and run over
+    // count their real loss. --ob-confirm manages the order: default = HOLD-GATE (cut a
+    // position the book did not confirm by the window-end); --maker-armgate = only arm
+    // AFTER a confirm. Both read the confirm <= the decision it gates (no-lookahead).
+    let (maker_armed, maker_filled, maker_capture, maker_fill_ns) = if cfg.maker_fade && passed_mag {
+        // (passed_mag gates the maker arm too: --min-spike/--min-oidrop filter on the
+        // realized window move, no-lookahead; a no-op when those dials are unset.)
+        let arm_px_fire = path.first().map_or(0.0, |&(_, p)| p);
+        if cfg.ob_confirm && cfg.maker_armgate {
+            // ARMING-GATE alt: arm only after a confirm, at the confirm-window-end.
+            if confirm_ok {
+                let ce = cur.fire_ts.saturating_add(cfg.confirm_ns);
+                let arm_px = path.iter().find(|&&(ts, _)| ts >= ce).map_or(arm_px_fire, |&(_, p)| p);
+                match simulate_maker_fade(path, trades, ce, arm_px, cur.dir_down, cfg.maker_offset_bps, cfg.fade_revert_bps, cfg.fade_hold_ns, None) {
+                    Some((fts, bps)) => (true, true, Some(bps), Some(fts.saturating_sub(cur.fire_ts))),
+                    None => (true, false, None, None),
+                }
+            } else {
+                (false, false, None, None)
+            }
+        } else {
+            // HOLD-GATE (with --ob-confirm) or UNGATED (no --ob-confirm): arm at the fire.
+            let hold_gate = if cfg.ob_confirm {
+                Some((cur.fire_ts.saturating_add(cfg.confirm_ns), confirm_ok))
+            } else {
+                None
+            };
+            match simulate_maker_fade(path, trades, cur.fire_ts, arm_px_fire, cur.dir_down, cfg.maker_offset_bps, cfg.fade_revert_bps, cfg.fade_hold_ns, hold_gate) {
+                Some((fts, bps)) => (true, true, Some(bps), Some(fts.saturating_sub(cur.fire_ts))),
+                None => (true, false, None, None),
+            }
+        }
+    } else {
+        (false, false, None, None)
+    };
     let fades: Vec<Option<f64>> = match exhaust_ts {
         Some(anchor) => cfg
             .delays_ns
@@ -704,6 +853,10 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], trades: 
         imb_shift,
         maker_fill_base,
         maker_fill_spike,
+        maker_armed,
+        maker_filled,
+        maker_capture,
+        maker_fill_ns,
     }
 }
 // ----------------------------------------------------------------------------
@@ -809,6 +962,41 @@ fn report_pooled(label: &str, ds: &[&CascadeStat], cfg: &Cfg, num_days: usize) {
             println!("MAKER-FILL (Part B)  no reverted cascades to measure");
         }
     }
+    if cfg.maker_fade {
+        let armed = ds.iter().filter(|d| d.maker_armed).count();
+        let filled = ds.iter().filter(|d| d.maker_filled).count();
+        let caps: Vec<f64> = ds.iter().filter_map(|d| d.maker_capture).collect();
+        let fillms: Vec<f64> = ds.iter().filter_map(|d| d.maker_fill_ns).map(|x| x as f64 / 1e6).collect();
+        println!(
+            "MAKER-FADE (Tweak 4 COMBINED: honest maker-in-path entry + taker exit; offset {:.0}bps)",
+            cfg.maker_offset_bps
+        );
+        println!(
+            "  armed {armed}/{n}   filled {filled}  (fill rate {:.0}% of armed)   median fill-wait {:.0}ms",
+            if armed > 0 { filled as f64 / armed as f64 * 100.0 } else { 0.0 },
+            if fillms.is_empty() { 0.0 } else { median(&fillms) }
+        );
+        if filled == 0 {
+            println!("  (no fills - the tape never traded through the resting limit)");
+        } else {
+            let g = mean(&caps);
+            let wins = caps.iter().filter(|&&x| x > 0.0).count();
+            let worst = caps.iter().copied().fold(f64::INFINITY, f64::min);
+            let tail = caps.iter().filter(|&&x| x < -30.0).count();
+            let net6 = g - cfg.maker_fee_bps - TAKER_EXIT_FEE_BPS;
+            let net3 = g - 2.0 * cfg.maker_fee_bps;
+            println!(
+                "  GROSS (incl trenders)  mean {:+.2}bps  median {:+.2}  t-stat {:+.2}  win {:.0}%  worst {:+.1}  <-30bps {:.0}%  n={}",
+                g, median(&caps), tstat(&caps), wins as f64 / filled as f64 * 100.0, worst,
+                tail as f64 / filled as f64 * 100.0, filled
+            );
+            println!(
+                "  NET maker(-{:.1})+taker(-{:.1}) = -{:.1}bps RT -> {:+.2}bps   [alt both-maker -{:.1}bps RT -> {:+.2}bps]",
+                cfg.maker_fee_bps, TAKER_EXIT_FEE_BPS, cfg.maker_fee_bps + TAKER_EXIT_FEE_BPS, net6,
+                2.0 * cfg.maker_fee_bps, net3
+            );
+        }
+    }
     let down = ds.iter().filter(|d| d.dir_down).count();
     println!("direction                     DOWN {down}  UP {}", n - down);
 
@@ -897,6 +1085,9 @@ fn run() -> Result<(), String> {
         confirm_imb: 0.10,
         maker_fill: false,
         maker_fee_bps: 1.5,
+        maker_fade: false,
+        maker_offset_bps: 0.0,
+        maker_armgate: false,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut oi_drops: Vec<f64> = vec![0.5];
@@ -942,6 +1133,9 @@ fn run() -> Result<(), String> {
             "--ob-confirm-imb" => cfg.confirm_imb = val()?.parse().map_err(|e| format!("ob-confirm-imb: {e}"))?,
             "--maker-fill" => cfg.maker_fill = true,
             "--maker-fee" => cfg.maker_fee_bps = val()?.parse().map_err(|e| format!("maker-fee: {e}"))?,
+            "--maker-fade" => cfg.maker_fade = true,
+            "--maker-offset" => cfg.maker_offset_bps = val()?.parse().map_err(|e| format!("maker-offset: {e}"))?,
+            "--maker-armgate" => cfg.maker_armgate = true,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -995,6 +1189,20 @@ fn run() -> Result<(), String> {
         println!(
             "MAKER-FILL MEASURE ON (Tweak 3 Part B): for reverted cascades, report whether the HL tape traded THROUGH the baseline / post-spike level (maker-fillable) + maker-fee(-{:.1}bps)-adjusted capture. Measurement only, never gates trading.",
             cfg.maker_fee_bps
+        );
+    }
+    if cfg.maker_fade {
+        let gate = if cfg.ob_confirm && cfg.maker_armgate {
+            "ob-confirm = ARMING gate (arm only after a confirm, at window-end)"
+        } else if cfg.ob_confirm {
+            "ob-confirm = HOLD gate (arm at fire; flatten/cancel positions the book did NOT confirm by window-end)"
+        } else {
+            "ungated (arm at fire, no ob-confirm)"
+        };
+        println!(
+            "MAKER-FADE ON (Tweak 4 COMBINED, honest): rest a maker limit INTO the forced flow at offset {:.0}bps (bid below for DOWN / ask above for UP); FILL only when the HL tape trades THROUGH it (no free fill, no lookahead); on fill, ride to the SAME exit ({:.0}bps revert / {} hold) - TRENDERS that fill and run over count their REAL loss. Fees: maker entry -{:.1}bps + taker exit -{:.1}bps = -{:.1}bps RT (alt both-maker -{:.1}bps). Gate: {}.",
+            cfg.maker_offset_bps, cfg.fade_revert_bps, fmt_ns(cfg.fade_hold_ns),
+            cfg.maker_fee_bps, TAKER_EXIT_FEE_BPS, cfg.maker_fee_bps + TAKER_EXIT_FEE_BPS, 2.0 * cfg.maker_fee_bps, gate
         );
     }
     println!("SWEEP oi-drop {:?}%  x  price-move {:?}bps", oi_drops, price_moves);
@@ -1305,5 +1513,68 @@ mod tests {
         // before-peak trades never fill (no-lookahead within the reversion leg).
         let early = vec![(900_000_000u64, 100.5, true)];
         assert!(!maker_fills_through(&early, 1_000_000_000, 100.0, true));
+    }
+
+    #[test]
+    fn maker_in_path_fills_and_rides_bounce() {
+        // DOWN cascade: rest a BID at touch (offset 0) at the already-dropped arm_px=100.
+        // A forced SELL prints THROUGH at 99.5 (t=0.5s) -> FILL at the limit 100. Price
+        // then bounces to 100.8 -> long from 100 -> ~+80bps captured (mark-to-market).
+        let path = vec![(0u64, 100.0), (500_000_000, 99.5), (1_000_000_000, 100.0), (2_000_000_000, 100.8)];
+        let trades = vec![(500_000_000u64, 99.5, false)]; // aggressive SELL through the bid
+        let (fts, bps) = simulate_maker_fade(&path, &trades, 0, 100.0, true, 0.0, 1000.0, 30_000_000_000, None)
+            .expect("forced sell fills the resting bid");
+        assert_eq!(fts, 500_000_000);
+        assert!(bps > 70.0, "rode the bounce long 100->100.8, got {bps}");
+    }
+
+    #[test]
+    fn maker_in_path_trender_runs_over_is_a_loss() {
+        // DOWN cascade: the bid fills as a forced sell prints through, then price KEEPS
+        // DROPPING (a trender). A resting maker long bleeds = a REAL signed LOSS that
+        // MUST be counted (no revert-conditioning). 100 -> 97.5 = ~-250bps.
+        let path = vec![(0u64, 100.0), (500_000_000, 99.5), (1_000_000_000, 98.5), (2_000_000_000, 97.5)];
+        let trades = vec![(500_000_000u64, 99.5, false)];
+        let (_, bps) = simulate_maker_fade(&path, &trades, 0, 100.0, true, 0.0, 50.0, 30_000_000_000, None)
+            .expect("fills, then runs over");
+        assert!(bps < -100.0, "trender run-over must be a real loss, got {bps}");
+    }
+
+    #[test]
+    fn maker_in_path_no_fill_no_trade() {
+        // Bid rests 20bps below (level=99.8). The only sell prints at 99.99 (above the
+        // level) -> never trades through -> NO FILL -> None (no trade, no cost).
+        let path = vec![(0u64, 100.0), (500_000_000, 99.95), (1_000_000_000, 100.1)];
+        let trades = vec![(500_000_000u64, 99.99, false)];
+        assert!(simulate_maker_fade(&path, &trades, 0, 100.0, true, 20.0, 50.0, 30_000_000_000, None).is_none());
+    }
+
+    #[test]
+    fn maker_hold_gate_cancels_unconfirmed_late_fill() {
+        // The fill would print at 1.0s, AFTER the 800ms confirm read. Confirm FAILS ->
+        // the still-resting order is CANCELLED at the read -> NO trade. With confirm OK
+        // the same late fill is kept (the order stays resting and fills).
+        let path = vec![(0u64, 100.0), (800_000_000, 99.5), (1_000_000_000, 99.4), (2_000_000_000, 99.0)];
+        let trades = vec![(1_000_000_000u64, 99.4, false)];
+        assert!(
+            simulate_maker_fade(&path, &trades, 0, 100.0, true, 0.0, 50.0, 30_000_000_000, Some((800_000_000, false))).is_none(),
+            "unconfirmed order cancelled before the late fill"
+        );
+        assert!(
+            simulate_maker_fade(&path, &trades, 0, 100.0, true, 0.0, 50.0, 30_000_000_000, Some((800_000_000, true))).is_some(),
+            "confirmed order stays resting and fills"
+        );
+    }
+
+    #[test]
+    fn maker_hold_gate_flattens_filled_trender_at_confirm() {
+        // Fill at 0.5s (BEFORE the 800ms confirm). Confirm FAILS -> flatten at the read
+        // (mark-to-market at 99.5 = -50bps) = cut the trender early, NOT held to the
+        // deeper -100bps drop at 2s.
+        let path = vec![(0u64, 100.0), (500_000_000, 99.7), (800_000_000, 99.5), (2_000_000_000, 99.0)];
+        let trades = vec![(500_000_000u64, 99.7, false)];
+        let (_, bps) = simulate_maker_fade(&path, &trades, 0, 100.0, true, 0.0, 1000.0, 30_000_000_000, Some((800_000_000, false)))
+            .expect("filled before the cut");
+        assert!((bps - (-50.0)).abs() < 5.0, "flattened at the confirm read ~ -50bps, got {bps}");
     }
 }

@@ -578,3 +578,179 @@ HONEST reading of Part B (do NOT over-read these big positives):
 Knob-bite: confirm dial moves the trade set monotonically (52->36% ETH, 63->37%
 BTC across imb 0.00->0.20). Logs: /root/runs/oiscope_ob/{ETH,BTC}_{base,obconfirm,
 maker}.log + {ETH,BTC}_kb_imb*.log.
+---
+
+## Tweak 4: COMBINED ob-confirm + honest maker-in-path fade
+
+The cheap go/no-go BEFORE committing to a full engine build. Everything the
+OI-cascade study pointed to, in ONE honest test: an ob-confirm-managed MAKER entry
+(to fix the fee math) measured HONESTLY - real tape-through fills, NO lookahead,
+trenders INCLUDED. Default OFF; verified baseline + tweaks 1/2/3 byte-preserved
+(ETH oi0.2/move5 n=335 fade@0 -1.61 t-2.08 worst -78.2; BTC oi0.2/move5 n=235
+fade@2s +1.03 t+1.91 - reproduce the baseline study EXACTLY). Build + clippy
+(-D warnings, --all-targets) + tests all green on the box; oiscope unit tests
+13 -> 18 (+5: maker-in-path fill+ride, trender-run-over loss, no-fill, hold-gate
+cancel, hold-gate flatten); full forgelag suite green.
+
+### WHY this test (the chain that led here)
+Tweaks 2/3 showed the binding constraint had shifted from the SIGNAL to the ~9bps
+TAKER fee: BTC has a clean size-scaling, no-tail reversion (ob-confirm firmed
+oi0.5/move10 to +5.8bps gross t3.03) - but net-negative after the 9bps taker
+round-trip. A MAKER entry pays ~1.5bps not ~4.5bps/side, so the round-trip drops to
+~6bps (maker entry + urgent taker exit). Tweak 3 Part B hinted a resting maker fills
+53-71% of reverted cascades - BUT that was REVERT-CONDITIONED = lookahead = an upper
+bound that EXCLUDED the trender tail. This test removes the conditioning and measures
+an HONEST maker fade.
+
+### The exact geometry + fill rule (the crux) + flags
+A DOWN cascade = forced SELLING drives price from baseline B down to a low. To fade
+as a MAKER you PROVIDE liquidity INTO the forced flow: rest a BID at/below the
+already-dropped price, in the PATH of the selling. UP cascade = mirror (rest an ASK
+into the forced buying).
+
+FILL RULE (no free fill, no lookahead): the resting limit fills ONLY when the HL tape
+actually TRADES THROUGH it in the filling direction at/after the order is resting -
+an aggressive SELL printing at/below our BID (DOWN), or an aggressive BUY at/above our
+ASK (UP). Fill price = the maker LIMIT (the aggressor crosses to us; no improvement).
+If the tape never trades through within the cascade horizon -> NO FILL -> NO TRADE,
+no cost. (Reuses/extends gapscope's "trade prints through a resting level".)
+
+ENTRY OFFSET: --maker-offset <bps> rests the limit that many bps INTO the cascade
+direction from the price at the arming moment (below market for DOWN, above for UP).
+Offset 0 = at touch (used for all runs below).
+
+EXIT (trenders INCLUDED - the honesty crux): once filled, mark forward to the SAME
+exit as the taker fade - revert target (10bps) via the favorable move OR max-hold
+(30s), then mark-to-market. If the cascade is a TRENDER, the maker bid fills as price
+blows through it and KEEPS GOING against us = a REAL signed LOSS that is counted. NO
+revert-conditioning: every armed+filled cascade contributes its true signed bps.
+
+FEES: maker entry (-1.5bps, --maker-fee) + taker exit (-4.5bps; the revert exit is
+urgent) = -6.0bps round-trip. We report GROSS and NET-of-6; we also note NET-of-3
+(both-maker, optimistic alt). Each number states its fee model.
+
+THE OB-CONFIRM SEQUENCING SUBTLETY (handled + documented). ob-confirm needs ~800ms
+after the fire to read whether liquidity returns, but a maker-in-the-path fills DURING
+the cascade (before the confirm exists). Two clean, no-lookahead resolutions, both
+implemented:
+  * HOLD-GATE (--maker-fade --ob-confirm; RECOMMENDED): arm the maker at the fire
+    (rest in the path). The confirm then acts as a HOLD/KEEP gate read at the
+    window-end - if the book did NOT confirm a revert by then (liquidity still pulled
+    = likely trender), a still-resting order is CANCELLED and an already-filled
+    position is FLATTENED at the window-end (cut the trender early) instead of held to
+    the revert target. The confirm is read at window-end <= every decision it gates.
+  * ARMING-GATE (--maker-fade --ob-confirm --maker-armgate; ALT): only ARM the maker
+    AFTER a confirm, at the confirm-window-end (so we never rest into a non-confirming
+    cascade). Confirm read <= arm time. (Misses the in-path forced flow; fill-wait
+    blows out to ~1.1-1.7s.)
+Flags (all default OFF / baseline-preserving): --maker-fade, --maker-offset <bps>,
+--maker-fee <bps> (reused), --maker-armgate; --ob-confirm/--ob-confirm-window/
+--ob-confirm-imb reused; --min-spike now also gates the maker arm (no-lookahead
+realized move). Exhaustion + magnitude OFF except the explicit BTC min-spike runs.
+Same 10 study days, ETH then BTC, same detection grid; offset 0.
+
+### (a) MAKER-FADE UNGATED (offset 0; gross incl trenders; net6 = gross-6)
+ETH (the forced-flow loser, as in every tweak):
+| oi/move | n filled | fill% | GROSS | t | win% | worst | <-30% | NET6 |
+|---|---|---|---|---|---|---|---|---|
+| 0.2/5  | 319 | 95% | -2.56 | -3.11 | 51% | -79.2 | 5%  | -8.56 |
+| 0.2/10 | 166 | 95% | -4.43 | -3.19 | 46% | -79.2 | 8%  | -10.43 |
+| 0.5/10 | 61  | 97% | -5.80 | -2.84 | 39% | -57.1 | 11% | -11.80 |
+| 0.5/20 | 12  | 100%| -12.04| -1.92 | 42% | -57.1 | 25% | -18.04 |
+ETH read: GROSS negative every cell, worse with size (size = trend), net6 deeply
+negative. Dead, consistent with tweaks 1/2/3.
+
+BTC (the only asset with a pulse):
+| oi/move | n filled | fill% | GROSS | t | win% | worst | NET6 | NET3 |
+|---|---|---|---|---|---|---|---|---|
+| 0.2/5  | 226 | 96% | -0.67 | -1.19 | 49% | -27.0 | -6.67 | -3.67 |
+| 0.2/10 | 73  | 97% | -0.40 | -0.38 | 52% | -27.0 | -6.40 | -3.40 |
+| 0.5/10 | 29  | 97% | +1.80 | +1.06 | 59% | -17.4 | -4.20 | -1.20 |
+| 0.2/20 | 9   | 100%| +5.41 | +1.40 | 78% | -19.7 | -0.59 | +2.41 |
+| 0.5/20 | 3   | 100%| +11.59| (n=3) | 100%| +10.8 | +5.59 | +8.59 |
+BTC read: ~95% fill rate (the forced flow really does trade through the in-path
+limit - post-cascade is NOT a vacuum for an order resting IN the path). But once the
+trender tail is counted HONESTLY, BTC gross at trustable n is ~0 to +1.8bps - a
+FRACTION of the +18-32bps revert-conditioned Part-B "upper bound". NET-of-6 is
+negative at every trustable-n cell. Only n=3-9 cells reach net-positive (tiny-n).
+
+### (b) MAKER-FADE + OB-CONFIRM HOLD-GATE (recommended semantics)
+ETH (best cells; hold-gate cuts the tail):
+| oi/move | conf% | n filled | fill% | GROSS | t | worst | <-30% | NET6 |
+|---|---|---|---|---|---|---|---|---|
+| 0.2/5  | 47% | 267 | 80% | -0.79 | -1.37 | -50.1 | 2% | -6.79 |
+| 0.2/10 | 43% | 146 | 84% | -1.36 | -1.64 | -51.4 | 3% | -7.36 |
+| 0.5/10 | 44% | 50  | 79% | -2.33 | -1.51 | -41.4 | 6% | -8.33 |
+ETH read: the hold-gate roughly HALVES the worst tail (-79 -> -50bps) and lifts every
+cell ~+2-3bps, but ETH stays net-negative everywhere. Improved from dead to flat,
+never tradeable.
+
+BTC:
+| oi/move | conf% | n filled | fill% | GROSS | t | worst | NET6 | NET3 |
+|---|---|---|---|---|---|---|---|---|
+| 0.2/5  | 49% | 208 | 89% | -0.40 | -0.97 | -25.2 | -6.40 | -3.40 |
+| 0.2/10 | 41% | 63  | 84% | +0.42 | +0.65 | -12.8 | -5.58 | -2.58 |
+| 0.5/10 | 37% | 23  | 77% | +1.90 | +1.60 | -8.0  | -4.10 | -1.10 |
+| 0.2/20 | 44% | 9   | 100%| +3.99 | +1.80 | -4.3  | -2.01 | +0.99 |
+| 0.5/20 | 33% | 3   | 100%| +3.09 | +0.73 | -2.2  | -2.91 | +0.09 |
+BTC read: on BTC the tail was already ~0, so the hold-gate barely moves the gross
+(oi0.5/move10 +1.80 ungated -> +1.90 gated). It trims n slightly. Best trustable cell
+~+1.9bps gross -> NET6 -4.1bps. Still ~4bps under the 6bps round-trip.
+
+### (b-alt) OB-CONFIRM ARMING-GATE
+Arming only after the confirm pushes fill-wait to ~1.1-1.7s, arms fewer (the confirmed
+~40-50%), and lands net ~the same-to-worse than the hold-gate (e.g. BTC 0.2/5 +0.36
+gross n=103 -> NET6 -5.64; ETH 0.2/5 -0.44 n=148 -> -6.44). No edge over the hold-gate.
+The HOLD-GATE is the cleaner choice: it captures the high-fill in-path entry and still
+cuts the trenders that fail to confirm. Pick the hold-gate.
+
+### (c) BTC MAKER-FADE + OB-CONFIRM HOLD-GATE + min-spike (size scaling)
+Now --min-spike gates the maker arm (no-lookahead realized move). Knob-bite VALID
+(armed set moves monotonically: 235 -> 27 -> 13 -> 4 on oi0.2/move5):
+| min-spike | cell | armed/n | filled | GROSS | t | NET6 | NET3 |
+|---|---|---|---|---|---|---|---|
+| 12 | 0.2/10 | 34/75 | 28 | +0.88 | +0.72 | -5.12 | -2.12 |
+| 15 | 0.2/10 | 16/75 | 14 | +2.19 | +1.08 | -3.81 | -0.81 |
+| 20 | 0.2/5  | 4/235 | 4  | +5.61 | +1.62 | -0.39 | +2.61 |
+| 20 | 0.2/10 | 5/75  | 5  | +6.51 | +2.30 | +0.51 | +3.51 |
+BTC read: SAME structural pattern as tweaks 2/3 - quality scales cleanly with cascade
+size, left tail stays ~0. The only cells that reach NET-of-6 ~breakeven/positive are
+min-spike20, n=4-5 over 10 days (~0.5 trades/day) = TOO THIN to trust (tiny-n t
+artifact). At any trustable n (the move5/move10 cells, n=14-73) net-of-6 is solidly
+negative (-3.8 to -5.6bps).
+
+### Knob-bite on the gates
+- ob-confirm-imb (BTC oi0.5/move10, maker-fade+hold-gate): confirmed 57% -> 37% across
+  imb 0.00 -> 0.20, but the maker GROSS barely moves (+1.74 n=25 -> +1.90 n=23). The
+  gate dial bites the SET but not the capture on BTC (the BTC tail is already ~0, so
+  there is little for the confirm to cut). Weak bite on the maker path.
+- min-spike (above): STRONG, clean, monotonic bite; quality rises with size; but only
+  reaches net-positive at n<=5.
+- hold-gate vs arming-gate: hold-gate keeps n + the in-path fill; arming-gate adds
+  ~1s fill-wait for no gain.
+
+### Verdict on Tweak 4 (COMBINED): NO - honest maker fade does NOT clear net-positive
+on BTC at a trustable n. The trender tail + real fills kill it, like everything before.
+- The maker entry DID fix the FEE side exactly as hoped: round-trip 6bps (or 3bps
+  both-maker) vs 9bps taker. Fill rate is high (~80-95%): an order resting IN the path
+  of the forced flow really does get hit (post-cascade is NOT a vacuum for in-path
+  liquidity - this confirms Tweak 3 Part B's fill observation honestly).
+- BUT removing the revert-conditioning collapses the Part-B mirage: the honest GROSS
+  (trenders counted) is ~0 to +1.9bps on BTC at trustable n, not +18-32bps. Most of
+  those "fills" were trenders that filled and then ran over. The binding constraint
+  flips back from FEE to SIGNAL once measured honestly.
+- NET-of-6bps is negative at every trustable-n cell on both assets (ETH -7 to -12;
+  BTC -4 to -6). Only n=3-5 BTC min-spike20/move20 cells reach ~net-0 to +0.5 - the
+  same too-thin tiny-n artifact seen in tweaks 2/3, not a trustable pulse.
+- ETH is dead in every variant (size = trend).
+
+GO/NO-GO for the full engine build: NO-GO. The combined honest test - the cheapest
+faithful proxy for the engine - does not produce a real net-positive pulse on a
+trustable n. The maker entry solved the fee, but the honest trender tail eats the
+gross straight back down; it is the same wall from the other side. The OI-cascade
+fade (taker OR maker, naive OR exhaustion OR magnitude OR ob-confirm OR combined) is
+exhausted: detection is real + honest, latency does not bind, but the captured edge
+never clears the cost at a count we can trust. Shelve the cascade fade; do NOT open
+the engine build on this result. 0 euros risked, killed cheap - exactly the point.
+Logs: /root/runs/oiscope_t4/{eth,btc}_{base,mf,mf_ob,mf_arm}.log,
+btc_mf_ob_mag.log, btc_mag_ms{12,15,20}.log, btc_kb_imb_*.log.

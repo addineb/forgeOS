@@ -525,3 +525,22 @@ reproducible, coinflip loses on real data.
   that PRE-SELECTS reverters via the confirm gate -> the ONE combined test left worth running
   (ob-confirm gate + maker fill TOGETHER). *** docs/research/oi-cascade-study.md Tweak 3 section; logs
   /root/runs/oiscope_ob/{ETH,BTC}_{base,obconfirm,maker}.log + _kb_imb*.log.
+- TWEAK 4 COMBINED ob-confirm + HONEST maker-in-path fade (oiscope --maker-fade/--maker-offset/
+  --maker-armgate + reuse --ob-confirm; default OFF, baseline byte-preserved; build+clippy+oiscope
+  tests 13->18 green) = NO-GO. The decisive test: maker entry fixes the fee (6bps RT vs 9bps taker)
+  and FILLS ~95% (forced flow really trades through an in-path limit -> post-cascade is NOT a vacuum
+  for in-path liquidity, contra the pure-vacuum worry). BUT removing the revert-conditioning collapses
+  the Tweak-3 Part-B mirage: honest BTC gross WITH TRENDERS COUNTED is ~0 to +1.9bps at trustable n
+  (not +18-32bps); the high fill rate is mostly trenders that fill then run over. NET-of-6 NEGATIVE at
+  every trustable-n cell both assets (BTC ~-4..-6, ETH ~-7..-12); only n<=5 cells reach breakeven (too
+  thin). ob-confirm hold-gate halves ETH tail (-79->-50) + lifts ~+2-3bps but ETH still dead; on BTC
+  the tail was already ~0 so it barely moves. VERDICT: binding constraint flips back FEE->SIGNAL once
+  measured honestly - same wall, other side. *** OI-CASCADE FADE FULLY EXHAUSTED *** (like Lagshot).
+  Killed cheap, 0 euros. docs/research/oi-cascade-study.md Tweak 4 section; logs /root/runs/oiscope_t4/.
+  KEY REUSABLE: ob-confirm (depth-imbalance returning to hit side) = a WORKING selectivity/CONFIRM
+  primitive (knob-bite valid, cuts tails); "react don't race" VALIDATED latency-robust for printed
+  forced moves; in-path maker fills ~95% post-cascade. Recurring kill pattern across ALL leads =
+  latency OR adverse-selection OR the ~6-9bps FEE FLOOR vs small-bps mean-reversion. Implication for
+  the NEXT edge: must be BIGGER per-trade (>>9bps), latency-robust (react to printed flow), and likely
+  NOT symmetric mean-reversion (the momentum/continuation/overshoot tail kept running us over -> maybe
+  trade WITH the forced continuation, not against it - UNTESTED).
