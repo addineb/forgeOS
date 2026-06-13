@@ -754,3 +754,140 @@ never clears the cost at a count we can trust. Shelve the cascade fade; do NOT o
 the engine build on this result. 0 euros risked, killed cheap - exactly the point.
 Logs: /root/runs/oiscope_t4/{eth,btc}_{base,mf,mf_ob,mf_arm}.log,
 btc_mf_ob_mag.log, btc_mag_ms{12,15,20}.log, btc_kb_imb_*.log.
+## Tweak 5: MOMENTUM (trade WITH the cascade continuation)
+
+The honest opposite test. Every prior cascade test FADED (bet on reversion) and the
+trenders ran us over. This trades WITH the forced flow: a DOWN cascade -> SELL/short to
+ride the continued drop; an UP cascade -> BUY/long to ride the continued rise. Default
+OFF so baseline + Tweaks 1-4 stay byte-preserved (verified: with --momentum off the
+pooled numbers are unchanged). Build + clippy(-D warnings, --all-targets) + tests all
+green on the box; oiscope unit tests 18 -> 23 (5 new: continuation-hits-target = win,
+reverter-hits-stop = small loss, first-touch stop-vs-target ordering BOTH ways,
+no-entry-when-path-short, trend-confirm = mirror of revert); full forgelag suite green.
+
+### The exact rule + flags (all default OFF / baseline-preserving)
+  --momentum            enable the continuation TAKER trade.
+  --mom-target <bps>    profit target IN the cascade direction (the overshoot). def 25.
+  --mom-stop <bps>      stop if it reverts against us (a momentum trade => a stop makes
+                        sense, unlike mean-reversion). def 12.
+  --mom-hold <dur>      max hold then mark-to-market. def 30s.
+  --mom-trend           optional TREND-CONFIRM gate (see below).
+  --mom-trend-max <f>   trend gate threshold. def 0.0.
+
+ENTRY = TAKER, IN the cascade direction, at fire + the configurable delay (0/800/2000ms;
+the latency sweep is kept for realism even though latency was shown NOT to bind for
+printed forced moves). EXIT = FIRST-TOUCH over the forward path in strict time order,
+using ONLY forward data (no lookahead): whichever of the +target (overshoot) or the
+-stop (reverter) is hit FIRST decides the trade; else mark-to-market at max-hold. EVERY
+entry's real signed bps is counted INCLUDING the reverters that hit the stop (the honest
+enemy here = cascades that snap back immediately = a loss on the with-the-move trade).
+FEES: TAKER entry + TAKER exit = ~9bps round-trip (the momentum entry must cross; it is
+NOT a maker-in-path play). Report GROSS and NET-of-9bps.
+
+TREND-CONFIRM (--mom-trend) = the ob-confirm machinery INVERTED. The fade wanted
+liquidity to RETURN to the hit side (imbalance shifts back = revert). Momentum wants it
+to STAY PULLED (imbalance does NOT return = the trend is unopposed). confirm_trend fires
+when the toward-hit-side imbalance shift over the confirm window is <= --mom-trend-max.
+No-lookahead: imbalance read at the fire + at the window-end, both <= entry. Reported
+with (trend0 = max 0.0; trendL = max 0.10) and without (ungated).
+
+### VERDICT (blunt): NO - it does not clear the 9bps taker fee at a trustable n on either asset.
+BAD FIRST: net of the ~9bps taker round-trip, EVERY trustable-n cell is NEGATIVE on both
+ETH and BTC. The only net-positive cells are n<=12 (tiny-n artifacts). So momentum loses
+the same way the fade did - it just loses on the other side, against the SAME fee wall.
+
+GOOD (real, but not enough): on ETH the sign FLIPS POSITIVE - trading WITH the
+continuation earns a small positive GROSS (~+1 to +5bps) where the fade was negative.
+This CONFIRMS the trader's read that momentum/overshoot is the dominant flow on ETH (the
+trenders that ran over every fade). The trend-confirm gate is a genuine, knob-bite-valid
+filter: it cuts the set and LIFTS gross/win/t (ETH oi0.2/mv10 ungated +2.80 t2.40 win51%
+-> trend0 +5.41 t2.98 win55%). And the BEST honest momentum cell in the whole study is
+ETH trend-gated oi0.2/mv10 = +5.41bps gross, t2.98, n=85 - but NET-of-9 = -3.59bps. Still
+sub-fee. BTC momentum is flat-to-NEGATIVE everywhere (it is the reverting asset - the
+mirror of its faint fade-positive), so momentum is the WRONG side on BTC.
+
+### ETH momentum - GROSS bps (t-stat); NET = gross - 9. worst at 0ms. (delays 0/800ms/2s)
+Ungated, default target25/stop12:
+| oi/move | n | gross@0 | gross@800 | gross@2s | NET@0 | win@0 | worst@0 |
+|---|---|---|---|---|---|---|---|
+| 0.2/5  | 335 | +1.45 (t2.09) | +1.31 (t1.88) | +1.23 (t1.74) | -7.55 | 48% | -26.3 |
+| 0.2/10 | 174 | +2.80 (t2.40) | +2.73 (t2.32) | +2.32 (t1.99) | -6.20 | 51% | -26.3 |
+| 0.5/5  | 104 | +1.91 (t1.62) | +0.88 | +0.14 | -7.09 | 53% | -16.8 |
+| 0.5/10 | 63  | +3.98 (t2.30) | +2.87 (t1.70) | +1.65 | -5.02 | 59% | -17.1 |
+| 0.5/20 | 12  | +9.75 (t1.94) | +4.10 | +3.34 | +0.75 (thin) | 58% | -12.3 |
+
+Trend-confirm gated (trend0 = mom-trend-max 0.0), default target25/stop12:
+| oi/move | n | gross@0 | gross@800 | gross@2s | NET@800 | win@0 | worst@0 |
+|---|---|---|---|---|---|---|---|
+| 0.2/5  | 144 | +2.59 (t2.32) | +2.82 (t2.48) | +1.65 (t1.50) | -6.18 | 55% | -26.3 |
+| 0.2/10 | 85  | +4.52 (t2.56) | +5.41 (t2.98) | +3.93 (t2.25) | -3.59 | 55% | -26.3 |
+| 0.5/10 | 31  | +6.14 (t2.42) | +4.89 (t1.93) | +2.47 | -4.11 | 68% | -12.8 |
+| 0.5/20 | 7   | +11.76 (t1.69)| +4.79 | +3.93 | -4.21 | 71% | -12.2 |
+
+ETH read: gross is POSITIVE and significant at the populated cells (the momentum hypothesis
+is correct in SIGN on ETH), and the trend gate lifts it further - but the best trustable-n
+net is ~-3.6bps. The 0ms entry is consistently best (the continuation is freshest at the
+fire and decays by 2s) - the mirror of the fade where 2s was best. Latency mildly binds
+for momentum but is not a cliff (2s still positive).
+
+### ETH target/stop knob-bite (oi0.2/mv10, d=0ms, ungated; n=174 fixed)
+| target/stop | gross | t | worst |
+|---|---|---|---|
+| 15 / 8  | +1.55 | t1.71 | -26.3 |
+| 20 / 10 | +2.35 | t2.34 | -26.3 |
+| 25 / 12 | +2.80 | t2.40 | -26.3 |
+| 30 / 15 | +2.64 | t2.15 | -32.2 |
+| 40 / 20 | +2.71 | t1.98 | -32.3 |
+Knob-bite valid: gross rises to a plateau ~target25 then flattens; a wider stop fattens
+the worst trade (-26 -> -32) without adding gross. No target/stop setting clears the fee.
+
+### BTC momentum - GROSS bps (t-stat); NET = gross - 9. (delays 0/800ms/2s)
+Ungated, default target25/stop12:
+| oi/move | n | gross@0 | gross@800 | gross@2s | NET@0 | win@0 | worst@0 |
+|---|---|---|---|---|---|---|---|
+| 0.2/5  | 235 | -0.07 (t-0.11) | -0.73 | -1.09 (t-1.87) | -9.07 | 46% | -14.5 |
+| 0.2/10 | 75  | -1.06 (t-0.91) | -1.55 | -1.74 (t-1.50) | -10.06 | 41% | -17.0 |
+| 0.5/5  | 66  | +0.60 (t0.55)  | -0.18 | -0.72 | -8.40 | 53% | -13.7 |
+| 0.5/10 | 30  | -2.68 (t-1.55) | -3.28 (t-2.04) | -3.69 (t-2.38) | -11.68 | 33% | -13.7 |
+
+Trend-confirm gated (trend0), default target25/stop12:
+| oi/move | n | gross@0 | gross@800 | gross@2s | NET@0 | win@0 |
+|---|---|---|---|---|---|---|
+| 0.2/5  | 92 | +0.21 | -0.70 | -1.76 (t-1.88) | -8.79 | 46% |
+| 0.2/10 | 28 | +0.86 | -0.14 | -1.07 | -8.14 | 50% |
+| 0.5/5  | 28 | +0.06 | -1.11 | -2.68 (t-1.91) | -8.94 | 46% |
+
+BTC read: momentum is flat-to-NEGATIVE at every trustable cell, gets WORSE with delay
+(0ms least-bad) and WORSE with bigger target/stop. The trend gate does not rescue it.
+BTC cascades REVERT (that was the faint fade-positive in the baseline study), so trading
+WITH the move is the wrong side on BTC. Net deeply negative everywhere.
+
+### Gate knob-bite (trend-confirm cuts the set monotonically)
+ETH oi0.2/mv5: ungated n=335 -> trendL(max0.10) n=178 -> trend0(max0.0) n=144.
+BTC oi0.2/mv5: ungated n=235 -> trendL n=121 -> trend0 n=92.
+The gate bites (count moves with the dial) and on ETH it lifts quality (gross/win/t);
+on BTC it trims count without turning gross positive.
+
+### Conclusion on Tweak 5
+- Does trading WITH the continuation clear net-positive after 9bps at a TRUSTABLE n
+  (n>5) on either asset? NO. ETH best trustable net ~-3.6bps (trend-gated oi0.2/mv10,
+  +5.41 gross t2.98 n=85); BTC is net-negative everywhere. Only n<=12 cells go
+  net-positive = tiny-n, not trustable.
+- BUT the SIGN flips on ETH: momentum earns positive gross (+1 to +5bps) where the fade
+  lost - the overshoot/continuation IS the dominant flow on ETH, exactly as suspected.
+  The trend-confirm gate (liquidity stays pulled = trend unopposed) is a real
+  knob-bite-valid selectivity filter that lifts ETH gross/win/t. The signal is honest
+  and the right side; it is just too SMALL to clear the ~9bps taker round-trip.
+- SAME WALL as the fade: the binding constraint is the ~9bps TAKER FEE vs a few-bps
+  per-trade edge. Fading lost on ETH (wrong side) and was faint-positive sub-fee on BTC;
+  momentum is the mirror - faint-positive sub-fee on ETH (right side) and a loser on BTC.
+  Neither direction produces a trustable-n net-positive cell. *** The OI-cascade edge is
+  too small per trade for a taker at our fee structure, in BOTH directions. ***
+- Latency note: for momentum the 0ms entry is best (continuation freshest at the fire,
+  decays by 2s) - the mirror of the fade (2s best). Mild decay, not a cliff; the
+  "react don't race" property still broadly holds.
+
+This kills the momentum hypothesis cheap (0 euros), and confirms the OI-cascade lead is
+exhausted for a taker in either direction at our 9bps fee floor. Logs:
+/root/runs/oiscope_mom/{ETH,BTC}_{t15s8,t20s10,t25s12,t30s15,t40s20,trend0,trendL}.log.
+---

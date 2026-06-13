@@ -240,6 +240,61 @@ fn simulate_fade(
     Some(last_fav)
 }
 
+/// Simulate a TAKER MOMENTUM trade that goes WITH the cascade continuation: a DOWN
+/// cascade -> SELL/short to ride the continued drop; an UP cascade -> BUY/long to ride
+/// the continued rise. Entered at `delay_ns` AFTER the fire (our latency band). Exit by
+/// FIRST-TOUCH over the forward path in strict time order, using ONLY forward data (no
+/// lookahead): whichever of the PROFIT TARGET (`target_bps`, favourable in the cascade
+/// direction = the overshoot) or the STOP (`stop_bps`, against us = a reverter) is hit
+/// FIRST decides the trade; if neither is hit within `max_hold_ns`, mark to market.
+/// Returns the signed bps captured (negative = the cascade reverted against us and we
+/// stopped / bled). None if the path ended before the entry delay. EVERY entry's real
+/// signed bps is returned - reverters that stop out count their loss (no conditioning).
+/// Pure: depends only on the path.
+#[must_use]
+fn simulate_momentum(
+    path: &[(u64, f64)],
+    fire_ts: u64,
+    dir_down: bool,
+    delay_ns: u64,
+    target_bps: f64,
+    stop_bps: f64,
+    max_hold_ns: u64,
+) -> Option<f64> {
+    // trade WITH the move: profit when price CONTINUES in the cascade direction.
+    let mom_sign = if dir_down { -1.0 } else { 1.0 };
+    let entry_t = fire_ts.saturating_add(delay_ns);
+    let mut start = None;
+    for (i, &(ts, _)) in path.iter().enumerate() {
+        if ts >= entry_t {
+            start = Some(i);
+            break;
+        }
+    }
+    let start = start?;
+    let entry_px = path[start].1;
+    let entry_ts = path[start].0;
+    if entry_px <= 0.0 {
+        return None;
+    }
+    let mut last = 0.0f64;
+    for &(ts, px) in &path[start..] {
+        let signed = mom_sign * (px - entry_px) / entry_px * 10_000.0;
+        last = signed;
+        // FIRST-TOUCH: whichever bound is breached first in time decides the trade.
+        if target_bps > 0.0 && signed >= target_bps {
+            return Some(signed);
+        }
+        if stop_bps > 0.0 && signed <= -stop_bps {
+            return Some(signed);
+        }
+        if ts.saturating_sub(entry_ts) >= max_hold_ns {
+            return Some(signed);
+        }
+    }
+    Some(last)
+}
+
 /// Find the EXHAUSTION point in a cascade's forward path: the FIRST sample where
 /// BOTH conditions hold, meaning the forced flow has RUN OUT so a snap-back is
 /// likely:
@@ -367,6 +422,19 @@ fn confirm_revert(imb_start: f64, imb_end: f64, dir_down: bool, min_shift: f64) 
     toward_hit >= min_shift
 }
 
+/// MOMENTUM trend-confirm (Tweak 5) - the MIRROR of `confirm_revert`. A DOWN cascade
+/// was HIT on the BID; we trade WITH the continuation (short) only when LIQUIDITY
+/// STAYS PULLED on the hit side, i.e. the top-N imbalance does NOT shift back toward
+/// the hit side (the bid does NOT re-fill). An UP cascade was hit on the ASK; the
+/// trend holds when ask depth stays gone. Returns true when the toward-hit-side shift
+/// over the confirm window is <= `max_return` (default 0 = no meaningful return). The
+/// fade wants liquidity to RETURN; momentum wants it to STAY GONE. Pure.
+#[must_use]
+fn confirm_trend(imb_start: f64, imb_end: f64, dir_down: bool, max_return: f64) -> bool {
+    let toward_hit = if dir_down { imb_end - imb_start } else { imb_start - imb_end };
+    toward_hit <= max_return
+}
+
 /// Tweak 3 Part B maker-fill feasibility. During the reversion leg (AT/after the
 /// spike peak), did an aggressive HL trade PRINT THROUGH a resting maker `level`,
 /// in the direction that fills a passive order capturing the reversion? Reuses
@@ -385,6 +453,10 @@ fn maker_fills_through(trades: &[(u64, f64, bool)], peak_ts: u64, level: f64, di
 /// Taker side of the urgent revert EXIT (the maker fade exits by crossing). Used by
 /// the Tweak-4 net fee accounting (maker entry + taker exit ~= 6bps round-trip).
 const TAKER_EXIT_FEE_BPS: f64 = 4.5;
+
+/// Momentum is a TAKER-in / TAKER-out continuation trade (the entry must CROSS - it is
+/// NOT a maker-in-path play), so the round-trip is the full taker fee ~9bps.
+const MOM_TAKER_RT_FEE_BPS: f64 = 9.0;
 
 /// Tweak 4 (COMBINED) - the HONEST maker-in-path cascade fade. PROVIDE liquidity INTO
 /// the forced flow: rest a maker limit at `arm_px` offset INTO the cascade direction
@@ -512,6 +584,12 @@ struct Cfg {
     maker_fade: bool,
     maker_offset_bps: f64,
     maker_armgate: bool,
+    momentum: bool,
+    mom_target_bps: f64,
+    mom_stop_bps: f64,
+    mom_hold_ns: u64,
+    mom_trend: bool,
+    mom_trend_max: f64,
 }
 
 /// One detected cascade and its characterisation (scalars only; the forward path
@@ -570,6 +648,12 @@ struct CascadeStat {
     maker_capture: Option<f64>,
     /// ns from fire to the maker fill (None if never filled).
     maker_fill_ns: Option<u64>,
+    /// MOMENTUM (Tweak 5): signed bps of the trade-WITH-the-continuation TAKER trade at
+    /// each configured delay (None = no entry / momentum off / trend-gate skipped).
+    moms: Vec<Option<f64>>,
+    /// True if the momentum trend-confirm passed (liquidity stayed pulled on the hit
+    /// side). Always true when --mom-trend is OFF.
+    mom_trend_ok: bool,
 }
 
 /// Pending cascade being collected over its forward window.
@@ -815,6 +899,24 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], trades: 
     } else {
         (false, false, None, None)
     };
+    // MOMENTUM (Tweak 5, default OFF): trade WITH the cascade continuation. The
+    // optional trend-confirm is the MIRROR of ob-confirm (liquidity STAYS PULLED on the
+    // hit side => imbalance does NOT return). No-lookahead: imb_end was read at the
+    // confirm-window-end; momentum entries enter at fire+delay and the forward path
+    // decides target/stop by first-touch. Independent of the fade/maker tweaks.
+    let mom_trend_ok = if cfg.momentum && cfg.mom_trend {
+        confirm_trend(imb_start, imb_end, cur.dir_down, cfg.mom_trend_max)
+    } else {
+        true
+    };
+    let moms: Vec<Option<f64>> = if cfg.momentum && mom_trend_ok {
+        cfg.delays_ns
+            .iter()
+            .map(|&d| simulate_momentum(path, cur.fire_ts, cur.dir_down, d, cfg.mom_target_bps, cfg.mom_stop_bps, cfg.mom_hold_ns))
+            .collect()
+    } else {
+        cfg.delays_ns.iter().map(|_| None).collect()
+    };
     let fades: Vec<Option<f64>> = match exhaust_ts {
         Some(anchor) => cfg
             .delays_ns
@@ -857,6 +959,8 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], oi_path: &[(u64, f64)], trades: 
         maker_filled,
         maker_capture,
         maker_fill_ns,
+        moms,
+        mom_trend_ok,
     }
 }
 // ----------------------------------------------------------------------------
@@ -874,6 +978,11 @@ fn fmt_ns(ns: u64) -> String {
 /// Collected fade captures (bps) at one delay index across cascades (Some only).
 fn fade_col(ds: &[&CascadeStat], di: usize) -> Vec<f64> {
     ds.iter().filter_map(|d| d.fades.get(di).copied().flatten()).collect()
+}
+
+/// Collected MOMENTUM captures (bps) at one delay index across cascades (Some only).
+fn mom_col(ds: &[&CascadeStat], di: usize) -> Vec<f64> {
+    ds.iter().filter_map(|d| d.moms.get(di).copied().flatten()).collect()
 }
 
 /// Compact one-line per-day summary.
@@ -1053,6 +1162,38 @@ fn report_pooled(label: &str, ds: &[&CascadeStat], cfg: &Cfg, num_days: usize) {
             v.len()
         );
     }
+
+    if cfg.momentum {
+        if cfg.mom_trend {
+            let pass = ds.iter().filter(|d| d.mom_trend_ok).count();
+            println!(
+                "MOM TREND-CONFIRM (liquidity STAYS PULLED on hit side: toward-hit imbalance return <= {:.2} within {})  confirmed {pass}/{n} = {:.0}%   skipped {}",
+                cfg.mom_trend_max, fmt_ns(cfg.confirm_ns),
+                pass as f64 / n as f64 * 100.0,
+                n - pass
+            );
+        }
+        println!(
+            "MOMENTUM (Tweak 5: trade WITH the continuation; DOWN->short UP->long; target {:.0}bps / stop {:.0}bps / hold {}; TAKER round-trip ~{:.0}bps):",
+            cfg.mom_target_bps, cfg.mom_stop_bps, fmt_ns(cfg.mom_hold_ns), MOM_TAKER_RT_FEE_BPS
+        );
+        for (di, &dl) in cfg.delays_ns.iter().enumerate() {
+            let v = mom_col(ds, di);
+            if v.is_empty() {
+                println!("  delay {:>6}              (no entries)", fmt_ns(dl));
+                continue;
+            }
+            let wins = v.iter().filter(|&&x| x > 0.0).count();
+            let worst = v.iter().copied().fold(f64::INFINITY, f64::min);
+            let g = mean(&v);
+            println!(
+                "  delay {:>6}   GROSS mean {:+.2}bps  median {:+.2}  t-stat {:+.2}  win {:.0}%  worst {:+.1}  n={}   NET(-{:.0}) {:+.2}bps",
+                fmt_ns(dl), g, median(&v), tstat(&v),
+                wins as f64 / v.len() as f64 * 100.0, worst, v.len(),
+                MOM_TAKER_RT_FEE_BPS, g - MOM_TAKER_RT_FEE_BPS
+            );
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -1088,6 +1229,12 @@ fn run() -> Result<(), String> {
         maker_fade: false,
         maker_offset_bps: 0.0,
         maker_armgate: false,
+        momentum: false,
+        mom_target_bps: 25.0,
+        mom_stop_bps: 12.0,
+        mom_hold_ns: 30_000_000_000,
+        mom_trend: false,
+        mom_trend_max: 0.0,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut oi_drops: Vec<f64> = vec![0.5];
@@ -1136,6 +1283,12 @@ fn run() -> Result<(), String> {
             "--maker-fade" => cfg.maker_fade = true,
             "--maker-offset" => cfg.maker_offset_bps = val()?.parse().map_err(|e| format!("maker-offset: {e}"))?,
             "--maker-armgate" => cfg.maker_armgate = true,
+            "--momentum" => cfg.momentum = true,
+            "--mom-target" => cfg.mom_target_bps = val()?.parse().map_err(|e| format!("mom-target: {e}"))?,
+            "--mom-stop" => cfg.mom_stop_bps = val()?.parse().map_err(|e| format!("mom-stop: {e}"))?,
+            "--mom-hold" => cfg.mom_hold_ns = parse_dur(&val()?)?,
+            "--mom-trend" => cfg.mom_trend = true,
+            "--mom-trend-max" => cfg.mom_trend_max = val()?.parse().map_err(|e| format!("mom-trend-max: {e}"))?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -1205,6 +1358,17 @@ fn run() -> Result<(), String> {
             cfg.maker_fee_bps, TAKER_EXIT_FEE_BPS, cfg.maker_fee_bps + TAKER_EXIT_FEE_BPS, 2.0 * cfg.maker_fee_bps, gate
         );
     }
+    if cfg.momentum {
+        let gate = if cfg.mom_trend {
+            format!("trend-confirm ON (liquidity STAYS pulled: toward-hit imbalance return <= {:.2} within {})", cfg.mom_trend_max, fmt_ns(cfg.confirm_ns))
+        } else {
+            "ungated (every detected cascade)".to_string()
+        };
+        println!(
+            "MOMENTUM ON (Tweak 5, trade WITH the continuation): DOWN cascade -> SELL/short, UP -> BUY/long; enter TAKER at fire + delays [{}]; FIRST-TOUCH exit on +{:.0}bps target OR -{:.0}bps stop OR {} hold; TAKER round-trip ~{:.0}bps (GROSS + NET-of-{:.0} reported). Gate: {}. Reverters that stop out ARE counted (no conditioning).",
+            delay_lbl.join(","), cfg.mom_target_bps, cfg.mom_stop_bps, fmt_ns(cfg.mom_hold_ns), MOM_TAKER_RT_FEE_BPS, MOM_TAKER_RT_FEE_BPS, gate
+        );
+    }
     println!("SWEEP oi-drop {:?}%  x  price-move {:?}bps", oi_drops, price_moves);
 
     // build the threshold grid (knob-bite: cascade set must move with these).
@@ -1265,6 +1429,10 @@ fn run() -> Result<(), String> {
         for &dl in &cfg.delays_ns {
             hdr.push_str(&format!(",fade_{}", fmt_ns(dl)));
         }
+        hdr.push_str(",mom_trend_ok");
+        for &dl in &cfg.delays_ns {
+            hdr.push_str(&format!(",mom_{}", fmt_ns(dl)));
+        }
         writeln!(f, "{hdr}").map_err(|e| format!("dump: {e}"))?;
         for col in &pooled {
             for c in col {
@@ -1288,6 +1456,13 @@ fn run() -> Result<(), String> {
                 );
                 for fv in &c.fades {
                     match fv {
+                        Some(x) => line.push_str(&format!(",{x:.3}")),
+                        None => line.push_str(",NA"),
+                    }
+                }
+                line.push_str(&format!(",{}", c.mom_trend_ok));
+                for mv in &c.moms {
+                    match mv {
                         Some(x) => line.push_str(&format!(",{x:.3}")),
                         None => line.push_str(",NA"),
                     }
@@ -1576,5 +1751,69 @@ mod tests {
         let (_, bps) = simulate_maker_fade(&path, &trades, 0, 100.0, true, 0.0, 1000.0, 30_000_000_000, Some((800_000_000, false)))
             .expect("filled before the cut");
         assert!((bps - (-50.0)).abs() < 5.0, "flattened at the confirm read ~ -50bps, got {bps}");
+    }
+
+    #[test]
+    fn momentum_continuation_hits_target_is_a_win() {
+        // DOWN cascade -> we SHORT. Price CONTINUES down (the overshoot): 100 -> 99.7
+        // (~+30bps in our favour). target 25 / stop 12. First touch is the target.
+        let path = vec![(0u64, 100.0), (500_000_000, 99.8), (1_000_000_000, 99.7)];
+        let cap = simulate_momentum(&path, 0, true, 0, 25.0, 12.0, 30_000_000_000).unwrap();
+        assert!(cap >= 25.0, "rode the continuation to target, got {cap}");
+        // UP cascade -> we LONG. Price continues up 100 -> 100.3 (~+30bps). target hit.
+        let up = vec![(0u64, 100.0), (500_000_000, 100.2), (1_000_000_000, 100.3)];
+        let capu = simulate_momentum(&up, 0, false, 0, 25.0, 12.0, 30_000_000_000).unwrap();
+        assert!(capu >= 25.0, "long continuation to target, got {capu}");
+    }
+
+    #[test]
+    fn momentum_reverter_hits_stop_is_small_loss() {
+        // DOWN cascade -> we SHORT, but the cascade SNAPS BACK (a reverter): price
+        // reverts UP against our short to 100.12 (~-12bps). stop 12 -> stopped out at
+        // the expected small loss (NOT the big target). The reverter IS counted.
+        let path = vec![(0u64, 100.0), (500_000_000, 100.05), (1_000_000_000, 100.12)];
+        let cap = simulate_momentum(&path, 0, true, 0, 25.0, 12.0, 30_000_000_000).unwrap();
+        assert!(cap <= -12.0, "reverter stops out, got {cap}");
+        assert!(cap > -30.0, "stop caps the loss small, got {cap}");
+    }
+
+    #[test]
+    fn momentum_first_touch_stop_before_target_is_a_loss() {
+        // FIRST-TOUCH ordering. DOWN cascade -> SHORT. Price first reverts UP to 100.13
+        // (hits the -12 stop at 0.5s) and only LATER drops to 99.7 (which WOULD hit the
+        // +25 target). Because the stop is touched FIRST in time, the trade is a LOSS -
+        // the later target must NOT be credited (no lookahead past the exit).
+        let stop_first = vec![(0u64, 100.0), (500_000_000, 100.13), (1_000_000_000, 99.7)];
+        let cap = simulate_momentum(&stop_first, 0, true, 0, 25.0, 12.0, 30_000_000_000).unwrap();
+        assert!(cap < 0.0, "stop touched first => loss, got {cap}");
+        // Mirror: target touched FIRST (0.5s) then a later move that would breach the
+        // stop -> the trade is a WIN, exited at the target before the reversal.
+        let target_first = vec![(0u64, 100.0), (500_000_000, 99.7), (1_000_000_000, 100.13)];
+        let capw = simulate_momentum(&target_first, 0, true, 0, 25.0, 12.0, 30_000_000_000).unwrap();
+        assert!(capw >= 25.0, "target touched first => win, got {capw}");
+    }
+
+    #[test]
+    fn momentum_none_when_path_too_short() {
+        // entry delay is past the end of the path => no entry.
+        let path = vec![(0u64, 100.0), (100_000_000, 100.0)];
+        assert!(simulate_momentum(&path, 0, true, 800_000_000, 25.0, 12.0, 30_000_000_000).is_none());
+    }
+
+    #[test]
+    fn momentum_trend_confirm_mirror_of_revert() {
+        // DOWN cascade hit the BID. TREND holds when the bid does NOT return =>
+        // imbalance does NOT rise toward bid (toward-hit shift <= 0). It stays leaning
+        // ask (-0.2 -> -0.4) => confirm_trend TRUE. If the bid RETURNS (-0.2 -> +0.2,
+        // toward-hit +0.4) the trend is NOT confirmed (that is the fade case).
+        assert!(confirm_trend(-0.20, -0.40, true, 0.0), "bid stayed pulled => trend");
+        assert!(!confirm_trend(-0.20, 0.20, true, 0.0), "bid returned => no trend");
+        // UP cascade hit the ASK: trend holds when ask stays gone (imb does NOT fall).
+        assert!(confirm_trend(0.20, 0.40, false, 0.0), "ask stayed pulled => trend");
+        assert!(!confirm_trend(0.20, -0.20, false, 0.0), "ask returned => no trend");
+        // it is the exact mirror of confirm_revert: a return that confirms a revert
+        // must NOT confirm a trend, and vice-versa.
+        assert!(confirm_revert(-0.20, 0.20, true, 0.10));
+        assert!(!confirm_trend(-0.20, 0.20, true, 0.0));
     }
 }

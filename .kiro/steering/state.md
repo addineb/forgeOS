@@ -549,3 +549,32 @@ reproducible, coinflip loses on real data.
   say which). When there is both good and bad news, state the BAD FIRST. No hype, no
   emotional rollercoaster, no burying the lede. Never omit anything important, but keep it
   tight. He gets lost when a result is ambiguous - always make positive-vs-negative explicit.
+- TWEAK 5 MOMENTUM = trade WITH the cascade continuation (oiscope --momentum/--mom-target/--mom-stop/
+  --mom-hold/--mom-trend, default OFF, baseline byte-preserved; build+clippy(-Dwarnings,all-targets)+
+  oiscope tests 18->23 green) TESTED 10d ETH+BTC = NO, does not clear the 9bps taker fee at trustable n.
+  TAKER entry IN the cascade dir (down->short, up->long), first-touch target/stop/hold, reverters that
+  stop out COUNTED. *** SIGN FLIPS on ETH: momentum earns +1..+5bps GROSS where the fade lost - the
+  overshoot/continuation IS the dominant flow on ETH (trader's read confirmed); trend-confirm gate
+  (ob-confirm INVERTED: liquidity STAYS pulled = trend unopposed) is a real knob-bite-valid filter that
+  lifts ETH gross/win/t (oi0.2/mv10 ungated +2.80 t2.40 -> trend0 +5.41 t2.98 n=85). BUT best trustable
+  NET-of-9 ~-3.6bps (still sub-fee); only n<=12 cells go net-positive (tiny-n). BTC momentum flat-to-
+  NEGATIVE everywhere (BTC reverts = wrong side for momentum), gate does not save it. 0ms entry best
+  (continuation freshest at fire, decays by 2s = mirror of fade where 2s was best). *** SAME WALL as the
+  fade, other side: ~9bps taker fee vs a few-bps per-trade edge. OI-cascade edge too small for a taker in
+  BOTH directions at our fees. *** Killed cheap, 0 euros. docs/research/oi-cascade-study.md Tweak 5;
+  logs /root/runs/oiscope_mom/{ETH,BTC}_{t15s8,t20s10,t25s12,t30s15,t40s20,trend0,trendL}.log.
+- TWEAK 5 MOMENTUM (trade WITH the cascade continuation; oiscope --momentum/--mom-target/--mom-stop/
+  --mom-hold/--mom-trend, default OFF; build+clippy+oiscope 18->23 tests green; baseline+T1-4 byte-
+  preserved) = NO at trustable n. VERDICT bad-first: net of ~9bps taker every trustable-n cell NEGATIVE
+  both assets -> OI-cascade edge DEAD in BOTH directions (fade AND momentum). GOOD: ETH sign FLIPS
+  POSITIVE (+1..+5bps gross where fade lost) -> overshoot/continuation IS the dominant flow on ETH
+  (confirms trader's read); trend-confirm (ob-confirm INVERTED: liquidity STAYS pulled) = real knob-bite
+  filter, lifts ETH to best +5.41bps gross t2.98 n=85 - but NET-of-9 = -3.59 (sub-fee). BTC momentum
+  flat-to-NEG everywhere (BTC reverts = wrong side; mirror of its faint fade-positive). 0ms entry best
+  for momentum (continuation freshest at fire), mirror of fade (2s best); mild decay not a cliff.
+  *** THE WALL, now nailed across ALL leads: ~9bps TAKER FEE vs a ~5bps microstructure edge - signals
+  are REAL+honest but SMALLER than the toll. *** OI-cascade fully exhausted (taker, both directions).
+  docs/research/oi-cascade-study.md Tweak 5; logs /root/runs/oiscope_mom/. IMPLICATION: microstructure-
+  bps edges on HL TAKER are structurally dead. Only escapes = (a) much lower fees (real maker rebate /
+  different venue/tier) or (b) a fundamentally BIGGER-per-trade edge (tens of bps, not 5), i.e. NOT
+  tick-scale microstructure. Next lead must clear that bar by construction.
