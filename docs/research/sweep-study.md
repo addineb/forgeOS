@@ -342,3 +342,35 @@ MORE DAYS on the winning config (reclaim + EXHAUSTION gate, ETH 15m/80, rr~2) to
 and t past significance (t>2). We have 61d Nov-Dec 2025 + Feb from the prior OOS pulls.
 If the +5-9bps net survives at trustable n with t>2 and an OOS period -> first real
 candidate from this whole study. Logs /root/runs/reclaim/.
+## Test A @ SCALE (61d train Nov-Dec25 + 36d OOS Feb-Jun26) - DID NOT SURVIVE
+
+Ran the winning config (reclaim + EXHAUSTION gate, rr2, 15m/80 + 30m/80) on the full
+data: 61 train days + 36 independent OOS days, ETH+BTC.
+
+### VERDICT (bad): the 10-day net-positive was SMALL-SAMPLE OPTIMISM. No robust edge.
+- The EXHAUSTION SEPARATOR COLLAPSES at scale. P(rev|exhausted) vs base:
+  ETH train 15m/80 73% vs 70% (+3pp); 30m/80 69% vs 68% (+1pp); BTC NEGATIVE
+  (71% vs 75%). The +15-30pp lift seen on 10 days was an ARTIFACT - at 61 days it is
+  ~+1-3pp = essentially gone.
+- +EXH NET (after 9bps) mostly negative/breakeven: ETH train 15m/80 -3.0 (n=60),
+  30m/80 +0.6 (n=45); BTC train 30m/80 -11.4 (n=26). OOS: ETH 15m/80 +EXH DIED
+  (gross +1.0, net -8.0); ETH 30m/80 net -2.7.
+- Does NOT replicate train<->OOS: BTC 30m/80 +EXH train -11.4 vs OOS +13.3 (t2.48,
+  n=17) = a SIGN FLIP = noise, not signal (the one t>2 cell has a negative train twin
+  and n=17 - not trustable).
+- The big-n "all" reclaim cells are ~breakeven gross (ETH train +2.5/+3.0, OOS
+  -0.1/+0.9), never near the 9bps fee.
+
+### GOOD (small, honest)
+The reclaim ENTRY is a real mechanical capture improvement (it moved the "all" gross
+from negative to ~0-+3bps and win to 38-45%) - keep it as a TECHNIQUE. But it does not,
+by itself, create a net edge.
+
+### SWEEP LEAD - CONCLUDED
+Real setup; the reclaim entry improves capture; the structural wick-stop fixes bleed -
+but NO robust net-positive edge survives a proper sample + OOS, and the EXHAUSTION
+"tell" was OVERFIT to 10 days (collapses to +1-3pp at 61d). The bigger sample caught
+the overfit BEFORE any euros were risked - the process working (unlike the prior project
+that lied). Durable, reusable across future leads: (1) reclaim entry, (2) structural
+wick-stop, (3) the lesson that a 10-day separator MUST be re-checked at 60d+ / OOS
+before trust. 0 euros risked.

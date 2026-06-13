@@ -664,3 +664,17 @@ reproducible, coinflip loses on real data.
   GATE = MORE DAYS on the winning config (reclaim+EXH, ETH 15m/80, rr2) for trustable n + t>2 (have 61d
   Nov-Dec25 + Feb from prior OOS pulls), then OOS. docs/research/sweep-study.md "Test A" section; logs
   /root/runs/reclaim/.
+- *** TEST A RECLAIM @ SCALE (61d train Nov-Dec25 + 36d OOS Feb-Jun26, reclaim+EXH rr2, ETH+BTC) =
+  DID NOT SURVIVE - the 10-day net-positive was SMALL-SAMPLE OPTIMISM. *** Bad: the EXHAUSTION
+  separator COLLAPSES at scale - P(rev|exhausted) vs base = ETH train 15m/80 73% vs 70% (+3pp),
+  30m/80 +1pp, BTC NEGATIVE (71 vs 75) - the +15-30pp on 10 days was an ARTIFACT (now ~+1-3pp = gone).
+  +EXH NET mostly neg/breakeven (ETH train 15m/80 -3.0 n=60, 30m/80 +0.6 n=45; BTC train 30m/80 -11.4)
+  and does NOT replicate train<->OOS (BTC 30m/80 +EXH train -11.4 vs OOS +13.3 t2.48 n=17 = SIGN FLIP =
+  noise; ETH 15m/80 +EXH DIED in OOS net -8.0). Big-n "all" reclaim ~breakeven gross (ETH train +2.5/+3.0,
+  OOS -0.1/+0.9), never near 9bps fee. Good(small/honest): the reclaim ENTRY is a real mechanical capture
+  improvement (moved "all" gross negative->~0-+3, win 38-45%) - keep as a TECHNIQUE, not an edge by itself.
+  *** SWEEP LEAD CONCLUDED: real setup + reclaim entry improves capture + structural wick-stop fixes bleed,
+  but NO robust net edge survives proper sample+OOS; the exhaustion "tell" was OVERFIT to 10 days. Bigger
+  sample caught the overfit BEFORE risking euros (process working). *** DURABLE/REUSABLE: (1) reclaim entry,
+  (2) structural wick-stop, (3) LESSON: a 10-day separator MUST be re-checked at 60d+/OOS before trust.
+  0 euros. docs/research/sweep-study.md "Test A @ SCALE" section; logs /root/runs/rcval/.
