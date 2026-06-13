@@ -249,3 +249,38 @@ But a working SEPARATOR is necessary, not sufficient: the honest first-touch tra
 still bleeds on overshoot + fees, so 0 promote. NEXT (if revisited): a trade STRUCTURE
 that survives the overshoot (enter on confirmed range RE-ENTRY, or wider/scaled stop)
 applied to the exhaustion-selected reversals - the prediction is there to build on.
+## Option A (structural wick stop) + Option B (flow-reaccel exit)
+
+Re-test (sweepscope EXTENDED, branch forgelag; --dyn-stop/--rr/--stop-buffer +
+--flow-exit/--flow-exit-win/--flow-exit-k, all default OFF, baseline byte-preserved;
+clippy -Dwarnings clean; 31 unit tests incl 4 new). The trader's call: manipulation
+sweeps are DYNAMIC (no fixed levels), so a fixed bps stop / fixed R:R is wrong.
+- OPTION A = REVERSAL taker with a STRUCTURAL stop placed just BEYOND the sweep WICK
+  (adverse extreme over [fire, entry], no-lookahead) + a buffer; target = rr * stop.
+- OPTION B = REVERSAL taker with NO price stop; exit when the FORCED (break-dir)
+  aggressive flow RE-ACCELERATES (trailing-window rate >= k * the per-sweep entry-
+  window flow rate = self-calibrated, units transfer across assets).
+Gated on the EXHAUSTION separator. 10 days ETH+BTC, range-max 80, sweep-margin 5.
+
+### VERDICT (bad first): NO net-positive trade at trustable n - the 9bps TAKER FEE.
+Every trustable-n cell, both assets, still NET-NEGATIVE after the 9bps round-trip
+taker fee. Best cell ETH 15m/80, rr 2.0, struct(all): n=104 win 40% GROSS +4.0bps
+t1.49 -> NET -5.0bps. Higher reward multiples are WORSE (rr 3/4/6 all degrade: the
+reversal does NOT run to big targets reliably, so win-rate collapses faster than the
+winners grow). Option B (flow-exit) ~ same as A, a touch worse.
+
+### GOOD: the stop idea was RIGHT - it fixed the bleed (first gross-positive cell).
+The dynamic structural wick-stop flipped the ETH 15m/80 reversal taker from GROSS
+-1.4bps (fixed 15bps stop) to GROSS +4.0bps, win 27% -> 40% - the FIRST time this
+setup's reversal trade is gross-positive at a trustable n. Confirms the trader: the
+fixed stop really was the leak (the sweep's own overshoot was tripping it). Structural
+stops came out SMALL (~10-14bps) because entry is 60s after the poke (the confirm
+window), by which point the wick is close - so the win is from the dynamic R:R, not a
+wide stop.
+
+### Bottom line + next
+Stop-bleed is FIXED (gross turned positive) but the BINDING WALL is back to the ~9bps
+TAKER FEE (gross +4 < fee 9). Same wall as every prior lead. The only escape on this
+setup = CUT THE FEE: a MAKER entry (~6bps RT) gated on EXHAUSTION (which picks the
+80-90% reverters, so resting limits should dodge most of the run-over/adverse selection
+that killed the earlier maker test) + the structural/flow exit. Logs /root/runs/optab*.

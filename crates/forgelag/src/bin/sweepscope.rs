@@ -618,6 +618,13 @@ struct Cfg {
     absorb_minvol: f64,
     state_gate: bool,
     min_oidrop: f64,
+    // OPTION A/B dynamic reversal exits (default OFF; additive, output byte-preserved).
+    dyn_stop: bool,
+    stop_buffer_bps: f64,
+    rr_mult: f64,
+    flow_exit: bool,
+    flow_exit_win_ns: u64,
+    flow_exit_k: f64,
 }
 
 /// One detected sweep and its full characterisation (scalars only; the forward
@@ -684,6 +691,10 @@ struct SweepStat {
     /// REVERSAL MAKER gated by the 3-state (ABSORBED or EXHAUSTED), hold-gate.
     rev_make_state: Option<f64>,
     rev_make_state_filled: bool,
+    // OPTION A/B dynamic-exit reversal taker variants (None unless the flag is on).
+    rev_take_struct: Option<f64>,
+    struct_stop_bps: f64,
+    rev_take_flowexit: Option<f64>,
 }
 
 /// Pending sweep being collected over its forward window.
@@ -948,6 +959,23 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
             Some((_, bps)) => (Some(bps), true),
             None => (None, false),
         };
+    // OPTION A/B (default OFF): dynamic-stop + flow-reaccel-exit REVERSAL taker.
+    // our reversal side: UP sweep -> SHORT (long=false), DOWN sweep -> LONG (true).
+    let rev_long = sweep_down;
+    let (rev_take_struct, struct_stop_bps) = if cfg.dyn_stop {
+        match first_touch_struct(path, cur.fire_ts, anchor, rev_long, cfg.rev_target_bps, cfg.rr_mult, cfg.stop_buffer_bps, cfg.hold_ns) {
+            Some((bps, sd)) => (Some(bps), sd),
+            None => (None, f64::NAN),
+        }
+    } else {
+        (None, f64::NAN)
+    };
+    let rev_take_flowexit = if cfg.flow_exit {
+        let base_rate = flow.vol_dir / cfg.confirm_ns.max(1) as f64;
+        first_touch_flow_exit(path, trades, anchor, rev_long, dir_up, cfg.rev_target_bps, cfg.hold_ns, cfg.flow_exit_win_ns, base_rate, cfg.flow_exit_k)
+    } else {
+        None
+    };
     SweepStat {
         day: day.to_string(),
         l_ns,
@@ -991,6 +1019,9 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
         consumed_frac,
         rev_make_state,
         rev_make_state_filled,
+        rev_take_struct,
+        struct_stop_bps,
+        rev_take_flowexit,
     }
 }
 
@@ -1137,6 +1168,26 @@ fn report_pooled(label: &str, ds: &[&SweepStat], cfg: &Cfg, num_days: usize) {
     println!("(B) CONTINUATION  (with the break: UP->long, DOWN->short; taker)");
     report_trades("cont-TAKER (all)", &caps_of(ds, |s| s.cont_take), TAKER_RT_FEE_BPS);
     report_trades("cont-TAKER (+follow gate)", &caps_of(ds, |s| if s.cont_confirm { s.cont_take } else { None }), TAKER_RT_FEE_BPS);
+
+    // ----- OPTION A/B dynamic-exit REVERSAL variants (only when ON; additive) -----
+    if cfg.dyn_stop || cfg.flow_exit {
+        println!("(A2) DYNAMIC-EXIT REVERSAL (taker; structural wick stop / flow-reaccel exit)");
+        if cfg.dyn_stop {
+            let sds: Vec<f64> = ds.iter().filter(|s| s.struct_stop_bps.is_finite()).map(|s| s.struct_stop_bps).collect();
+            println!(
+                "    structural stop dist: mean {:.0}bps  median {:.0}bps  (dynamic, beyond the wick + {:.0}bps buffer; rr {:.2})",
+                if sds.is_empty() { 0.0 } else { mean(&sds) }, median(&sds), cfg.stop_buffer_bps, cfg.rr_mult
+            );
+            report_trades("rev-TAKER struct (all)", &caps_of(ds, |s| s.rev_take_struct), TAKER_RT_FEE_BPS);
+            report_trades("rev-TAKER struct (+EXH)", &caps_of(ds, |s| if s.state_exhausted { s.rev_take_struct } else { None }), TAKER_RT_FEE_BPS);
+            report_trades("rev-TAKER struct (+ABS|EXH)", &caps_of(ds, |s| if s.state_absorbed || s.state_exhausted { s.rev_take_struct } else { None }), TAKER_RT_FEE_BPS);
+        }
+        if cfg.flow_exit {
+            report_trades("rev-TAKER flowexit (all)", &caps_of(ds, |s| s.rev_take_flowexit), TAKER_RT_FEE_BPS);
+            report_trades("rev-TAKER flowexit (+EXH)", &caps_of(ds, |s| if s.state_exhausted { s.rev_take_flowexit } else { None }), TAKER_RT_FEE_BPS);
+            report_trades("rev-TAKER flowexit (+ABS|EXH)", &caps_of(ds, |s| if s.state_absorbed || s.state_exhausted { s.rev_take_flowexit } else { None }), TAKER_RT_FEE_BPS);
+        }
+    }
 
     // ----- NEW flow-vs-impact separator (only when ON; additive, byte-preserved) -----
     if cfg.flow_on {
@@ -1305,6 +1356,12 @@ fn run() -> Result<(), String> {
         absorb_minvol: 0.0,
         state_gate: false,
         min_oidrop: 0.0,
+        dyn_stop: false,
+        stop_buffer_bps: 5.0,
+        rr_mult: 0.0,
+        flow_exit: false,
+        flow_exit_win_ns: 10_000_000_000,
+        flow_exit_k: 2.0,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![30 * 60_000_000_000];
@@ -1359,6 +1416,12 @@ fn run() -> Result<(), String> {
             "--absorb-minvol" => cfg.absorb_minvol = val()?.parse().map_err(|e| format!("absorb-minvol: {e}"))?,
             "--state-gate" => { cfg.state_gate = true; cfg.flow_on = true; }
             "--min-oidrop" => { cfg.min_oidrop = val()?.parse().map_err(|e| format!("min-oidrop: {e}"))?; cfg.flow_on = true; }
+            "--dyn-stop" => cfg.dyn_stop = true,
+            "--stop-buffer" => cfg.stop_buffer_bps = val()?.parse().map_err(|e| format!("stop-buffer: {e}"))?,
+            "--rr" => cfg.rr_mult = val()?.parse().map_err(|e| format!("rr: {e}"))?,
+            "--flow-exit" => cfg.flow_exit = true,
+            "--flow-exit-win" => cfg.flow_exit_win_ns = parse_dur(&val()?)?,
+            "--flow-exit-k" => cfg.flow_exit_k = val()?.parse().map_err(|e| format!("flow-exit-k: {e}"))?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -1389,6 +1452,12 @@ fn run() -> Result<(), String> {
         "ORDERFLOW CONFIRM: absorption shift >= {:.2} (reversal) / follow-through return <= {:.2} (continuation), read at fire+{}",
         cfg.confirm_imb, cfg.confirm_trend_max, fmt_ns(cfg.confirm_ns)
     );
+    if cfg.dyn_stop || cfg.flow_exit {
+        println!(
+            "DYNAMIC EXIT ON: dyn-stop {} (buffer {:.0}bps, rr {:.2})  flow-exit {} (win {}, k {:.2})",
+            cfg.dyn_stop, cfg.stop_buffer_bps, cfg.rr_mult, cfg.flow_exit, fmt_ns(cfg.flow_exit_win_ns), cfg.flow_exit_k
+        );
+    }
     let lb_lbl: Vec<String> = lookbacks.iter().map(|&l| fmt_ns(l)).collect();
     println!(
         "SWEEP grid: lookback L {:?}  x  range-max {:?}bps  x  sweep-margin {:?}bps",
@@ -1520,9 +1589,182 @@ fn main() -> ExitCode {
         }
     }
 }
+/// OPTION A - REVERSAL taker with a STRUCTURAL (dynamic) stop placed just BEYOND
+/// the sweep WICK (the adverse extreme over [fire_ts, entry_ts]) plus a buffer,
+/// instead of a fixed bps stop. `long` = our reversal side (true for a DOWN sweep
+/// => buy; false for an UP sweep => short). The wick is the adverse extreme by
+/// entry: MAX microprice for a short, MIN for a long. Stop distance =
+/// |entry - wick| + `buffer_bps`. Target = `rr` * stop-distance when `rr` > 0
+/// (dynamic R:R), else fixed `target_bps`. No-lookahead: the wick is read only
+/// over [fire_ts, entry_ts] (<= entry). Returns (signed_bps, stop_dist_bps). Pure.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn first_touch_struct(
+    path: &[(u64, f64)],
+    fire_ts: u64,
+    entry_ts: u64,
+    long: bool,
+    target_bps: f64,
+    rr: f64,
+    buffer_bps: f64,
+    hold_ns: u64,
+) -> Option<(f64, f64)> {
+    let start = path.iter().position(|&(ts, _)| ts >= entry_ts)?;
+    let entry_px = path[start].1;
+    let entry_t = path[start].0;
+    if entry_px <= 0.0 {
+        return None;
+    }
+    // adverse wick over [fire, entry] (no-lookahead): MAX for a short, MIN for a long.
+    let mut wick = entry_px;
+    for &(ts, px) in path {
+        if ts < fire_ts || ts > entry_ts {
+            continue;
+        }
+        if long {
+            if px < wick {
+                wick = px;
+            }
+        } else if px > wick {
+            wick = px;
+        }
+    }
+    let raw = if long {
+        (entry_px - wick) / entry_px * 10_000.0
+    } else {
+        (wick - entry_px) / entry_px * 10_000.0
+    };
+    let stop_dist = raw.max(0.0) + buffer_bps;
+    let tgt = if rr > 0.0 { rr * stop_dist } else { target_bps };
+    let s = if long { 1.0 } else { -1.0 };
+    let mut last = 0.0f64;
+    for &(ts, px) in &path[start..] {
+        let signed = s * (px - entry_px) / entry_px * 10_000.0;
+        last = signed;
+        if tgt > 0.0 && signed >= tgt {
+            return Some((signed, stop_dist));
+        }
+        if stop_dist > 0.0 && signed <= -stop_dist {
+            return Some((signed, stop_dist));
+        }
+        if ts.saturating_sub(entry_t) >= hold_ns {
+            return Some((signed, stop_dist));
+        }
+    }
+    Some((last, stop_dist))
+}
+
+/// OPTION B - REVERSAL taker with NO price stop: exit when the FORCED (break-
+/// direction) aggressive flow RE-ACCELERATES after entry (the manipulation turned
+/// into a real trend), else take `target_bps` or `hold_ns`. `long` = our reversal
+/// side; `break_buy` = the break-direction aggressor (UP sweep => true). The exit
+/// fires when the break-dir aggressive-volume RATE over a trailing `flow_win_ns`
+/// window reaches `reaccel_k` * `base_rate` (base_rate = the entry-window forced-
+/// flow rate => the dial is self-calibrated per sweep, so units transfer across
+/// assets). `trades` MUST be ascending in ts. Returns signed bps captured. Pure.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn first_touch_flow_exit(
+    path: &[(u64, f64)],
+    trades: &[(u64, f64, bool, f64)],
+    entry_ts: u64,
+    long: bool,
+    break_buy: bool,
+    target_bps: f64,
+    hold_ns: u64,
+    flow_win_ns: u64,
+    base_rate: f64,
+    reaccel_k: f64,
+) -> Option<f64> {
+    let start = path.iter().position(|&(ts, _)| ts >= entry_ts)?;
+    let entry_px = path[start].1;
+    let entry_t = path[start].0;
+    if entry_px <= 0.0 {
+        return None;
+    }
+    let s = if long { 1.0 } else { -1.0 };
+    let eps = 1e-12;
+    let thr_rate = reaccel_k * base_rate.max(eps);
+    let win = flow_win_ns.max(1);
+    let (mut hi, mut lo, mut vsum) = (0usize, 0usize, 0.0f64);
+    let mut last = 0.0f64;
+    for &(ts, px) in &path[start..] {
+        let signed = s * (px - entry_px) / entry_px * 10_000.0;
+        last = signed;
+        if target_bps > 0.0 && signed >= target_bps {
+            return Some(signed);
+        }
+        // trailing break-dir aggressive volume over [ts-win, ts] (ascending trades).
+        let lo_bound = ts.saturating_sub(win);
+        while hi < trades.len() && trades[hi].0 <= ts {
+            let (_t, _p, buy, q) = trades[hi];
+            if buy == break_buy && q.is_finite() && q > 0.0 {
+                vsum += q;
+            }
+            hi += 1;
+        }
+        while lo < hi && trades[lo].0 < lo_bound {
+            let (_t, _p, buy, q) = trades[lo];
+            if buy == break_buy && q.is_finite() && q > 0.0 {
+                vsum -= q;
+            }
+            lo += 1;
+        }
+        let rate = vsum / win as f64;
+        if reaccel_k > 0.0 && base_rate > eps && ts > entry_t && rate >= thr_rate {
+            return Some(signed);
+        }
+        if ts.saturating_sub(entry_t) >= hold_ns {
+            return Some(signed);
+        }
+    }
+    Some(last)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn struct_stop_target_win() {
+        // UP sweep => reversal SHORT (long=false). Wick (max over [fire,entry]) =
+        // 101.2; entry at t=1s px=101.0 => stop ~ (101.2-101.0) + buffer. Price snaps
+        // down to 100 -> short from 101 ~+99bps -> target (40) hit.
+        let path = vec![(0u64, 101.2), (1_000_000_000, 101.0), (2_000_000_000, 100.0)];
+        let (cap, sd) = first_touch_struct(&path, 0, 1_000_000_000, false, 40.0, 0.0, 5.0, 30_000_000_000).unwrap();
+        assert!(cap >= 40.0, "rode the snapback to target, got {cap}");
+        assert!(sd > 5.0 && sd < 40.0, "structural stop ~ wick dist + buffer, got {sd}");
+    }
+
+    #[test]
+    fn struct_stop_beyond_wick_caps_the_loss() {
+        // UP sweep short, structural stop ~ wick(101.2)+buffer. Price keeps running
+        // up THROUGH the stop -> exits near -stop_dist (not an unbounded loss).
+        let path = vec![(0u64, 101.2), (1_000_000_000, 101.0), (1_500_000_000, 101.3), (2_000_000_000, 102.0)];
+        let (cap, sd) = first_touch_struct(&path, 0, 1_000_000_000, false, 1000.0, 0.0, 5.0, 30_000_000_000).unwrap();
+        assert!(cap <= -sd, "stopped at/through the structural stop, got cap {cap} sd {sd}");
+        assert!(cap > -(sd + 15.0), "stop caps the loss near the level, got cap {cap} sd {sd}");
+    }
+
+    #[test]
+    fn flow_exit_bails_when_break_flow_reaccelerates() {
+        // DOWN sweep => reversal LONG, break_buy=false (break = aggressive sells).
+        // A burst of aggressive SELLS after entry re-accelerates the break -> exit.
+        let path = vec![(0u64, 100.0), (1_000_000_000, 99.99), (2_000_000_000, 99.5)];
+        let trades = vec![(1_500_000_000u64, 99.9, false, 100.0)];
+        let cap = first_touch_flow_exit(&path, &trades, 0, true, false, 1000.0, 30_000_000_000, 1_000_000_000, 1e-9, 1.0).unwrap();
+        assert!(cap < 0.0, "bailed as the break flow re-accelerated against the long, got {cap}");
+    }
+
+    #[test]
+    fn flow_exit_rides_to_target_without_reaccel() {
+        // DOWN sweep reversal LONG. Only WITH-reversal buys print (not break-dir) ->
+        // no early exit; price reverts up to the target.
+        let path = vec![(0u64, 100.0), (1_000_000_000, 100.3), (2_000_000_000, 100.5)];
+        let trades = vec![(1_500_000_000u64, 100.4, true, 100.0)];
+        let cap = first_touch_flow_exit(&path, &trades, 0, true, false, 40.0, 30_000_000_000, 1_000_000_000, 0.001, 1.0).unwrap();
+        assert!(cap >= 40.0, "rode the reversal to target with no break-flow re-accel, got {cap}");
+    }
 
     #[test]
     fn parse_dur_units() {

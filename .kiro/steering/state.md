@@ -621,3 +621,17 @@ reproducible, coinflip loses on real data.
   AGGRESSIVE TRADE FLOW / absorption-at-price / CVD, not resting depth. docs/research/sweep-study.md;
   box /root/runs/sweepscope/. Killed cheap, 0 euros. Setup is real + big; we lack a directional read.
 - SWEEP FLOW-SEPARATOR 3-state (sweepscope extended, branch forgelag, 2026-06-13) = PARTIAL WIN: the flow model SEPARATES where depth-imbalance was random (FLOW DECELERATION/exhaustion lifts P(reversal) ~+15-30pp over base on BOTH ETH+BTC, no-lookahead; impact-per-vol "absorption" works on BTC +12-41pp but INVERTS on ETH; easy-push weak) BUT still NO net-positive trade at trustable n>=30 (every gated rev/cont trade net-neg after fees, with+without --min-oidrop; green cells thin n=9-19). Master var = |microprice disp|/forced-vol over [fire,+60s]; rev maker@edge+taker, cont taker UNCHANGED; clippy+27 tests green, sacred core untouched. Real directional read finally exists (the unlock) but stop-bleed+overshoot+fee still kill the honest first-touch trade -> 0 promote. NEXT if revisited: trade STRUCTURE that survives overshoot (enter on confirmed re-entry / wider-scaled stop) on exhaustion-selected reversals. docs/research/sweep-study.md "Flow-separator" section; logs /root/runs/sweepscope_flow/.
+- OPTION A/B DYNAMIC EXIT (sweepscope --dyn-stop/--rr/--stop-buffer + --flow-exit/--flow-exit-win/
+  --flow-exit-k; default OFF, baseline byte-preserved; build+clippy(-Dwarnings)+31 tests green incl 4
+  new) = NO net trade but the STOP IDEA IS VALIDATED. Bad-first: every trustable-n cell still NET-
+  NEGATIVE after the 9bps taker fee (best ETH 15m/80 rr2 struct n=104 win40% GROSS +4.0 t1.49 -> NET
+  -5.0). Good: the dynamic STRUCTURAL WICK-STOP (beyond the sweep extreme + buffer, no-lookahead) FIXED
+  the stop-bleed - flipped ETH 15m/80 reversal taker from gross -1.4 to +4.0bps, win 27->40% = FIRST
+  gross-positive cell at trustable n on this setup; confirms the trader's "no fixed RR" call (the fixed
+  stop WAS the leak, tripped by the sweep's own overshoot). Option B flow-reaccel-exit ~ same, slightly
+  worse. HIGHER reward multiple WORSE (rr3/4/6 all degrade - reversal doesn't run to big targets, win-
+  rate collapses). Structural stops small ~10-14bps (entry 60s post-poke = wick near; win is from dynamic
+  R:R not a wide stop). *** BINDING WALL back to the ~9bps TAKER FEE (gross +4 < 9) - same wall as every
+  lead. *** NEXT puzzle piece = CUT THE FEE: MAKER entry (~6bps RT) gated on EXHAUSTION (picks the 80-90%
+  reverters -> should dodge the run-over/adverse-selection that killed the earlier maker test) + structural
+  exit. docs/research/sweep-study.md "Option A / Option B" section; logs /root/runs/optab*.
