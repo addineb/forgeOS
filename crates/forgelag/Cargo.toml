@@ -24,3 +24,6 @@ path = "src/bin/hunt.rs"
 [[bin]]
 name = "gapscope"
 path = "src/bin/gapscope.rs"
+[[bin]]
+name = "oiscope"
+path = "src/bin/oiscope.rs"

@@ -459,3 +459,25 @@ reproducible, coinflip loses on real data.
   stage + pull ETH/BTC (same 10 days) + feed.rs OI event wiring; (B) cascade study (oiscope) = detect
   cascades + characterize overshoot/reversion (time, size, tradeable at our latency?); (C) if pulse ->
   spec + build with honesty gates. gapscope is reusable for the post-cascade book behavior.
+- *** OI-CASCADE STUDY (2026-06-12, oiscope) - NAIVE FADE = NO PULSE, latency NOT the
+  killer this time ***. Built forgelag/src/bin/oiscope.rs (analysis-only; reuses
+  load_window + forge_book + ctx.oi; sacred core untouched; build+clippy(-Dwarnings)+
+  7 new tests green; full suite green). Detects HL cascades = OI-drop>=D% + |microprice
+  move|>=P bps + one-sided HL flow over window W(5s), cooldown-dedup; characterizes
+  spike/reversion + a SIMPLE reactive FADE entered at 0/800/2000ms (our latency band).
+  10 days ETH+BTC, grid oi-drop{0.2,0.5,1.0}% x move{5,10,20}bps (KNOB-BITE valid:
+  counts move monotonically). FINDINGS: cascades EXIST + frequent (ETH 6-33/day, BTC
+  3-23/day); ~50-60% revert >=half the spike, ~40-50% TREND; reversion is SLOW (half
+  ~15-23s, full ~22-35s). *** KEY: latency does NOT bind - fade@2s ~= fade@0ms (often
+  better) - the "react do not race" thesis was RIGHT, genuinely unlike Lagshot. *** BUT
+  the fade EDGE is negative-to-tiny: ETH NEGATIVE mean every cell (-1..-14bps, t<=0, fat
+  LEFT tail = trending cascades -30..-70bps swamp small wins; ETH worse than BTC, opposite
+  of Lagshot); BTC faint +2-3bps gross t~2 at mid-thr (move10) but TINY. FEE WALL kills
+  it: taker RT ~9bps, best gross capture ~+3bps (BTC), ETH negative -> NET negative both.
+  VERDICT: NO strategy spec - naive reactive fade is sub-fee + trend-tail-wrecked. Killed
+  cheap, 0 euros. Latency-robustness is necessary-but-not-sufficient. Only cheap follow-up
+  = trend-abort/stop to cut the left tail (Lagshot found stops hurt MR, skeptical) or a
+  MAKER cascade fade (but gapscope showed post-event = re-quote vacuum/pulled walls ->
+  adverse selection likely kills maker too). docs/research/oi-cascade-study.md; CSVs
+  /root/runs/oiscope/{eth,btc}_cascades.csv. Type C forced-flow lead = effectively
+  exhausted for the naive fade shape.
