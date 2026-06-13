@@ -578,3 +578,45 @@ reproducible, coinflip loses on real data.
   bps edges on HL TAKER are structurally dead. Only escapes = (a) much lower fees (real maker rebate /
   different venue/tier) or (b) a fundamentally BIGGER-per-trade edge (tens of bps, not 5), i.e. NOT
   tick-scale microstructure. Next lead must clear that bar by construction.
+
+- *** SWEEP / STOP-RUN SWING STUDY (sweepscope, branch forgelag) = NO PULSE (bigger-size lead) ***.
+  First BIGGER-per-trade lead (tens-to-hundreds of bps, leaving tick-scale microstructure dead at 9bps).
+  Built forgelag/src/bin/sweepscope.rs (analysis-only; reuses load_window+forge_book+microprice+imbalance;
+  sacred core untouched; clippy -Dwarnings clean; 16 new tests + full forgelag suite green). Mechanised the
+  trader's setup no-lookahead: SIDEWAYS range (width<=range-max bps over lookback L) -> SWEEP poke beyond an
+  edge by margin S -> 90m forward classify CONTINUATION(extends>=20bps) vs REVERSAL(re-enters range); two
+  honest first-touch trades (run-overs incl, real fees): (A) REVERSAL maker@swept-edge (~6bps RT) + taker
+  (~9bps), (B) CONTINUATION taker (~9bps); orderflow CONFIRM = depth-imbalance absorption(rev) vs stays-
+  pulled(cont) as a no-lookahead gate. 10 days ETH+BTC, grid L{15,30,60}m x range-max{30,50,80} x
+  margin{5,10,20} (knob-bite). VERDICT bad-first: NO tradeable pulse. (1) SPLIT is real+sizeable - reversal
+  ~60-75% / continuation ~25-40%; rev mag ~45-80bps, cont mag ~52-126bps (ETH>BTC) = moves CLEAR the fee bar
+  (unlike all prior leads). (2) CONFIRM does NOT separate them ahead of time: P(rev|absorption)~=P(rev|no-
+  absorption) every trustable cell (e.g. ETH 15m/80/5 68% vs 69%); gate filters ~half (bites mechanically)
+  but moves outcome prob ~0 = invalid separator (same dead imbalance, now as a chart-confirm). (3) EVERY n>=30
+  cell both assets, all THREE trades NET-NEGATIVE: rev-MAKER gross-negative BEFORE fees (-8..-26bps, fills 100%
+  by construction but INTO the continuing poke -> stopped, win 5-25% = resting at the edge catches the knife),
+  rev-TAKER gross~0 net -7..-15, cont-TAKER gross~0 (60-75% reverse+stop, win 16-29%) net -8..-20. RR healthy
+  (~2.0-2.8, targets>stops) but win% too low (overshoot trips the stop before the big move). BINDING CONSTRAINT
+  SHIFTED: not the fee floor this time (size is big enough) but DIRECTIONAL UNCERTAINTY (can't pick rev vs cont)
+  + STOP-BLEED + maker-fee-escape backfires (edge-rest fills into run-over). Killed cheap, 0 euros. Only follow-
+  ups that target the bad entry = maker deeper (mid/far edge) or taker after confirmed re-entry, but all still
+  need a directional read we don't have. docs/research/sweep-study.md; logs /root/runs/sweepscope/{eth,btc}.log
+  + {eth,btc}_sweeps.csv. NEXT bigger-size lead must give a DIRECTIONAL read the orderflow can actually confirm.
+
+- SWEEP / STOP-RUN SWING STUDY (2026-06-12, sweepscope - first BIGGER-SIZE lead) = NO tradeable pulse.
+  Built crates/forgelag/src/bin/sweepscope.rs (analysis-only; mechanical no-lookahead: sideways range
+  over lookback L -> sweep poke past edge by margin S -> 90m forward classify CONTINUATION vs REVERSAL;
+  reversal trade maker@edge ~6bps + taker ~9bps, continuation taker ~9bps, first-touch target/stop with
+  run-overs IN; orderflow confirm = depth-imbalance absorb/pull). clippy+16 unit tests+full suite green.
+  10 days ETH+BTC, grid L{15,30,60}m x range-max{30,50,80} x margin{5,10,20}. VERDICT bad-first: every
+  n>=30 cell both assets, all 3 trades NET-NEGATIVE. *** SIZE IS NOT THE PROBLEM this time *** (first
+  lead where it isn't): moves are BIG - reversal ~60-75% of sweeps @45-80bps, continuation ~25-40%
+  @52-126bps - well over the fee bar. THREE KILLERS: (1) DIRECTIONAL UNCERTAINTY - can't tell rev vs
+  cont ahead of time; (2) STOP-BLEED - honest first-touch stops hit by the sweep's own overshoot before
+  the big move (win 12-29% despite RR 2.0-2.8); (3) maker@swept-edge BACKFIRES (fills into the run-over,
+  gross-neg before fees). *** KEY DURABLE FINDING: depth-of-book IMBALANCE confirm does NOT separate
+  rev vs cont (P(rev|absorb) ~= P(rev|no-absorb), random) - it has now FAILED as the orderflow CONFIRM
+  in EVERY study (Lagshot book-confirm, gap-close, cascade ob-confirm, sweep). Resting-depth imbalance
+  is NOT predictive for us. *** Method-1 confirm needs a BETTER signal than book shape - likely actual
+  AGGRESSIVE TRADE FLOW / absorption-at-price / CVD, not resting depth. docs/research/sweep-study.md;
+  box /root/runs/sweepscope/. Killed cheap, 0 euros. Setup is real + big; we lack a directional read.

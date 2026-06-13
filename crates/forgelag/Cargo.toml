@@ -27,3 +27,6 @@ path = "src/bin/gapscope.rs"
 [[bin]]
 name = "oiscope"
 path = "src/bin/oiscope.rs"
+[[bin]]
+name = "sweepscope"
+path = "src/bin/sweepscope.rs"
