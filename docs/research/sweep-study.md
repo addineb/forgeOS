@@ -312,3 +312,33 @@ random; (2) the dynamic STRUCTURAL WICK-STOP fixes stop-bleed (turns the taker r
 gross-positive). Both are reusable for a future edge that is BIGGER per trade (>>9bps)
 or runs on LOWER fees. The sweep reversal itself is ~a-few-bps gross = below the fee
 floor, same wall as every prior lead. No deployable strategy here. 0 euros risked.
+## Test A - RECLAIM entry (wait for re-entry into the range) - BEST RESULT YET
+
+sweepscope --reclaim (default OFF; clippy clean, 34 tests incl 2 new). Instead of
+entering at the poke / 60s anchor, WAIT for price to come back INSIDE the range (the
+classic failed-breakout reclaim), then enter the reversal with the structural stop
+beyond the already-printed wick (~26-38bps). 10 days ETH+BTC, range-max 80, margin 5,
+rr sweep {1.5,2,3} + fixed-40.
+
+### VERDICT (good, with an honest caveat): FIRST net-positive cells - but THIN.
+GOOD: the reclaim entry closes the capture gap that the late poke-entry was bleeding.
+- "all" reclaim: gross flipped from ~0 (poke entry) to +4-10bps, win 43-51%
+  (ETH 15m/80 rr1.5 +6.7 t1.50; BTC 30m/80 rr1.5 +10.4 t1.81 NET +1.4 n=45).
+- EXHAUSTION-gated subset = NET-POSITIVE after the FULL 9bps taker fee:
+    ETH 15m/80 +EXH: rr1.5 +5.2 / rr2 +7.3 / rr3 +8.6bps NET (n=11, win 55%, gross
+    +14-18, RR 2.0-2.3) - positive on EVERY reward dial (robust, not a knife-edge).
+    BTC 15m/80 rr1.5 +EXH +5.9bps NET (n=7).
+This confirms the 85%-revert read was a REAL edge all along; the 60s-late poke entry
+was throwing it away. Entering on the reclaim (so the overshoot is already behind us,
+and the stop sits beyond the printed wick) recovers it.
+
+CAVEAT (bad/honest): the net-positive cells are THIN (n=7-11, t~1.1-1.3 = NOT yet
+significant, need t>2). The bigger-n "all" cells are ~breakeven (best +1.4). 30m/BTC
++EXH is shaky small-n (negative). So this is PROMISING, NOT PROVEN - it could still be
+small-sample noise.
+
+### Next gate
+MORE DAYS on the winning config (reclaim + EXHAUSTION gate, ETH 15m/80, rr~2) to push n
+and t past significance (t>2). We have 61d Nov-Dec 2025 + Feb from the prior OOS pulls.
+If the +5-9bps net survives at trustable n with t>2 and an OOS period -> first real
+candidate from this whole study. Logs /root/runs/reclaim/.

@@ -650,3 +650,17 @@ reproducible, coinflip loses on real data.
   stop-bleed (turns the taker reversal gross-positive). Both reusable for a FUTURE edge that is BIGGER
   per trade (>>9bps) or runs on LOWER fees. docs/research/sweep-study.md "Option A maker" section;
   logs /root/runs/maker/.
+- *** TEST A RECLAIM ENTRY (sweepscope --reclaim: wait for price back INSIDE the range, then reversal
+  taker, structural stop beyond the wick; default OFF, clippy+34 tests green) = BEST RESULT YET, FIRST
+  net-positive cells. *** Good: the reclaim entry closes the capture gap the 60s-late poke entry was
+  bleeding. "all" reclaim gross ~0 -> +4-10bps, win 43-51% (ETH 15m/80 rr1.5 +6.7 t1.50; BTC 30m/80
+  rr1.5 +10.4 t1.81 NET +1.4 n=45). EXHAUSTION-gated subset goes NET-POSITIVE after the FULL 9bps taker:
+  ETH 15m/80 +EXH rr1.5/2/3 = +5.2/+7.3/+8.6bps NET (n=11, win 55%, gross +14-18, RR 2.0-2.3, positive
+  on EVERY reward dial = robust); BTC 15m/80 rr1.5 +EXH +5.9 (n=7). CONFIRMS the 85%-revert read was a
+  real edge all along - the late entry threw it away; entering on the reclaim recovers it. Bad/honest:
+  net-positive cells THIN (n=7-11, t~1.1-1.3 = NOT yet significant, need t>2); bigger-n "all" cells
+  ~breakeven (best +1.4); 30m/BTC +EXH shaky small-n. PROMISING, NOT PROVEN (could be noise). rr 1.5-3
+  all work on ETH +EXH; rr2 a good middle; stop dist 26-38bps (dynamic, beyond the printed wick). NEXT
+  GATE = MORE DAYS on the winning config (reclaim+EXH, ETH 15m/80, rr2) for trustable n + t>2 (have 61d
+  Nov-Dec25 + Feb from prior OOS pulls), then OOS. docs/research/sweep-study.md "Test A" section; logs
+  /root/runs/reclaim/.

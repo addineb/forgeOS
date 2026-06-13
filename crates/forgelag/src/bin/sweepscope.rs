@@ -626,6 +626,7 @@ struct Cfg {
     flow_exit_win_ns: u64,
     flow_exit_k: f64,
     maker_rev: bool,
+    reclaim: bool,
 }
 
 /// One detected sweep and its full characterisation (scalars only; the forward
@@ -701,6 +702,9 @@ struct SweepStat {
     rev_make_struct_all_filled: bool,
     rev_make_struct: Option<f64>,
     rev_make_struct_filled: bool,
+    // TEST A reclaim entry (wait for re-entry into the range, stop beyond the wick).
+    rev_take_reclaim: Option<f64>,
+    reclaim_stop_bps: f64,
 }
 
 /// Pending sweep being collected over its forward window.
@@ -999,6 +1003,15 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
     } else {
         (None, false)
     };
+    // TEST A (reclaim entry): wait for price back INSIDE the range, then reversal taker.
+    let (rev_take_reclaim, reclaim_stop_bps) = if cfg.reclaim {
+        match first_touch_reclaim(path, cur.fire_ts, anchor, edge, dir_up, cfg.rev_target_bps, cfg.rr_mult, cfg.stop_buffer_bps, cfg.hold_ns) {
+            Some((bps, sd)) => (Some(bps), sd),
+            None => (None, f64::NAN),
+        }
+    } else {
+        (None, f64::NAN)
+    };
     SweepStat {
         day: day.to_string(),
         l_ns,
@@ -1049,6 +1062,8 @@ fn finalize(cur: &Pending, path: &[(u64, f64)], trades: &[(u64, f64, bool, f64)]
         rev_make_struct_all_filled,
         rev_make_struct,
         rev_make_struct_filled,
+        rev_take_reclaim,
+        reclaim_stop_bps,
     }
 }
 
@@ -1197,7 +1212,7 @@ fn report_pooled(label: &str, ds: &[&SweepStat], cfg: &Cfg, num_days: usize) {
     report_trades("cont-TAKER (+follow gate)", &caps_of(ds, |s| if s.cont_confirm { s.cont_take } else { None }), TAKER_RT_FEE_BPS);
 
     // ----- OPTION A/B dynamic-exit REVERSAL variants (only when ON; additive) -----
-    if cfg.dyn_stop || cfg.flow_exit || cfg.maker_rev {
+    if cfg.dyn_stop || cfg.flow_exit || cfg.maker_rev || cfg.reclaim {
         println!("(A2) DYNAMIC-EXIT REVERSAL (taker structural/flow-exit + maker fee-escape)");
         if cfg.dyn_stop {
             let sds: Vec<f64> = ds.iter().filter(|s| s.struct_stop_bps.is_finite()).map(|s| s.struct_stop_bps).collect();
@@ -1224,6 +1239,17 @@ fn report_pooled(label: &str, ds: &[&SweepStat], cfg: &Cfg, num_days: usize) {
             );
             report_trades("rev-MAKER struct (all)", &caps_of(ds, |s| if s.rev_make_struct_all_filled { s.rev_make_struct_all } else { None }), mk_fee);
             report_trades("rev-MAKER struct (+EXH gate)", &caps_of(ds, |s| if s.rev_make_struct_filled { s.rev_make_struct } else { None }), mk_fee);
+        }
+        if cfg.reclaim {
+            let rs: Vec<f64> = ds.iter().filter(|s| s.reclaim_stop_bps.is_finite()).map(|s| s.reclaim_stop_bps).collect();
+            let entered = ds.iter().filter(|s| s.rev_take_reclaim.is_some()).count();
+            println!(
+                "    RECLAIM entry (wait for price back INSIDE the range, stop beyond the wick): entered {}/{}  stop dist mean {:.0}bps median {:.0}bps  rr {:.2}",
+                entered, ds.len(), if rs.is_empty() { 0.0 } else { mean(&rs) }, median(&rs), cfg.rr_mult
+            );
+            report_trades("rev-TAKER reclaim (all)", &caps_of(ds, |s| s.rev_take_reclaim), TAKER_RT_FEE_BPS);
+            report_trades("rev-TAKER reclaim (+EXH)", &caps_of(ds, |s| if s.state_exhausted { s.rev_take_reclaim } else { None }), TAKER_RT_FEE_BPS);
+            report_trades("rev-TAKER reclaim (+ABS|EXH)", &caps_of(ds, |s| if s.state_absorbed || s.state_exhausted { s.rev_take_reclaim } else { None }), TAKER_RT_FEE_BPS);
         }
     }
 
@@ -1401,6 +1427,7 @@ fn run() -> Result<(), String> {
         flow_exit_win_ns: 10_000_000_000,
         flow_exit_k: 2.0,
         maker_rev: false,
+        reclaim: false,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![30 * 60_000_000_000];
@@ -1462,6 +1489,7 @@ fn run() -> Result<(), String> {
             "--flow-exit-win" => cfg.flow_exit_win_ns = parse_dur(&val()?)?,
             "--flow-exit-k" => cfg.flow_exit_k = val()?.parse().map_err(|e| format!("flow-exit-k: {e}"))?,
             "--maker-rev" => cfg.maker_rev = true,
+            "--reclaim" => cfg.reclaim = true,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }
@@ -1492,7 +1520,7 @@ fn run() -> Result<(), String> {
         "ORDERFLOW CONFIRM: absorption shift >= {:.2} (reversal) / follow-through return <= {:.2} (continuation), read at fire+{}",
         cfg.confirm_imb, cfg.confirm_trend_max, fmt_ns(cfg.confirm_ns)
     );
-    if cfg.dyn_stop || cfg.flow_exit || cfg.maker_rev {
+    if cfg.dyn_stop || cfg.flow_exit || cfg.maker_rev || cfg.reclaim {
         println!(
             "DYNAMIC EXIT ON: dyn-stop {} (buffer {:.0}bps, rr {:.2})  flow-exit {} (win {}, k {:.2})  maker-rev {} (fee ~{:.1}bps RT)",
             cfg.dyn_stop, cfg.stop_buffer_bps, cfg.rr_mult, cfg.flow_exit, fmt_ns(cfg.flow_exit_win_ns), cfg.flow_exit_k,
@@ -1855,6 +1883,78 @@ fn simulate_maker_reversal_struct(
     if started { Some((fill_ts, last, stop_dist)) } else { Some((fill_ts, 0.0, stop_dist)) }
 }
 
+/// TEST A (reclaim entry) - REVERSAL taker that WAITS FOR THE RECLAIM: enter only
+/// once price comes back INSIDE the range (the classic failed-breakout reclaim),
+/// not at the poke extreme. Entry = first sample at/after `anchor_ts` where price
+/// has re-entered the range (UP sweep: px <= edge; DOWN sweep: px >= edge). The
+/// reversal side is short for an UP sweep, long for a DOWN sweep. Structural stop
+/// sits beyond the sweep WICK (adverse extreme over [fire, entry] + buffer) so the
+/// overshoot that already happened cannot trip it; target = `rr` * stop (or fixed
+/// `target_bps`). No-lookahead: wick read only over [fire, entry] (<= entry).
+/// Returns (signed_bps, stop_dist_bps) or None (never reclaimed). Pure.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn first_touch_reclaim(
+    path: &[(u64, f64)],
+    fire_ts: u64,
+    anchor_ts: u64,
+    edge: f64,
+    dir_up: bool,
+    target_bps: f64,
+    rr: f64,
+    buffer_bps: f64,
+    hold_ns: u64,
+) -> Option<(f64, f64)> {
+    if edge <= 0.0 {
+        return None;
+    }
+    let start = path
+        .iter()
+        .position(|&(ts, px)| ts >= anchor_ts && (if dir_up { px <= edge } else { px >= edge }))?;
+    let entry_px = path[start].1;
+    let entry_t = path[start].0;
+    if entry_px <= 0.0 {
+        return None;
+    }
+    // adverse wick over [fire, entry] (no-lookahead): UP sweep short -> MAX, DOWN long -> MIN.
+    let mut wick = entry_px;
+    for &(ts, px) in path {
+        if ts < fire_ts || ts > entry_t {
+            continue;
+        }
+        if dir_up {
+            if px > wick {
+                wick = px;
+            }
+        } else if px < wick {
+            wick = px;
+        }
+    }
+    let raw = if dir_up {
+        (wick - entry_px) / entry_px * 10_000.0
+    } else {
+        (entry_px - wick) / entry_px * 10_000.0
+    };
+    let stop_dist = raw.max(0.0) + buffer_bps;
+    let tgt = if rr > 0.0 { rr * stop_dist } else { target_bps };
+    let s = if dir_up { -1.0 } else { 1.0 };
+    let mut last = 0.0f64;
+    for &(ts, px) in &path[start..] {
+        let signed = s * (px - entry_px) / entry_px * 10_000.0;
+        last = signed;
+        if tgt > 0.0 && signed >= tgt {
+            return Some((signed, stop_dist));
+        }
+        if stop_dist > 0.0 && signed <= -stop_dist {
+            return Some((signed, stop_dist));
+        }
+        if ts.saturating_sub(entry_t) >= hold_ns {
+            return Some((signed, stop_dist));
+        }
+    }
+    Some((last, stop_dist))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1910,6 +2010,24 @@ mod tests {
         assert_eq!(fts, 500_000_000);
         assert!(bps > 0.0, "rode the snapback short, got {bps}");
         assert!(sd > 5.0, "structural stop includes the wick excursion, got {sd}");
+    }
+
+    #[test]
+    fn reclaim_waits_for_reentry_then_shorts() {
+        // UP sweep, edge hi=101. Price pokes to 101.5 (still OUT at anchor t=1s) then
+        // RECLAIMS below 101 at t=2s (px 100.8) -> entry there, short, wick=101.5.
+        // Price falls to 100.0 -> short from 100.8 ~ +79bps.
+        let path = vec![(0u64, 101.5), (1_000_000_000, 101.2), (2_000_000_000, 100.8), (3_000_000_000, 100.0)];
+        let (cap, sd) = first_touch_reclaim(&path, 0, 1_000_000_000, 101.0, true, 40.0, 0.0, 5.0, 30_000_000_000).unwrap();
+        assert!(cap >= 40.0, "rode the post-reclaim drop to target, got {cap}");
+        assert!(sd > 5.0, "structural stop beyond the wick (101.5), got {sd}");
+    }
+
+    #[test]
+    fn reclaim_none_when_never_reenters() {
+        // UP sweep that never comes back inside hi=101 after the anchor -> no entry.
+        let path = vec![(0u64, 101.5), (1_000_000_000, 101.6), (2_000_000_000, 101.8)];
+        assert!(first_touch_reclaim(&path, 0, 1_000_000_000, 101.0, true, 40.0, 0.0, 5.0, 30_000_000_000).is_none());
     }
 
     #[test]
