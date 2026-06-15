@@ -1,0 +1,10 @@
+[package]
+name = "forge-depth"
+version = "0.1.0"
+edition = "2021"
+description = "Depth-pattern feature computation layer for macrostructure analysis"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-book = { path = "../forge-book" }
+forge-data = { path = "../forge-data" }

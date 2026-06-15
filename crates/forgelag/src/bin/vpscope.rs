@@ -289,6 +289,62 @@ fn classify_vp(path: &[(u64, f64)], entry_ts: u64, dist_to_poc: f64, long: bool,
     (class, max_fav, max_adv)
 }
 
+/// TWAP entry: scale into the reversion over [fire, fire+twap_ns] in `slices` equal
+/// time steps; effective entry = AVERAGE microprice across the slice times
+/// (executable by hand, robust to a single bad entry tick). Fully in at fire+twap_ns,
+/// then exit by target/stop/hold vs the AVERAGE entry. Run-overs INCLUDED. Pure.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+fn first_touch_twap(
+    path: &[(u64, f64)],
+    fire_ts: u64,
+    twap_ns: u64,
+    slices: usize,
+    long: bool,
+    target_bps: f64,
+    stop_bps: f64,
+    hold_ns: u64,
+) -> Option<f64> {
+    if slices == 0 {
+        return None;
+    }
+    let step = if slices > 1 { twap_ns / slices as u64 } else { 0 };
+    let mut sum = 0.0f64;
+    let mut cnt = 0u32;
+    for k in 0..slices {
+        let st = fire_ts.saturating_add(step.saturating_mul(k as u64));
+        if let Some(&(_, px)) = path.iter().find(|&&(ts, _)| ts >= st) {
+            if px > 0.0 {
+                sum += px;
+                cnt += 1;
+            }
+        }
+    }
+    if cnt == 0 {
+        return None;
+    }
+    let avg_entry = sum / f64::from(cnt);
+    let enter_done = fire_ts.saturating_add(twap_ns);
+    let start = path.iter().position(|&(ts, _)| ts >= enter_done)?;
+    let entry_t = path[start].0;
+    let s = if long { 1.0 } else { -1.0 };
+    let mut last = 0.0f64;
+    for &(ts, px) in &path[start..] {
+        let signed = s * (px - avg_entry) / avg_entry * 10_000.0;
+        last = signed;
+        if target_bps > 0.0 && signed >= target_bps {
+            return Some(signed);
+        }
+        if stop_bps > 0.0 && signed <= -stop_bps {
+            return Some(signed);
+        }
+        if ts.saturating_sub(entry_t) >= hold_ns {
+            return Some(signed);
+        }
+    }
+    Some(last)
+}
+
 /// p-th percentile (0..100) of a slice (sorts a copy). 0.0 for empty. Pure.
 #[must_use]
 fn percentile(v: &[f64], p: f64) -> f64 {
@@ -360,6 +416,9 @@ struct Cfg {
     min_trades: usize,
     fee_bps: f64,
     confirm_ns: u64,
+    twap_ns: u64,
+    twap_slices: usize,
+    target_bps: f64,
 }
 
 /// One detected LVN-reversion candidate + its forward characterisation (scalars).
@@ -385,6 +444,7 @@ struct Det {
     impact_ratio: f64,
     absorption_ratio: f64,
     revert_take_confirm: Option<f64>,
+    revert_take_twap: Option<f64>,
 }
 
 #[derive(Default)]
@@ -477,7 +537,15 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, nbins: usize, lvn
                 if now >= cur.end_ts {
                     let (class, rev_mag, cont_mag) =
                         classify_vp(&cur_path, cur.fire_ts, cur.dist_to_poc_bps, cur.long, cfg.class_thr_bps);
-                    let revert_take = first_touch(&cur_path, cur.fire_ts, cur.long, cur.dist_to_poc_bps, cfg.stop_bps, cfg.hold_ns);
+                    // target: explicit --target override (let it run) else the POC distance.
+                    let base_target = if cfg.target_bps > 0.0 { cfg.target_bps } else { cur.dist_to_poc_bps };
+                    let revert_take = first_touch(&cur_path, cur.fire_ts, cur.long, base_target, cfg.stop_bps, cfg.hold_ns);
+                    // TWAP entry variant (scale in over the window) - same target/stop/hold.
+                    let revert_take_twap = if cfg.twap_ns > 0 {
+                        first_touch_twap(&cur_path, cur.fire_ts, cfg.twap_ns, cfg.twap_slices, cur.long, base_target, cfg.stop_bps, cfg.hold_ns)
+                    } else {
+                        None
+                    };
                     // ORDERFLOW CONFIRM over [fire, anchor] (push = away from value).
                     let push_buy = !cur.long;
                     let (push_vol, _disp, impact_ratio, absorption_ratio) =
@@ -509,6 +577,7 @@ fn scan_day(cfg: &Cfg, day: &str, evs: &[LagEvent], l_ns: u64, nbins: usize, lvn
                         impact_ratio,
                         absorption_ratio,
                         revert_take_confirm,
+                        revert_take_twap,
                     });
                     cur_path.clear();
                     cur_trades.clear();
@@ -641,6 +710,15 @@ fn report_cell(label: &str, ds: &[&Det], cfg: &Cfg, num_days: usize) {
         report_trades("revert-confirm (absorbed)", &caps_of(ds, |s| if s.impact_ratio <= med_imp { s.revert_take_confirm } else { None }), cfg.fee_bps);
         report_trades("revert-confirm (push-thru)", &caps_of(ds, |s| if s.impact_ratio > med_imp { s.revert_take_confirm } else { None }), cfg.fee_bps);
     }
+    if cfg.twap_ns > 0 {
+        let tgt_lbl = if cfg.target_bps > 0.0 { format!("{:.0}bps", cfg.target_bps) } else { "POC".to_string() };
+        println!("TWAP entry ({} window, {} slices; target {}, stop {:.0}, net {:.1}bps):", fmt_ns(cfg.twap_ns), cfg.twap_slices, tgt_lbl, cfg.stop_bps, cfg.fee_bps);
+        report_trades("revert-twap (all)", &caps_of(ds, |s| s.revert_take_twap), cfg.fee_bps);
+        let med_imp2 = median(&ds.iter().map(|s| s.impact_ratio).collect::<Vec<_>>());
+        report_trades("revert-twap (absorbed)", &caps_of(ds, |s| if s.impact_ratio <= med_imp2 { s.revert_take_twap } else { None }), cfg.fee_bps);
+        let med_d2 = median(&ds.iter().map(|s| s.dist_to_poc_bps).collect::<Vec<_>>());
+        report_trades("revert-twap (far>=med dist)", &caps_of(ds, |s| if s.dist_to_poc_bps >= med_d2 { s.revert_take_twap } else { None }), cfg.fee_bps);
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -666,6 +744,9 @@ fn run() -> Result<(), String> {
         min_trades: 200,
         fee_bps: 6.0,
         confirm_ns: 20_000_000_000,
+        twap_ns: 0,
+        twap_slices: 4,
+        target_bps: 0.0,
     };
     let mut dates: Vec<String> = Vec::new();
     let mut lookbacks: Vec<u64> = vec![2 * 3_600_000_000_000];
@@ -701,6 +782,9 @@ fn run() -> Result<(), String> {
             "--min-trades" => cfg.min_trades = val()?.parse().map_err(|e| format!("min-trades: {e}"))?,
             "--fee" => cfg.fee_bps = val()?.parse().map_err(|e| format!("fee: {e}"))?,
             "--confirm-window" => cfg.confirm_ns = parse_dur(&val()?)?,
+            "--twap" => cfg.twap_ns = parse_dur(&val()?)?,
+            "--twap-slices" => cfg.twap_slices = val()?.parse().map_err(|e| format!("twap-slices: {e}"))?,
+            "--target" => cfg.target_bps = val()?.parse().map_err(|e| format!("target: {e}"))?,
             "--dump" => dump = Some(val()?),
             other => return Err(format!("unknown arg {other}")),
         }

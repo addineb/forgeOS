@@ -2,11 +2,23 @@
 
 Always-on context. Read before acting.
 
+## Team
+- **Trader**: direction, priorities, final call on go/no-go. 10y discretionary
+  macrostructure trader. NOT a coder. Prefers 15min-4hr holds, orderflow-driven.
+- **Copilot (GLM-5.1)**: engine architecture, Rust code, honesty gates, null-edge
+  validation, documentation. The skeptic.
+- **DeepSeek V4 Pro**: data analysis, feature prototyping, ML/statistical work,
+  Python scripts, number crunching at scale.
+
 ## What this is
-Clean-room, Rust-native research/backtest engine for crypto microstructure edge
-discovery. Successor to the archived `wall-bot-tournament`, whose TS engine
-produced impossible results (100% win, +edge, 0 DD) from lookahead/accounting
-rot + idealized fills. ForgeOS is a from-scratch rebuild.
+Clean-room Rust engine for crypto edge discovery. NEW DIRECTION (2026-06-15):
+macrostructure depth-pattern study (15min-4hr holds, orderflow-driven entries),
+NOT tick-level microstructure racing. The old Lagshot/sweep/OI studies are CLOSED
+(edge real but uncapturable at retail latency/fees). The binding constraint was
+~9bps taker fee vs ~5bps microstructure edge. New leads must clear >>9bps per trade.
+
+Successor to the archived `wall-bot-tournament`, whose TS engine produced
+impossible results (100% win, +edge, 0 DD) from lookahead/accounting rot.
 
 ## The one rule above all
 NO number is trusted until the engine passes the NULL-EDGE TEST: a seeded
@@ -23,7 +35,9 @@ It is a CI gate (roadmap Phase 2). If a coinflip "wins", stop and fix the engine
 
 ## Layout
 - `crates/` Rust workspace (forge-core, -data, -book, -sim, -strategy, -metrics,
-  -sweep). Build order + gates in `docs/roadmap.md`.
+  -sweep, -depth). Build order + gates in `docs/roadmap.md`.
+- `crates/forge-depth/` NEW: depth-pattern feature computation (full L2 book shape,
+  CVD, volume profile, wall tracking, multi-timeframe aggregation).
 - `tools/` data preprocessing (cryptohftdata -> normalized *.forge event stream).
 - `docs/engine-design.md`, `docs/roadmap.md`, `docs/migration-from-wallbot.md`.
 - `docs/research/` preserved research. `docs/legacy/` read-only business-rule ref
