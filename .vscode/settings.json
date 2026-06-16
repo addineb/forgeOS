@@ -1,0 +1,53 @@
+{
+  // --- Rust Language Server ---
+  "rust-analyzer.server.path": "rust-analyzer",
+  "rust-analyzer.cargo.loadOutDirsFromCheck": true,
+  "rust-analyzer.cacheOnDisk": true,
+  "rust-analyzer.lruCapacity": 65536,
+  "rust-analyzer.procMacro.enable": true,
+  "rust-analyzer.cargo.target": "x86_64-unknown-linux-gnu",
+  "rust-analyzer.files.excludeDirs": ["target", "generated"],
+  "rust-analyzer.checkOnSave.command": "check",
+  "rust-analyzer.checkOnSave.extraArgs": ["--target", "x86_64-unknown-linux-gnu"],
+
+  // --- Editor ---
+  "editor.formatOnSave": true,
+  "editor.inlayHints.enabled": "offUnlessPressed",
+  "editor.rulers": [100],
+
+  // --- Rust formatting ---
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.tabSize": 4
+  },
+
+  // --- Python ---
+  "[python]": {
+    "editor.tabSize": 4,
+    "editor.defaultFormatter": "ms-python.blackformatter"
+  },
+
+  // --- TOML ---
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+
+  // --- Git ---
+  "git.autofetch": true,
+  "git.confirmSync": false,
+
+  // --- Files ---
+  "files.exclude": {
+    "target": true,
+    "**/.git": true
+  },
+  "files.watcherExclude": {
+    "target/**": true
+  },
+
+  // --- Search ---
+  "search.exclude": {
+    "target/**": true,
+    "**/node_modules": true
+  }
+}

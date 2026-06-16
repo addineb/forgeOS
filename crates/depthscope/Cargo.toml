@@ -1,0 +1,20 @@
+[package]
+name = "depthscope"
+version = "0.1.0"
+edition = "2021"
+description = "Depth-pattern study tool: replays L2 data and computes depth features at macrostructure timescales"
+
+[[bin]]
+name = "depthscope"
+path = "src/main.rs"
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+forge-book = { path = "../forge-book" }
+forge-depth = { path = "../forge-depth" }
+forge-data = { path = "../forge-data", features = ["convert"] }
+clap = { version = "4", features = ["derive"] }
+parquet = "53"
+arrow = "53"
+csv = "1"
+serde = { version = "1", features = ["derive"] }

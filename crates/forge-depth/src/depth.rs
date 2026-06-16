@@ -4,7 +4,7 @@
 //! this captures the full depth shape for macrostructure analysis.
 
 use forge_book::OrderBook;
-use forge_core::{Price, Qty};
+// forge_core types used via forge_book::OrderBook which re-exports them
 
 /// Full depth snapshot computed from an OrderBook at a point in time.
 /// Captures shape, concentration, and distribution across all visible levels.
@@ -49,11 +49,11 @@ impl DepthSnapshot {
     /// Compute a depth snapshot from an OrderBook at a given timestamp.
     /// `top_n` controls the imbalance calculation (default 5).
     pub fn from_book(book: &OrderBook, ts: u64, top_n: usize) -> Self {
-        let (bb, bbq) = match book.best_bid() {
+        let (bb, _bbq) = match book.best_bid() {
             Some((p, q)) => (p.to_f64(), q.to_f64()),
             None => return Self::empty(ts),
         };
-        let (ba, baq) = match book.best_ask() {
+        let (ba, _baq) = match book.best_ask() {
             Some((p, q)) => (p.to_f64(), q.to_f64()),
             None => return Self::empty(ts),
         };
@@ -61,9 +61,8 @@ impl DepthSnapshot {
         let mid = (bb + ba) / 2.0;
         let spread_bps = if mid > 0.0 { (ba - bb) / mid * 10000.0 } else { 0.0 };
 
-        // Collect all levels
+        // Collect all levels — bids best-first (highest first), asks best-first (lowest first)
         let bid_levels: Vec<(f64, f64)> = book.bids_iter()
-            .rev() // highest first
             .map(|(p, q)| (p.to_f64(), q.to_f64()))
             .collect();
         let ask_levels: Vec<(f64, f64)> = book.asks_iter()

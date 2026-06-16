@@ -1,0 +1,59 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo check (linux target)",
+      "type": "shell",
+      "command": "cargo check --target x86_64-unknown-linux-gnu",
+      "problemMatcher": "$rustc",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "cargo clippy",
+      "type": "shell",
+      "command": "cargo clippy --all-targets -- -D warnings",
+      "problemMatcher": "$rustc",
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "cargo test",
+      "type": "shell",
+      "command": "cargo test --release",
+      "problemMatcher": "$rustc",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "cargo test (forge-depth)",
+      "type": "shell",
+      "command": "cargo test -p forge-depth",
+      "problemMatcher": "$rustc",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "sync obsidian vault",
+      "type": "shell",
+      "command": "powershell -ExecutionPolicy Bypass -File tools/sync-vault.ps1",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}

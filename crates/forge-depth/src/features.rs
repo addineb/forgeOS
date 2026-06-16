@@ -73,15 +73,76 @@ pub struct DepthFeatures {
     pub bid_wall_vol: f64,
     /// Total wall volume on ask side.
     pub ask_wall_vol: f64,
+    // --- CVD momentum ---
+    /// CVD momentum: rate of change of CVD delta over the last interval.
+    /// Positive = flow accelerating in buy direction, negative = accelerating sell.
+    pub cvd_momentum: f64,
+    /// CVD acceleration: change in momentum (2nd derivative).
+    pub cvd_acceleration: f64,
+    // --- Depth bands ---
+    /// Volume at top-1 level (ask side).
+    pub ask_vol_top1: f64,
+    /// Volume at top-3 levels (ask side).
+    pub ask_vol_top3: f64,
+    /// Volume at top-5 levels (ask side).
+    pub ask_vol_top5: f64,
+    /// Volume at top-10 levels (ask side).
+    pub ask_vol_top10: f64,
+    /// Volume at top-20 levels (ask side).
+    pub ask_vol_top20: f64,
+    /// Volume at top-50 levels (ask side).
+    pub ask_vol_top50: f64,
+    /// Volume at top-100 levels (ask side).
+    pub ask_vol_top100: f64,
+    /// Volume at top-1 level (bid side).
+    pub bid_vol_top1: f64,
+    /// Volume at top-3 levels (bid side).
+    pub bid_vol_top3: f64,
+    /// Volume at top-5 levels (bid side).
+    pub bid_vol_top5: f64,
+    /// Volume at top-10 levels (bid side).
+    pub bid_vol_top10: f64,
+    /// Volume at top-20 levels (bid side).
+    pub bid_vol_top20: f64,
+    /// Volume at top-50 levels (bid side).
+    pub bid_vol_top50: f64,
+    /// Volume at top-100 levels (bid side).
+    pub bid_vol_top100: f64,
+    // --- Depth band ratios (macrostructure key features) ---
+    /// Ask concentration ratio: top-10 / top-100. High = liquidity clustered near best.
+    pub ask_conc_ratio: f64,
+    /// Bid concentration ratio: top-10 / top-100.
+    pub bid_conc_ratio: f64,
+    /// Ask depth skew: top-50 / top-100. Shows if mid-depth is loaded vs deep.
+    pub ask_depth_skew: f64,
+    /// Bid depth skew: top-50 / top-100.
+    pub bid_depth_skew: f64,
+    /// Cross-ask ratio: ask top-10 / bid top-10. >1 = more ask supply near top.
+    pub cross_ask_ratio: f64,
+    /// Depth breadth: (ask_top100 - ask_top10) / ask_top100. High = liquidity spread deep.
+    pub depth_breadth_ask: f64,
+    /// Depth breadth: (bid_top100 - bid_top10) / bid_top100.
+    pub depth_breadth_bid: f64,
+    // --- Price context ---
+    /// Mid price at snapshot time.
+    pub mid_price: f64,
+    /// Best bid price.
+    pub best_bid: f64,
+    /// Best ask price.
+    pub best_ask: f64,
 }
 
 impl DepthFeatures {
     /// Compute depth features from the current state.
+    /// `prev_cvd_delta` and `prev2_cvd_delta` are the CVD deltas from 1 and 2
+    /// snapshots ago, used to compute momentum and acceleration.
     pub fn compute(
         snapshot: &DepthSnapshot,
         cvd: &CVD,
         vp: &VolumeProfile,
         wall_tracker: &WallTracker,
+        prev_cvd_delta: Option<f64>,
+        prev2_cvd_delta: Option<f64>,
     ) -> Self {
         let mid = snapshot.mid;
 
@@ -127,6 +188,42 @@ impl DepthFeatures {
 
         let avg_wall_lifetime_s = wall_tracker.avg_wall_lifetime_ns() / 1_000_000_000.0;
 
+        // CVD momentum: rate of change of CVD delta
+        let current_cvd_delta = cvd.delta();
+        let cvd_momentum = match prev_cvd_delta {
+            Some(prev) => current_cvd_delta - prev,
+            None => 0.0,
+        };
+        let cvd_acceleration = match (prev_cvd_delta, prev2_cvd_delta) {
+            (Some(prev), Some(prev2)) => current_cvd_delta - 2.0 * prev + prev2,
+            _ => 0.0,
+        };
+
+        // Depth bands: volume at different depth tiers
+        let ask_vol_top1 = snapshot.ask_vol_at_band(1);
+        let ask_vol_top3 = snapshot.ask_vol_at_band(3);
+        let ask_vol_top5 = snapshot.ask_vol_at_band(5);
+        let ask_vol_top10 = snapshot.ask_vol_at_band(10);
+        let ask_vol_top20 = snapshot.ask_vol_at_band(20);
+        let ask_vol_top50 = snapshot.ask_vol_at_band(50);
+        let ask_vol_top100 = snapshot.ask_vol_at_band(100);
+        let bid_vol_top1 = snapshot.bid_vol_at_band(1);
+        let bid_vol_top3 = snapshot.bid_vol_at_band(3);
+        let bid_vol_top5 = snapshot.bid_vol_at_band(5);
+        let bid_vol_top10 = snapshot.bid_vol_at_band(10);
+        let bid_vol_top20 = snapshot.bid_vol_at_band(20);
+        let bid_vol_top50 = snapshot.bid_vol_at_band(50);
+        let bid_vol_top100 = snapshot.bid_vol_at_band(100);
+
+        // Depth band ratios (macrostructure key features)
+        let ask_conc_ratio = if ask_vol_top100 > 0.0 { ask_vol_top10 / ask_vol_top100 } else { 0.0 };
+        let bid_conc_ratio = if bid_vol_top100 > 0.0 { bid_vol_top10 / bid_vol_top100 } else { 0.0 };
+        let ask_depth_skew = if ask_vol_top100 > 0.0 { ask_vol_top50 / ask_vol_top100 } else { 0.0 };
+        let bid_depth_skew = if bid_vol_top100 > 0.0 { bid_vol_top50 / bid_vol_top100 } else { 0.0 };
+        let cross_ask_ratio = if bid_vol_top10 > 0.0 { ask_vol_top10 / bid_vol_top10 } else { 0.0 };
+        let depth_breadth_ask = if ask_vol_top100 > 0.0 { (ask_vol_top100 - ask_vol_top10) / ask_vol_top100 } else { 0.0 };
+        let depth_breadth_bid = if bid_vol_top100 > 0.0 { (bid_vol_top100 - bid_vol_top10) / bid_vol_top100 } else { 0.0 };
+
         Self {
             ts: snapshot.ts,
             full_imbalance: snapshot.full_imbalance,
@@ -156,6 +253,32 @@ impl DepthFeatures {
             avg_wall_lifetime_s,
             bid_wall_vol,
             ask_wall_vol,
+            cvd_momentum,
+            cvd_acceleration,
+            ask_vol_top1,
+            ask_vol_top3,
+            ask_vol_top5,
+            ask_vol_top10,
+            ask_vol_top20,
+            ask_vol_top50,
+            ask_vol_top100,
+            bid_vol_top1,
+            bid_vol_top3,
+            bid_vol_top5,
+            bid_vol_top10,
+            bid_vol_top20,
+            bid_vol_top50,
+            bid_vol_top100,
+            ask_conc_ratio,
+            bid_conc_ratio,
+            ask_depth_skew,
+            bid_depth_skew,
+            cross_ask_ratio,
+            depth_breadth_ask,
+            depth_breadth_bid,
+            mid_price: snapshot.mid,
+            best_bid: snapshot.best_bid,
+            best_ask: snapshot.best_ask,
         }
     }
 
@@ -164,16 +287,25 @@ impl DepthFeatures {
         "ts,full_imbalance,top5_imbalance,weighted_imbalance,spread_bps,bid_levels,ask_levels,\
          total_bid_vol,total_ask_vol,ask_concentration,bid_concentration,\
          best_ask_gap_bps,best_bid_gap_bps,mean_ask_gap_bps,mean_bid_gap_bps,\
-         cvd_delta,cvd_ratio,cvd_count_imbalance,\
+         cvd_delta,cvd_ratio,cvd_count_imbalance,cvd_momentum,cvd_acceleration,\
          poc_price,va_high,va_low,concentration,mid_to_poc_bps,\
-         active_wall_count,wall_cancel_ratio,avg_wall_lifetime_s,bid_wall_vol,ask_wall_vol"
+         active_wall_count,wall_cancel_ratio,avg_wall_lifetime_s,bid_wall_vol,ask_wall_vol,\
+         ask_vol_top1,ask_vol_top3,ask_vol_top5,ask_vol_top10,ask_vol_top20,ask_vol_top50,ask_vol_top100,\
+         bid_vol_top1,bid_vol_top3,bid_vol_top5,bid_vol_top10,bid_vol_top20,bid_vol_top50,bid_vol_top100,\
+         ask_conc_ratio,bid_conc_ratio,ask_depth_skew,bid_depth_skew,cross_ask_ratio,depth_breadth_ask,depth_breadth_bid,\
+         mid_price,best_bid,best_ask"
     }
 
     /// CSV row for this feature snapshot.
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{:.6},{:.6},{:.6},{:.2},{},{},{:.4},{:.4},{:.4},{:.4},{:.2},{:.2},{:.2},{:.2},\
-             {:.4},{:.4},{:.4},{:.2},{:.2},{:.2},{:.2},{:.2},{},{:.4},{:.2},{:.4},{:.4}",
+            "{},{:.6},{:.6},{:.6},{:.4},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+             {:.4},{:.4},{:.4},{:.4},{:.4},\
+             {:.2},{:.2},{:.2},{:.2},{:.2},\
+             {},{:.4},{:.2},{:.4},{:.4},\
+             {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+             {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+             {:.2},{:.2},{:.2}",
             self.ts,
             self.full_imbalance, self.top5_imbalance, self.weighted_imbalance,
             self.spread_bps, self.bid_levels, self.ask_levels,
@@ -182,10 +314,19 @@ impl DepthFeatures {
             self.best_ask_gap_bps, self.best_bid_gap_bps,
             self.mean_ask_gap_bps, self.mean_bid_gap_bps,
             self.cvd_delta, self.cvd_ratio, self.cvd_count_imbalance,
+            self.cvd_momentum, self.cvd_acceleration,
             self.poc_price, self.va_high, self.va_low,
             self.concentration, self.mid_to_poc_bps,
             self.active_wall_count, self.wall_cancel_ratio,
             self.avg_wall_lifetime_s, self.bid_wall_vol, self.ask_wall_vol,
+            self.ask_vol_top1, self.ask_vol_top3, self.ask_vol_top5, self.ask_vol_top10,
+            self.ask_vol_top20, self.ask_vol_top50, self.ask_vol_top100,
+            self.bid_vol_top1, self.bid_vol_top3, self.bid_vol_top5, self.bid_vol_top10,
+            self.bid_vol_top20, self.bid_vol_top50, self.bid_vol_top100,
+            self.ask_conc_ratio, self.bid_conc_ratio,
+            self.ask_depth_skew, self.bid_depth_skew,
+            self.cross_ask_ratio, self.depth_breadth_ask, self.depth_breadth_bid,
+            self.mid_price, self.best_bid, self.best_ask,
         )
     }
 }
