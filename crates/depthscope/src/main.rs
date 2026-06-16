@@ -223,68 +223,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let book_dir = args.data_root.join(&args.symbol).join("bookDelta").join(&args.date);
     let trade_dir = args.data_root.join(&args.symbol).join("trade").join(&args.date);
 
-    // Collect all deltas and trades across hours, sorted by time
-    let mut all_deltas: Vec<RawDelta> = Vec::new();
-    let mut all_trades: Vec<RawTrade> = Vec::new();
-
-    for hh in &hours {
-        let book_path = book_dir.join(format!("{hh}.parquet"));
-        let trade_path = trade_dir.join(format!("{hh}.parquet"));
-
-        if let Ok(deltas) = read_orderbook_deltas(&book_path) {
-            eprintln!("  {hh}: {} deltas", deltas.len());
-            all_deltas.extend(deltas);
-        } else {
-            eprintln!("  {hh}: no book data, skipping");
-        }
-
-        if let Ok(trades) = read_trades(&trade_path) {
-            eprintln!("  {hh}: {} trades", trades.len());
-            all_trades.extend(trades);
-        }
-    }
-
-    eprintln!("Total: {} deltas, {} trades", all_deltas.len(), all_trades.len());
-
-    if all_deltas.is_empty() {
-        eprintln!("No data found. Check your --data-root, --symbol, and --date paths.");
-        return Ok(());
-    }
-
-    // Sort deltas by venue_ts then capture_ts
-    all_deltas.sort_by_key(|d| (d.venue_ts_ms, d.capture_ts_ns));
-    all_trades.sort_by_key(|t| t.event_time_ms);
-
-    // Determine time range
-    let first_ts = all_deltas.first().map(|d| d.venue_ts_ms).unwrap_or(0);
-    let last_ts = all_deltas.last().map(|d| d.venue_ts_ms).unwrap_or(0);
-    let warmup_end_ms = first_ts + (args.warmup_s as i64) * 1000;
-    eprintln!("Time range: {} - {} ({}s)", first_ts, last_ts, (last_ts - first_ts) / 1000);
-    eprintln!("Warmup ends at: {} ({}s from start)", warmup_end_ms, args.warmup_s);
-
-    // Reconstruct book and compute features
+    // STREAMING: process hour-by-hour to avoid OOM on heavy days (64M+ deltas)
+    // Book state carries over between hours. Each hour's data is dropped after processing.
     let mut book = OrderBook::new();
     let mut cvd = CVD::new();
     let mut wall_tracker = WallTracker::new(args.wall_threshold);
-    let mut trade_idx = 0usize;
 
     // Volume profile window: fixed lookback (default 5 min), not tied to bar interval
     let vp_window_ms = (args.vp_window_s as i64) * 1000;
     let mut vp_trades: Vec<(i64, f64, f64, Side)> = Vec::new();
 
-    // Output: collect snapshots first, then compute forward returns, then write CSV
+    // Snapshot state
     let interval_ns = (args.interval_s as u64) * 1_000_000_000;
-    let warmup_end_ns = (warmup_end_ms as u64) * 1_000_000;
-    let mut next_snapshot_ns = warmup_end_ns;
+    let mut warmup_end_ns: u64 = 0;
+    let mut next_snapshot_ns: u64 = 0;
+    let mut warmup_set = false;
     let mut applied = 0u64;
     let mut snapshots: Vec<DepthFeatures> = Vec::new();
-    let mut cvd_history: Vec<f64> = Vec::new(); // last 3 CVD deltas for momentum
+    let mut cvd_history: Vec<f64> = Vec::new();
 
-    // Volume bar state: track cumulative trade volume for volume-bar mode
+    // Volume bar state
     let volume_bar = args.volume_bar.unwrap_or(0.0);
     let use_volume_bar = volume_bar > 0.0;
     let mut cum_trade_vol: f64 = 0.0;
-    let mut next_vol_bar_threshold = volume_bar; // first threshold after warmup
+    let mut next_vol_bar_threshold = volume_bar;
 
     // Expand output path placeholders
     let mode_str = if use_volume_bar { format!("vb{}", volume_bar as u64) } else { format!("tb{}s", args.interval_s) };
@@ -295,52 +257,165 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into();
     eprintln!("  output: {}", output_path.display());
 
-    eprintln!("Processing deltas...");
+    let mut total_deltas: u64 = 0;
+    let mut total_trades: u64 = 0;
 
-    for delta in &all_deltas {
-        let ts_ns = (delta.venue_ts_ms as u64) * 1_000_000;
+    eprintln!("Processing hours (streaming)...");
 
-        // Apply delta to book
-        let side = match delta.side.as_str() {
-            "bid" | "buy" | "b" => Side::Bid,
-            "ask" | "sell" | "a" => Side::Ask,
-            _ => continue,
+    for hh in &hours {
+        let book_path = book_dir.join(format!("{hh}.parquet"));
+        let trade_path = trade_dir.join(format!("{hh}.parquet"));
+
+        // Load this hour's deltas and trades
+        let mut hour_deltas = match read_orderbook_deltas(&book_path) {
+            Ok(d) => d,
+            Err(_) => {
+                eprintln!("  {hh}: no book data, skipping");
+                continue;
+            }
         };
-
-        let price = match Price::from_f64(delta.price) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        let qty = match Qty::from_f64(delta.qty) {
-            Ok(q) => q,
-            Err(_) => continue,
-        };
-
-        let exch_ts = match UnixNanos::from_i64(ts_ns as i64) {
+        let mut hour_trades = match read_trades(&trade_path) {
             Ok(t) => t,
-            Err(_) => continue,
-        };
-        let local_ts = match exch_ts.checked_add(args.feed_latency_ns) {
-            Ok(t) => t,
-            Err(_) => continue,
+            Err(_) => Vec::new(),
         };
 
-        // Use is_remove flag from CHD kind column instead of qty==0 check
-        let kind = EventKind::BookDelta;
+        eprintln!("  {hh}: {} deltas, {} trades", hour_deltas.len(), hour_trades.len());
+        total_deltas += hour_deltas.len() as u64;
+        total_trades += hour_trades.len() as u64;
 
-        let event = match forge_core::Event::new(kind, exch_ts, local_ts, Some(side), price, qty, 0) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        // Sort within the hour (hours are processed in order, so global order is maintained)
+        hour_deltas.sort_by_key(|d| (d.venue_ts_ms, d.capture_ts_ns));
+        hour_trades.sort_by_key(|t| t.event_time_ms);
 
-        if let Err(_) = book.apply(&event) {
+        // Set warmup from first delta of the day
+        if !warmup_set && !hour_deltas.is_empty() {
+            let first_ts_ns = (hour_deltas[0].venue_ts_ms as u64) * 1_000_000;
+            warmup_end_ns = first_ts_ns + (args.warmup_s as u64) * 1_000_000_000;
+            next_snapshot_ns = warmup_end_ns;
+            warmup_set = true;
+            eprintln!("Warmup ends at ts={} ({}s from start)", warmup_end_ns, args.warmup_s);
+        }
+
+        if !warmup_set {
+            // No data at all yet
             continue;
         }
-        applied += 1;
 
-        // Process trades up to this timestamp for CVD
-        while trade_idx < all_trades.len() && all_trades[trade_idx].event_time_ms <= delta.venue_ts_ms {
-            let t = &all_trades[trade_idx];
+        let mut trade_idx = 0usize;
+
+        // Process deltas for this hour
+        for delta in &hour_deltas {
+            let ts_ns = (delta.venue_ts_ms as u64) * 1_000_000;
+
+            // Apply delta to book
+            let side = match delta.side.as_str() {
+                "bid" | "buy" | "b" => Side::Bid,
+                "ask" | "sell" | "a" => Side::Ask,
+                _ => continue,
+            };
+
+            let price = match Price::from_f64(delta.price) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let qty = match Qty::from_f64(delta.qty) {
+                Ok(q) => q,
+                Err(_) => continue,
+            };
+
+            let exch_ts = match UnixNanos::from_i64(ts_ns as i64) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let local_ts = match exch_ts.checked_add(args.feed_latency_ns) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+
+            let kind = EventKind::BookDelta;
+
+            let event = match forge_core::Event::new(kind, exch_ts, local_ts, Some(side), price, qty, 0) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            if let Err(_) = book.apply(&event) {
+                continue;
+            }
+            applied += 1;
+
+            // Process trades up to this timestamp for CVD
+            while trade_idx < hour_trades.len() && hour_trades[trade_idx].event_time_ms <= delta.venue_ts_ms {
+                let t = &hour_trades[trade_idx];
+                let trade_side = if t.is_buyer_maker { Side::Ask } else { Side::Bid };
+                cvd.record_trade(trade_side, t.qty);
+                vp_trades.push((t.event_time_ms, t.price, t.qty, trade_side));
+                cum_trade_vol += t.qty;
+                trade_idx += 1;
+            }
+
+            // Take snapshot at interval (time-bar) or volume threshold (volume-bar)
+            let should_snapshot = if use_volume_bar {
+                ts_ns >= warmup_end_ns && cum_trade_vol >= next_vol_bar_threshold
+            } else {
+                ts_ns >= next_snapshot_ns
+            };
+
+            if should_snapshot {
+                // Book integrity checks
+                if book.is_crossed() {
+                    eprintln!("WARNING: crossed book at ts={} (best_bid >= best_ask)", ts_ns);
+                }
+                let bid_lvl = book.bid_levels();
+                let ask_lvl = book.ask_levels();
+                if bid_lvl < 50 || ask_lvl < 50 {
+                    eprintln!("WARNING: low level count at ts={} (bid={}, ask={})", ts_ns, bid_lvl, ask_lvl);
+                }
+
+                // Update wall tracker only at snapshot time
+                let bid_levels: Vec<(f64, f64)> = book.bids_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
+                let ask_levels: Vec<(f64, f64)> = book.asks_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
+                wall_tracker.update(&bid_levels, &ask_levels, ts_ns);
+
+                let snapshot = DepthSnapshot::from_book(&book, ts_ns, args.top_n);
+
+                // Build volume profile from recent trades (prune old ones first)
+                let vp_cutoff_ms = (ts_ns as i64) / 1_000_000 - vp_window_ms;
+                vp_trades.retain(|(ts_ms, _, _, _)| *ts_ms >= vp_cutoff_ms);
+                let vp_slice: Vec<(f64, f64, Side)> = vp_trades.iter()
+                    .map(|(_, p, q, s)| (*p, *q, *s))
+                    .collect();
+                let vp = VolumeProfile::from_trades(&vp_slice, args.vp_bin_width);
+
+                // CVD momentum
+                let prev_cvd = if cvd_history.len() >= 1 { Some(cvd_history[cvd_history.len() - 1]) } else { None };
+                let prev2_cvd = if cvd_history.len() >= 2 { Some(cvd_history[cvd_history.len() - 2]) } else { None };
+
+                let features = DepthFeatures::compute(&snapshot, &cvd, &vp, &wall_tracker, prev_cvd, prev2_cvd, cum_trade_vol);
+
+                cvd_history.push(cvd.delta());
+                if cvd_history.len() > 100 { cvd_history.drain(0..1); }
+
+                snapshots.push(features);
+
+                // Advance to next snapshot threshold
+                if use_volume_bar {
+                    while next_vol_bar_threshold <= cum_trade_vol {
+                        next_vol_bar_threshold += volume_bar;
+                    }
+                } else {
+                    next_snapshot_ns += interval_ns;
+                }
+
+                if snapshots.len() % 1000 == 0 {
+                    eprintln!("  {} snapshots, {} deltas applied", snapshots.len(), applied);
+                }
+            }
+        }
+
+        // Process remaining trades for this hour (for CVD/volume tracking)
+        while trade_idx < hour_trades.len() {
+            let t = &hour_trades[trade_idx];
             let trade_side = if t.is_buyer_maker { Side::Ask } else { Side::Bid };
             cvd.record_trade(trade_side, t.qty);
             vp_trades.push((t.event_time_ms, t.price, t.qty, trade_side));
@@ -348,70 +423,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             trade_idx += 1;
         }
 
-        // Take snapshot at interval (time-bar) or volume threshold (volume-bar)
-        let should_snapshot = if use_volume_bar {
-            // Volume bar mode: snapshot when cumulative volume crosses threshold
-            // Only after warmup
-            ts_ns >= warmup_end_ns && cum_trade_vol >= next_vol_bar_threshold
-        } else {
-            // Time bar mode: snapshot at regular time intervals
-            ts_ns >= next_snapshot_ns
-        };
+        // Drop this hour's data to free memory before loading next hour
+        drop(hour_deltas);
+        drop(hour_trades);
+    }
 
-        if should_snapshot {
-            // Book integrity checks (from community best practices: cryptofeed, etc.)
-            if book.is_crossed() {
-                eprintln!("WARNING: crossed book at ts={} (best_bid >= best_ask)", ts_ns);
-            }
-            let bid_lvl = book.bid_levels();
-            let ask_lvl = book.ask_levels();
-            // After warmup, BTC should have 500+ levels per side. Low count = data gap.
-            if bid_lvl < 50 || ask_lvl < 50 {
-                eprintln!("WARNING: low level count at ts={} (bid={}, ask={})", ts_ns, bid_lvl, ask_lvl);
-            }
+    eprintln!("Total: {} deltas, {} trades", total_deltas, total_trades);
 
-            // Update wall tracker only at snapshot time (not every delta — too expensive)
-            let bid_levels: Vec<(f64, f64)> = book.bids_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
-            let ask_levels: Vec<(f64, f64)> = book.asks_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
-            wall_tracker.update(&bid_levels, &ask_levels, ts_ns);
-
-            let snapshot = DepthSnapshot::from_book(&book, ts_ns, args.top_n);
-
-            // Build volume profile from recent trades (prune old ones first)
-            let vp_cutoff_ms = (ts_ns as i64) / 1_000_000 - vp_window_ms;
-            vp_trades.retain(|(ts_ms, _, _, _)| *ts_ms >= vp_cutoff_ms);
-            let vp_slice: Vec<(f64, f64, Side)> = vp_trades.iter()
-                .map(|(_, p, q, s)| (*p, *q, *s))
-                .collect();
-            let vp = VolumeProfile::from_trades(&vp_slice, args.vp_bin_width);
-
-            // CVD momentum: need previous 2 CVD deltas
-            let prev_cvd = if cvd_history.len() >= 1 { Some(cvd_history[cvd_history.len() - 1]) } else { None };
-            let prev2_cvd = if cvd_history.len() >= 2 { Some(cvd_history[cvd_history.len() - 2]) } else { None };
-
-            let features = DepthFeatures::compute(&snapshot, &cvd, &vp, &wall_tracker, prev_cvd, prev2_cvd, cum_trade_vol);
-            
-            // Track CVD delta for momentum calculation
-            cvd_history.push(cvd.delta());
-            if cvd_history.len() > 100 { cvd_history.drain(0..1); } // keep bounded
-
-            snapshots.push(features);
-
-            // Advance to next snapshot threshold
-            if use_volume_bar {
-                // Advance past current volume, avoiding duplicate snapshots
-                // if cum_vol has crossed multiple thresholds
-                while next_vol_bar_threshold <= cum_trade_vol {
-                    next_vol_bar_threshold += volume_bar;
-                }
-            } else {
-                next_snapshot_ns += interval_ns;
-            }
-
-            if snapshots.len() % 1000 == 0 {
-                eprintln!("  {} snapshots, {} deltas applied", snapshots.len(), applied);
-            }
-        }
+    if total_deltas == 0 {
+        eprintln!("No data found. Check your --data-root, --symbol, and --date paths.");
+        return Ok(());
     }
 
     eprintln!("Processed {} deltas, {} snapshots collected", applied, snapshots.len());
