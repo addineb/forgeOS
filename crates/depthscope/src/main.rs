@@ -359,6 +359,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         if should_snapshot {
+            // Book integrity checks (from community best practices: cryptofeed, etc.)
+            if book.is_crossed() {
+                eprintln!("WARNING: crossed book at ts={} (best_bid >= best_ask)", ts_ns);
+            }
+            let bid_lvl = book.bid_levels();
+            let ask_lvl = book.ask_levels();
+            // After warmup, BTC should have 500+ levels per side. Low count = data gap.
+            if bid_lvl < 50 || ask_lvl < 50 {
+                eprintln!("WARNING: low level count at ts={} (bid={}, ask={})", ts_ns, bid_lvl, ask_lvl);
+            }
+
             // Update wall tracker only at snapshot time (not every delta — too expensive)
             let bid_levels: Vec<(f64, f64)> = book.bids_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
             let ask_levels: Vec<(f64, f64)> = book.asks_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
@@ -455,5 +466,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     eprintln!("Done: {} deltas applied, {} snapshots written to {}", applied, snapshots.len(), output_path.display());
+
+    // Data quality summary
+    eprintln!("Book quality: crossed_trims={}, evicted={}, final_levels=({},{})",
+        book.crossed_trims(), book.evicted(), book.bid_levels(), book.ask_levels());
+    if book.is_crossed() {
+        eprintln!("WARNING: book is still crossed at end of run!");
+    }
     Ok(())
 }
