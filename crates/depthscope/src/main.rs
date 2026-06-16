@@ -64,11 +64,16 @@ struct Args {
     #[arg(long, default_value_t = 10.0)]
     vp_bin_width: f64,
 
+    /// Volume profile lookback window in seconds (how much trade history to use for VP)
+    #[arg(long, default_value_t = 300)]
+    vp_window_s: u64,
+
     /// Top-N levels for imbalance calculation
     #[arg(long, default_value_t = 20)]
     top_n: usize,
 
-    /// Output CSV file path
+    /// Output CSV file path. Supports {symbol}, {date}, {mode} placeholders.
+    /// Default: depthscope_output.csv
     #[arg(long, default_value = "depthscope_output.csv")]
     output: PathBuf,
 
@@ -263,9 +268,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut wall_tracker = WallTracker::new(args.wall_threshold);
     let mut trade_idx = 0usize;
 
-    // Volume profile window: accumulate trades for the last N seconds
-    // Each entry is (timestamp_ms, price, qty, side) so we can prune old trades
-    let vp_window_ms = (args.interval_s as i64) * 1000 * 60; // 1 minute of trades for VP
+    // Volume profile window: fixed lookback (default 5 min), not tied to bar interval
+    let vp_window_ms = (args.vp_window_s as i64) * 1000;
     let mut vp_trades: Vec<(i64, f64, f64, Side)> = Vec::new();
 
     // Output: collect snapshots first, then compute forward returns, then write CSV
@@ -281,6 +285,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let use_volume_bar = volume_bar > 0.0;
     let mut cum_trade_vol: f64 = 0.0;
     let mut next_vol_bar_threshold = volume_bar; // first threshold after warmup
+
+    // Expand output path placeholders
+    let mode_str = if use_volume_bar { format!("vb{}", volume_bar as u64) } else { format!("tb{}s", args.interval_s) };
+    let output_path: PathBuf = args.output.to_str().unwrap_or("depthscope_output.csv")
+        .replace("{symbol}", &args.symbol)
+        .replace("{date}", &args.date)
+        .replace("{mode}", &mode_str)
+        .into();
+    eprintln!("  output: {}", output_path.display());
 
     eprintln!("Processing deltas...");
 
@@ -375,7 +388,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Advance to next snapshot threshold
             if use_volume_bar {
-                next_vol_bar_threshold += volume_bar;
+                // Advance past current volume, avoiding duplicate snapshots
+                // if cum_vol has crossed multiple thresholds
+                while next_vol_bar_threshold <= cum_trade_vol {
+                    next_vol_bar_threshold += volume_bar;
+                }
             } else {
                 next_snapshot_ns += interval_ns;
             }
@@ -396,7 +413,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (4 * 60 * 60 * 1_000_000_000, "fwd_ret_4h_bps"),
     ];
 
-    let mut out_file = File::create(&args.output)?;
+    let mut out_file = File::create(&output_path)?;
     // Extended header with forward returns
     write!(out_file, "{},fwd_ret_15m_bps,fwd_ret_1h_bps,fwd_ret_4h_bps\n", DepthFeatures::csv_header())?;
 
@@ -437,6 +454,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         write!(out_file, "{},{:.4},{:.4},{:.4}\n", snap.to_csv_row(), fwd_rets[0], fwd_rets[1], fwd_rets[2])?;
     }
 
-    eprintln!("Done: {} deltas applied, {} snapshots written to {}", applied, snapshots.len(), args.output.display());
+    eprintln!("Done: {} deltas applied, {} snapshots written to {}", applied, snapshots.len(), output_path.display());
     Ok(())
 }
