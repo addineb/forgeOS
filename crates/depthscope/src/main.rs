@@ -42,9 +42,15 @@ struct Args {
     #[arg(long, default_value = "all")]
     hours: String,
 
-    /// Snapshot interval in seconds (how often to compute features)
+    /// Snapshot interval in seconds (how often to compute features, time-bar mode)
     #[arg(long, default_value_t = 1)]
     interval_s: u64,
+
+    /// Volume bar threshold in base units (e.g. 10 BTC). When set, snapshots are taken
+    /// every N units of cumulative trade volume instead of at time intervals.
+    /// Mutually exclusive with --interval-s (volume bar takes priority).
+    #[arg(long)]
+    volume_bar: Option<f64>,
 
     /// Warm-up period in seconds (discard initial data while book builds)
     #[arg(long, default_value_t = 300)]
@@ -192,7 +198,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("depthscope: depth-pattern study tool");
     eprintln!("  symbol: {}", args.symbol);
     eprintln!("  date: {}", args.date);
-    eprintln!("  interval: {}s", args.interval_s);
+    if let Some(vb) = args.volume_bar {
+        eprintln!("  mode: volume-bar ({} units)", vb);
+    } else {
+        eprintln!("  mode: time-bar ({}s interval)", args.interval_s);
+    }
     eprintln!("  warmup: {}s", args.warmup_s);
     eprintln!("  wall_threshold: {} BTC", args.wall_threshold);
     eprintln!("  top_n: {}", args.top_n);
@@ -266,6 +276,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut snapshots: Vec<DepthFeatures> = Vec::new();
     let mut cvd_history: Vec<f64> = Vec::new(); // last 3 CVD deltas for momentum
 
+    // Volume bar state: track cumulative trade volume for volume-bar mode
+    let volume_bar = args.volume_bar.unwrap_or(0.0);
+    let use_volume_bar = volume_bar > 0.0;
+    let mut cum_trade_vol: f64 = 0.0;
+    let mut next_vol_bar_threshold = volume_bar; // first threshold after warmup
+
     eprintln!("Processing deltas...");
 
     for delta in &all_deltas {
@@ -315,11 +331,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let trade_side = if t.is_buyer_maker { Side::Ask } else { Side::Bid };
             cvd.record_trade(trade_side, t.qty);
             vp_trades.push((t.event_time_ms, t.price, t.qty, trade_side));
+            cum_trade_vol += t.qty;
             trade_idx += 1;
         }
 
-        // Take snapshot at interval
-        if ts_ns >= next_snapshot_ns {
+        // Take snapshot at interval (time-bar) or volume threshold (volume-bar)
+        let should_snapshot = if use_volume_bar {
+            // Volume bar mode: snapshot when cumulative volume crosses threshold
+            // Only after warmup
+            ts_ns >= warmup_end_ns && cum_trade_vol >= next_vol_bar_threshold
+        } else {
+            // Time bar mode: snapshot at regular time intervals
+            ts_ns >= next_snapshot_ns
+        };
+
+        if should_snapshot {
             // Update wall tracker only at snapshot time (not every delta — too expensive)
             let bid_levels: Vec<(f64, f64)> = book.bids_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
             let ask_levels: Vec<(f64, f64)> = book.asks_iter().map(|(p, q)| (p.to_f64(), q.to_f64())).collect();
@@ -339,14 +365,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let prev_cvd = if cvd_history.len() >= 1 { Some(cvd_history[cvd_history.len() - 1]) } else { None };
             let prev2_cvd = if cvd_history.len() >= 2 { Some(cvd_history[cvd_history.len() - 2]) } else { None };
 
-            let features = DepthFeatures::compute(&snapshot, &cvd, &vp, &wall_tracker, prev_cvd, prev2_cvd);
+            let features = DepthFeatures::compute(&snapshot, &cvd, &vp, &wall_tracker, prev_cvd, prev2_cvd, cum_trade_vol);
             
             // Track CVD delta for momentum calculation
             cvd_history.push(cvd.delta());
             if cvd_history.len() > 100 { cvd_history.drain(0..1); } // keep bounded
 
             snapshots.push(features);
-            next_snapshot_ns += interval_ns;
+
+            // Advance to next snapshot threshold
+            if use_volume_bar {
+                next_vol_bar_threshold += volume_bar;
+            } else {
+                next_snapshot_ns += interval_ns;
+            }
 
             if snapshots.len() % 1000 == 0 {
                 eprintln!("  {} snapshots, {} deltas applied", snapshots.len(), applied);

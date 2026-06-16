@@ -15,6 +15,8 @@ use crate::wall_tracker::WallTracker;
 pub struct DepthFeatures {
     /// Timestamp of this feature snapshot (ns).
     pub ts: u64,
+    /// Cumulative trade volume at snapshot time (base units, e.g. BTC).
+    pub cum_vol: f64,
     // --- Depth shape ---
     /// Full-book imbalance (all levels).
     pub full_imbalance: f64,
@@ -143,6 +145,7 @@ impl DepthFeatures {
         wall_tracker: &WallTracker,
         prev_cvd_delta: Option<f64>,
         prev2_cvd_delta: Option<f64>,
+        cum_vol: f64,
     ) -> Self {
         let mid = snapshot.mid;
 
@@ -226,6 +229,7 @@ impl DepthFeatures {
 
         Self {
             ts: snapshot.ts,
+            cum_vol,
             full_imbalance: snapshot.full_imbalance,
             top5_imbalance: snapshot.top_n_imbalance,
             weighted_imbalance: snapshot.weighted_imbalance(0.95),
@@ -284,7 +288,7 @@ impl DepthFeatures {
 
     /// Header row for CSV output.
     pub fn csv_header() -> &'static str {
-        "ts,full_imbalance,top5_imbalance,weighted_imbalance,spread_bps,bid_levels,ask_levels,\
+        "ts,cum_vol,full_imbalance,top5_imbalance,weighted_imbalance,spread_bps,bid_levels,ask_levels,\
          total_bid_vol,total_ask_vol,ask_concentration,bid_concentration,\
          best_ask_gap_bps,best_bid_gap_bps,mean_ask_gap_bps,mean_bid_gap_bps,\
          cvd_delta,cvd_ratio,cvd_count_imbalance,cvd_momentum,cvd_acceleration,\
@@ -299,14 +303,17 @@ impl DepthFeatures {
     /// CSV row for this feature snapshot.
     pub fn to_csv_row(&self) -> String {
         format!(
-            "{},{:.6},{:.6},{:.6},{:.4},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+            "{},{:.4},{:.6},{:.6},{:.6},{:.4},{},{},{:.4},{:.4},\
+             {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
              {:.4},{:.4},{:.4},{:.4},{:.4},\
              {:.2},{:.2},{:.2},{:.2},{:.2},\
              {},{:.4},{:.2},{:.4},{:.4},\
-             {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+             {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+             {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
              {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
              {:.2},{:.2},{:.2}",
             self.ts,
+            self.cum_vol,
             self.full_imbalance, self.top5_imbalance, self.weighted_imbalance,
             self.spread_bps, self.bid_levels, self.ask_levels,
             self.total_bid_vol, self.total_ask_vol,
