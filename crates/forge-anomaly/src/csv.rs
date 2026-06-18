@@ -142,6 +142,9 @@ impl From<DepthscopeRow> for VolumeBar {
             large_aggressor_ratio: row.large_aggressor_ratio,
             max_trade_size: row.max_trade_size,
             trade_intensity: row.trade_intensity,
+            liq_imbalance: row.liq_imbalance,
+            funding_rate: row.funding_rate,
+            oi_pct_change: row.oi_pct_change,
         }
     }
 }

@@ -289,8 +289,14 @@ fn classify_feature_anomalies(
     push_z_fdr(&mut out, bar, AnomalyKind::Absorption, z_fdr[3], f.absorption, zt, true);
 
     let signed_vac = f.ask_vacuum - f.bid_vacuum;
-    let vac_z = z_fdr[4].0 * signed_vac.signum();
-    push_z_fdr(&mut out, bar, AnomalyKind::LiquidityVacuum, (vac_z, z_fdr[4].1), signed_vac, zt, true);
+    push_z_fdr(&mut out, bar, AnomalyKind::LiquidityVacuum, z_fdr[4], f.liquidity_vacuum, zt, false);
+    if let Some(event) = out.last_mut() {
+        if event.kind == AnomalyKind::LiquidityVacuum {
+            event.direction = if signed_vac > 0.0 { SignalDirection::Long }
+                             else if signed_vac < 0.0 { SignalDirection::Short }
+                             else { SignalDirection::Neutral };
+        }
+    }
 
     push_z_fdr(
         &mut out,

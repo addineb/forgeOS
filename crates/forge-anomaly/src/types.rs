@@ -77,6 +77,12 @@ pub struct VolumeBar {
     pub max_trade_size: f64,
     /// Trade intensity (trades per unit bar volume).
     pub trade_intensity: f64,
+    /// Liquidation imbalance (buy liq vol - sell liq vol) / total.
+    pub liq_imbalance: f64,
+    /// Perpetual funding rate (signed, decimal form).
+    pub funding_rate: f64,
+    /// Open interest percent change since prior bar.
+    pub oi_pct_change: f64,
 }
 
 /// Which microstructure mechanism contributed to the signal.
@@ -165,6 +171,9 @@ pub struct BarFeatures {
     pub large_sell_vol: f64,
     pub large_print_imbalance: f64,
     pub trade_intensity: f64,
+    pub liq_imbalance: f64,
+    pub funding_rate: f64,
+    pub oi_pct_change: f64,
     pub bar_index: u64,
 }
 
@@ -181,7 +190,7 @@ impl BarFeatures {
             self.cvd_acceleration_normalized,
             self.aggressor_ratio,
             self.large_print_imbalance,
-            self.trade_intensity,
+            self.trade_intensity.max(0.0).ln_1p(),
         ]
     }
 }
