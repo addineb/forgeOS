@@ -268,6 +268,25 @@ struct CellResult {
     per_date: Vec<(String, usize, f64, f64)>,
 }
 
+/// Find bar indices where date changes (date boundaries).
+/// Returns a vector where each element is the first bar index of a new date.
+/// Always includes 0 (first bar) and bars.len() (end sentinel).
+fn find_date_boundaries(bars: &[Bar]) -> Vec<usize> {
+    if bars.is_empty() {
+        return vec![0, 0];
+    }
+    let mut boundaries = vec![0];
+    let mut prev_date = &bars[0].date;
+    for i in 1..bars.len() {
+        if &bars[i].date != prev_date {
+            boundaries.push(i);
+            prev_date = &bars[i].date;
+        }
+    }
+    boundaries.push(bars.len());
+    boundaries
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
@@ -287,8 +306,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Sweep grid: {} configs", configs.len());
 
     // Build purged CV splits
-    let cv = PurgedCv::new(bars.len(), args.folds, args.purge_bars);
-    eprintln!("CV: {} folds, {} bars purge gap", args.folds, args.purge_bars);
+    let boundaries = find_date_boundaries(&bars);
+    let n_dates = boundaries.len() - 1;
+    let cv = PurgedCv::new_date_aware(boundaries, args.folds, args.purge_bars);
+    eprintln!("CV: {} folds, {} bars purge gap, {} dates (date-aware)", args.folds, args.purge_bars, n_dates);
 
     // === Null-edge baseline ===
     // Random entry (every N bars, alternating long/short) must lose ~fees.
@@ -322,16 +343,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .collect();
 
     // === Compute DSR and real CSCV PBO ===
-    // FAMILY-COUNT DSR: count independent hypotheses, not parameter permutations.
-    // Each entry_name stripped of its window suffix (_25, _50, _100) is one family.
-    // DSR penalizes by √N_trials; using families gives the honest trial count.
+    // FAMILY-COUNT DSR: count independent hypotheses, not directional + parameter permutations.
+    // Each entry_name stripped of WINDOW suffix (_25, _50) AND DIRECTION suffix (_long, _short)
+    // is one hypothesis family. oi_surge_short_25 → oi_surge, oi_surge_long_25 → oi_surge.
     fn entry_family(name: &str) -> String {
-        let parts: Vec<&str> = name.rsplitn(2, '_').collect();
-        if parts.len() == 2 && parts[0].chars().all(|c| c.is_ascii_digit()) {
-            parts[1].to_string()
-        } else {
-            name.to_string()
+        // Strip window suffix first (_25, _50, _100)
+        let without_window = {
+            let parts: Vec<&str> = name.rsplitn(2, '_').collect();
+            if parts.len() == 2 && parts[0].chars().all(|c| c.is_ascii_digit()) {
+                parts[1].to_string()
+            } else {
+                name.to_string()
+            }
+        };
+        // Strip direction suffix (_long, _short, _buy, _sell, _absorb, _discount)
+        let dir_suffixes = ["_short", "_long", "_buy", "_sell", "_absorb", "_discount"];
+        for suffix in &dir_suffixes {
+            if without_window.ends_with(suffix) {
+                return without_window[..without_window.len() - suffix.len()].to_string();
+            }
         }
+        without_window
     }
 
     // Compute per-family average Sharpe (clamped) for variance estimation
@@ -662,66 +694,51 @@ fn run_trades(entry_name: &str, threshold: f64, tp_bps: f64, sl_bps: f64, hold_b
 
             // === MACRO-STRUCTURE ROLLING ENTRIES (sustained flow, not snapshots) ===
 
-            // --- Liquidation cascade (cumulative over 25-bar ~15min window) ---
-            // Heavy cumulative sell liq → cascade momentum short
+            // --- Liquidation cascade (cumulative) ---
             "liq_cascade_sell_25" => !bars[i].liq_sell_cum_25.is_nan() && bars[i].liq_sell_cum_25 > threshold,
-            // Heavy cumulative buy liq → cascade momentum long
             "liq_cascade_buy_25" => !bars[i].liq_buy_cum_25.is_nan() && bars[i].liq_buy_cum_25 > threshold,
-            // 50-bar ~30min version
             "liq_cascade_sell_50" => !bars[i].liq_sell_cum_50.is_nan() && bars[i].liq_sell_cum_50 > threshold,
             "liq_cascade_buy_50" => !bars[i].liq_buy_cum_50.is_nan() && bars[i].liq_buy_cum_50 > threshold,
 
-            // --- Liquidation flow imbalance (sustained one-sided flow) ---
-            // Sustained sell-side liq flow → short
+            // --- Liquidation flow imbalance ---
             "liq_flow_sell_25" => !bars[i].liq_flow_imb_25.is_nan() && bars[i].liq_flow_imb_25 < threshold,
-            // Sustained buy-side liq flow → long
             "liq_flow_buy_25" => !bars[i].liq_flow_imb_25.is_nan() && bars[i].liq_flow_imb_25 > threshold,
             "liq_flow_sell_50" => !bars[i].liq_flow_imb_50.is_nan() && bars[i].liq_flow_imb_50 < threshold,
             "liq_flow_buy_50" => !bars[i].liq_flow_imb_50.is_nan() && bars[i].liq_flow_imb_50 > threshold,
 
-            // --- OI surge/collapse (25-bar ~15min window) ---
-            // OI surging = new positions → momentum
+            // --- OI change ---
             "oi_surge_long_25" => !bars[i].oi_change_25.is_nan() && bars[i].oi_change_25 > threshold,
             "oi_surge_short_25" => !bars[i].oi_change_25.is_nan() && bars[i].oi_change_25 < threshold,
-            // 50-bar version
             "oi_surge_long_50" => !bars[i].oi_change_50.is_nan() && bars[i].oi_change_50 > threshold,
             "oi_surge_short_50" => !bars[i].oi_change_50.is_nan() && bars[i].oi_change_50 < threshold,
+            "oi_unwind_long" => !bars[i].oi_pct_change.is_nan() && bars[i].oi_pct_change > threshold,
+            "oi_unwind_short" => !bars[i].oi_pct_change.is_nan() && bars[i].oi_pct_change < threshold,
 
-            // --- Sustained funding regime (25-bar average) ---
-            // Sustained positive funding → crowded longs → contrarian short
+            // --- Sustained funding ---
             "funding_crowd_short_25" => !bars[i].funding_avg_25.is_nan() && bars[i].funding_avg_25 > threshold,
-            // Sustained negative funding → crowded shorts → contrarian long
             "funding_crowd_long_25" => !bars[i].funding_avg_25.is_nan() && bars[i].funding_avg_25 < threshold,
-            // 50-bar version
             "funding_crowd_short_50" => !bars[i].funding_avg_50.is_nan() && bars[i].funding_avg_50 > threshold,
             "funding_crowd_long_50" => !bars[i].funding_avg_50.is_nan() && bars[i].funding_avg_50 < threshold,
 
-            // --- Sustained mark-index discount/premium ---
-            // Sustained perp discount → long
-            "mi_discount_long_25" => !bars[i].mark_index_avg_25.is_nan() && bars[i].mark_index_avg_25 < threshold,
-            // Sustained perp premium → short
+            // --- Sustained mark-index ---
             "mi_premium_short_25" => !bars[i].mark_index_avg_25.is_nan() && bars[i].mark_index_avg_25 > threshold,
-            "mi_discount_long_50" => !bars[i].mark_index_avg_50.is_nan() && bars[i].mark_index_avg_50 < threshold,
+            "mi_discount_long_25" => !bars[i].mark_index_avg_25.is_nan() && bars[i].mark_index_avg_25 < threshold,
             "mi_premium_short_50" => !bars[i].mark_index_avg_50.is_nan() && bars[i].mark_index_avg_50 > threshold,
+            "mi_discount_long_50" => !bars[i].mark_index_avg_50.is_nan() && bars[i].mark_index_avg_50 < threshold,
 
-            // --- Sustained CVD pressure (cumulative over window) ---
-            // Heavy cumulative buying → long momentum
+            // --- Sustained CVD ---
             "cvd_push_long_25" => !bars[i].cvd_cum_25.is_nan() && bars[i].cvd_cum_25 > threshold,
-            // Heavy cumulative selling → short momentum
             "cvd_push_short_25" => !bars[i].cvd_cum_25.is_nan() && bars[i].cvd_cum_25 < threshold,
             "cvd_push_long_50" => !bars[i].cvd_cum_50.is_nan() && bars[i].cvd_cum_50 > threshold,
             "cvd_push_short_50" => !bars[i].cvd_cum_50.is_nan() && bars[i].cvd_cum_50 < threshold,
 
-            // --- Sustained depth skew (persistent supply/demand) ---
-            // Persistent ask skew → supply overhang → short
+            // --- Sustained depth skew ---
             "ask_skew_sust_short_25" => !bars[i].ask_skew_avg_25.is_nan() && bars[i].ask_skew_avg_25 > threshold,
-            // Persistent bid skew → demand support → long
             "bid_skew_sust_long_25" => !bars[i].bid_skew_avg_25.is_nan() && bars[i].bid_skew_avg_25 > threshold,
-            // 50-bar version
             "ask_skew_sust_short_50" => !bars[i].ask_skew_avg_50.is_nan() && bars[i].ask_skew_avg_50 > threshold,
             "bid_skew_sust_long_50" => !bars[i].bid_skew_avg_50.is_nan() && bars[i].bid_skew_avg_50 > threshold,
 
-            // --- CVD momentum cumulative (sustained acceleration) ---
+            // --- CVD momentum cumulative ---
             "cvd_mom_cum_long_25" => !bars[i].cvd_mom_cum_25.is_nan() && bars[i].cvd_mom_cum_25 > threshold,
             "cvd_mom_cum_short_25" => !bars[i].cvd_mom_cum_25.is_nan() && bars[i].cvd_mom_cum_25 < threshold,
             "cvd_mom_cum_long_50" => !bars[i].cvd_mom_cum_50.is_nan() && bars[i].cvd_mom_cum_50 > threshold,
@@ -738,8 +755,9 @@ fn run_trades(entry_name: &str, threshold: f64, tp_bps: f64, sl_bps: f64, hold_b
             let is_long = if entry_name == "null_random" {
                 null_trade_count % 2 == 0
             } else {
-                entry_name.contains("long") || entry_name.contains("_buy")
-                    || entry_name.contains("absorb") || entry_name.contains("discount")
+                // Direction encoded in entry name suffix: _long = long, _short = short
+                entry_name.contains("_long") || entry_name.contains("_buy")
+                    || entry_name.contains("_absorb") || entry_name.contains("_discount")
             };
             null_trade_count += 1;
 

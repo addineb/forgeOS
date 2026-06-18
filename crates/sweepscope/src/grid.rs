@@ -28,41 +28,69 @@ pub struct SweepGrid {
 }
 
 impl SweepGrid {
-    /// Minimal focused grid: only the 3 best hypothesis families, 1-2 thresholds each.
-    /// DSR ∝ √N_trials — must keep trial count LOW to let real edges survive.
-    ///
-    /// Hypotheses from v5/v6 results:
-    ///   H1: OI collapse → short (momentum of forced closing)
-    ///   H2: Sustained CVD sell momentum → short (directional pressure)
-    ///   H3: Persistent ask skew → short (supply overhang)
-    ///   H4: Liquidation cascade → short (forced selling continuation)
+    /// Direction-aware grid. _long and _short suffixes encode direction.
+    /// BUT: verdict is per-family, not per-direction. If a signal only works
+    /// one way, the whole family retires — "if it doesn't work both ways,
+    /// it doesn't work at all."
     ///
     /// Hold: 100-600 bars (30min-4h). TP/SL: wide for macro moves.
     pub fn default() -> Self {
         Self {
             entries: vec![
-                // H1: OI collapse short (strongest from v5)
-                ("oi_surge_short_25".into(), vec![-1.0, -2.0]),
-                ("oi_surge_short_50".into(), vec![-1.0, -2.0]),
-                ("oi_unwind_short".into(), vec![-0.5, -1.0]),
+                // Shared threshold ranges for each hypothesis family
+                // OI collapse/expansion
+                ("oi_surge_short_25".into(), vec![-2.0, -1.0]),
+                ("oi_surge_short_50".into(), vec![-2.0, -1.0]),
+                ("oi_surge_long_25".into(),  vec![0.5, 1.0, 2.0]),
+                ("oi_surge_long_50".into(),  vec![0.5, 1.0, 2.0]),
+                ("oi_unwind_short".into(),   vec![-1.0, -0.5]),
+                ("oi_unwind_long".into(),    vec![0.5, 1.0, 2.0]),
 
-                // H2: CVD momentum cumulative (sustained selling)
-                ("cvd_mom_cum_short_25".into(), vec![-100.0, -200.0]),
-                ("cvd_push_short_25".into(), vec![-40000.0, -80000.0]),
+                // CVD sustained momentum
+                ("cvd_mom_cum_short_25".into(), vec![-200.0, -100.0]),
+                ("cvd_mom_cum_short_50".into(), vec![-200.0, -100.0]),
+                ("cvd_mom_cum_long_25".into(),  vec![25.0, 50.0, 100.0]),
+                ("cvd_mom_cum_long_50".into(),  vec![50.0, 100.0, 200.0]),
+                ("cvd_push_short_25".into(),    vec![-80000.0, -40000.0]),
+                ("cvd_push_short_50".into(),    vec![-200000.0, -100000.0]),
+                ("cvd_push_long_25".into(),     vec![25000.0, 50000.0]),
+                ("cvd_push_long_50".into(),     vec![50000.0, 100000.0]),
 
-                // H3: Persistent depth skew (supply overhang)
-                ("ask_skew_sust_short_25".into(), vec![0.60]),
-                ("ask_skew_sust_short_50".into(), vec![0.60]),
+                // Sustained depth skew
+                ("ask_skew_sust_short_25".into(), vec![0.60, 0.80]),
+                ("ask_skew_sust_short_50".into(), vec![0.60, 0.80]),
+                ("bid_skew_sust_long_25".into(),  vec![0.40, 0.60, 0.80]),
+                ("bid_skew_sust_long_50".into(),  vec![0.40, 0.60, 0.80]),
 
-                // H4: Liquidation cascade
-                ("liq_cascade_sell_25".into(), vec![20.0, 35.0]),
-                ("liq_cascade_sell_50".into(), vec![35.0, 55.0]),
+                // Liquidation cascade
+                ("liq_cascade_sell_25".into(), vec![20.0, 35.0, 55.0]),
+                ("liq_cascade_sell_50".into(), vec![35.0, 55.0, 80.0]),
+                ("liq_cascade_buy_25".into(),  vec![5.0, 10.0, 20.0]),
+                ("liq_cascade_buy_50".into(),  vec![10.0, 20.0, 40.0]),
 
-                // Long-side counterparts (check symmetry)
-                ("oi_surge_long_25".into(), vec![1.0, 2.0]),
-                ("cvd_mom_cum_long_25".into(), vec![100.0, 200.0]),
-                ("bid_skew_sust_long_25".into(), vec![0.60]),
-                ("liq_cascade_buy_25".into(), vec![10.0, 20.0]),
+                // Liquidation flow imbalance
+                ("liq_flow_sell_25".into(), vec![-0.5, -0.2]),
+                ("liq_flow_sell_50".into(), vec![-0.5, -0.2]),
+                ("liq_flow_buy_25".into(),  vec![0.2, 0.5]),
+                ("liq_flow_buy_50".into(),  vec![0.2, 0.5]),
+
+                // Sustained funding
+                ("funding_crowd_short_25".into(), vec![0.0001, 0.0002]),
+                ("funding_crowd_short_50".into(), vec![0.0001, 0.0002]),
+                ("funding_crowd_long_25".into(),  vec![-0.0001, -0.0002]),
+                ("funding_crowd_long_50".into(),  vec![-0.0001, -0.0002]),
+
+                // Mark-index sustained premium/discount
+                ("mi_premium_short_25".into(),  vec![5.0, 10.0]),
+                ("mi_premium_short_50".into(),  vec![5.0, 10.0]),
+                ("mi_discount_long_25".into(),  vec![-5.0, -10.0]),
+                ("mi_discount_long_50".into(),  vec![-5.0, -10.0]),
+
+                // Single-bar signals
+                ("funding_extreme_long".into(),   vec![-0.0001, -0.0002]),
+                ("funding_extreme_short".into(),  vec![0.0001, 0.0002]),
+                ("mark_index_discount_long".into(), vec![-5.0, -10.0]),
+                ("mark_index_premium_short".into(), vec![5.0, 10.0]),
             ],
             tp_bps: vec![0.0, 20.0, 40.0, 80.0],
             sl_bps: vec![0.0, 40.0, 80.0],

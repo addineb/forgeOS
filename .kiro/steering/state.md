@@ -44,6 +44,11 @@ reproducible, coinflip loses on real data.
   (only pulled Binance bookDelta+trade + thin HL hlquote). FIX: extend
   chd-to-parquet.py to pull HL FULL L2 (unblocks basis-reversion) + multi-venue L2
   + liquidations/funding. Do not re-shop providers.
+- DATA QUALITY FIX (2026-06-18): 4 dates (Mar 1, Apr 1-3) excluded due to missing
+  HL funding/OI data. Stitched CSV has 40K bars from 18 dates; clean CSV has 34K
+  bars from 14 dates. Date-aware CV splits folds on date boundaries (not bar index).
+  sweepscope v10: 16 PROMOTE, 4 PARK, 739 RETIRE (vs v9: 23 PROMOTE, 4 PARK, 732 RETIRE).
+  OI collapse, CVD momentum, ask skew all promote on clean data.
 - LAG-SUBSPACE engine clone = CANCELLED (no pulse to justify touching the engine).
 - NEXT: pick a fresh lead from the UNTESTED high-value buckets - Type C forced-flow
   (LIQUIDATION cascades, via CHD liquidations) or Type B chart-trigger + orderflow-
