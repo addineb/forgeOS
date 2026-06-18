@@ -3,10 +3,11 @@
 to per-date depthscope volume-bar CSVs.
 
 Usage:
-  python3 enrich_depthscope.py --date 2026-02-01 [-- indir] [--outdir]
+  python3 enrich_depthscope.py --date 2026-02-01 [--symbol ETHUSDT] [--indir] [--outdir]
 
-Reads  BTCUSDT_{date}_vb10.csv from indir (default /root/depthscope_out).
-Writes BTCUSDT_{date}_vb10_enriched.csv to outdir (default = indir).
+Reads  {symbol}_{date}_vb10.csv from indir (default /root/depthscope_out).
+Writes {symbol}_{date}_vb10_enriched.csv to outdir (default = indir).
+Symbol root is derived by stripping "USDT" (BTCUSDT -> BTC, ETHUSDT -> ETH).
 
 New columns:
   funding_rate       — HL hourly funding rate, forward-filled to bar ts
@@ -42,10 +43,10 @@ def dl(path, key):
     try: return pd.read_parquet(io.BytesIO(raw))
     except: return None
 
-def pull_funding(date, key):
+def pull_funding(date, key, symbol_root):
     rows = []
     for hh in range(24):
-        p = "hyperliquid_futures/%s/%02d/BTC_mark_price.parquet.zst" % (date, hh)
+        p = "hyperliquid_futures/%s/%02d/%s_mark_price.parquet.zst" % (date, hh, symbol_root)
         df = dl(p, key)
         if df is None or len(df) == 0: continue
         ts = df["event_time"].astype("int64")
@@ -61,10 +62,10 @@ def pull_funding(date, key):
     out = out.drop_duplicates(subset="ts_ns", keep="last").sort_values("ts_ns").reset_index(drop=True)
     return out
 
-def pull_oi(date, key):
+def pull_oi(date, key, symbol_root):
     rows = []
     for hh in range(24):
-        p = "hyperliquid_futures/%s/%02d/BTC_open_interest.parquet.zst" % (date, hh)
+        p = "hyperliquid_futures/%s/%02d/%s_open_interest.parquet.zst" % (date, hh, symbol_root)
         df = dl(p, key)
         if df is None or len(df) == 0: continue
         ts = df["timestamp"].astype("int64")
@@ -77,10 +78,10 @@ def pull_oi(date, key):
     out = out.drop_duplicates(subset="ts_ns", keep="last").sort_values("ts_ns").reset_index(drop=True)
     return out
 
-def pull_liquidations(date, key):
+def pull_liquidations(date, key, symbol):
     rows = []
     for hh in range(24):
-        p = "binance_futures/%s/%02d/BTCUSDT_liquidations.parquet.zst" % (date, hh)
+        p = "binance_futures/%s/%02d/%s_liquidations.parquet.zst" % (date, hh, symbol)
         df = dl(p, key)
         if df is None or len(df) == 0: continue
         ts = df["event_time"].astype("int64") * 1_000_000  # ms -> ns
@@ -169,6 +170,7 @@ def merge_liquidations(bars, liq):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", required=True)
+    ap.add_argument("--symbol", default="BTCUSDT")
     ap.add_argument("--indir", default="/root/depthscope_out")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-basis", action="store_true", help="skip Binance spot reconstruction (slow)")
@@ -176,7 +178,8 @@ def main():
     if a.outdir is None: a.outdir = a.indir
 
     key = load_key()
-    infile = os.path.join(a.indir, "BTCUSDT_%s_vb10.csv" % a.date)
+    symbol_root = a.symbol.replace("USDT", "")
+    infile = os.path.join(a.indir, "%s_%s_vb10.csv" % (a.symbol, a.date))
     if not os.path.exists(infile):
         print("MISSING %s" % infile); return
     bars = pd.read_csv(infile)
@@ -185,7 +188,7 @@ def main():
 
     # Funding
     print("[enrich] pulling funding...")
-    fund = pull_funding(a.date, key)
+    fund = pull_funding(a.date, key, symbol_root)
     if fund is not None:
         fund["mark_index_bps"] = (fund["mark"] - fund["index"]) / fund["index"] * 1e4
         bars = merge_fwd_fill(bars, fund, "ts_ns", ["funding_rate", "mark_index_bps"])
@@ -197,7 +200,7 @@ def main():
 
     # OI
     print("[enrich] pulling OI...")
-    oidf = pull_oi(a.date, key)
+    oidf = pull_oi(a.date, key, symbol_root)
     if oidf is not None:
         bars = merge_fwd_fill(bars, oidf, "ts_ns", ["oi"])
         bars["oi_pct_change"] = bars["oi"].pct_change().fillna(0.0) * 100
@@ -209,7 +212,7 @@ def main():
 
     # Liquidations
     print("[enrich] pulling liquidations...")
-    liq = pull_liquidations(a.date, key)
+    liq = pull_liquidations(a.date, key, a.symbol)
     bars = merge_liquidations(bars, liq)
     if liq is not None:
         print("[enrich] liquidations: %d events, merged" % len(liq))
@@ -259,7 +262,7 @@ def main():
         # Cumulative CVD momentum over window
         bars["cvd_mom_cum_%d" % w] = bars["cvd_momentum"].rolling(w, min_periods=1).sum()
 
-    outfile = os.path.join(a.outdir, "BTCUSDT_%s_vb10_enriched.csv" % a.date)
+    outfile = os.path.join(a.outdir, "%s_%s_vb10_enriched.csv" % (a.symbol, a.date))
     bars.to_csv(outfile, index=False)
     new_cols = [c for c in bars.columns if c not in ["ts","cum_vol","full_imbalance",
         "top5_imbalance","weighted_imbalance","spread_bps","bid_levels","ask_levels",

@@ -8,3 +8,5 @@ Cargo.lock
 *.feather
 *.parquet
 .DS_Store
+mcps/
+.kilo/worktrees/

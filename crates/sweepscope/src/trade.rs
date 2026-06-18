@@ -16,6 +16,7 @@ pub struct TradeResult {
     pub exit_price: f64,
     pub gross_pnl_bps: f64,
     pub net_pnl_bps: f64,
+    pub eur_pnl: f64,
     pub barrier_hit: BarrierHit,
 }
 
