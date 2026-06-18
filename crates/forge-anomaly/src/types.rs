@@ -296,7 +296,7 @@ impl Default for EngineConfig {
             lookback_bars: 50,
             mahalanobis_threshold: 4.0,
             isolation_threshold: 0.65,
-            cov_regularization: 0.1,
+            cov_regularization: 1.0,
             isolation_trees: 64,
             method: DetectionMethod::Mahalanobis,
             min_confidence: 0.55,
