@@ -81,9 +81,9 @@ struct Args {
     #[arg(long, default_value_t = 500_000)]
     feed_latency_ns: u64,
 
-    /// Large trade threshold in base units (e.g. 1.0 BTC). Trades >= this are
+    /// Large trade threshold in base units (e.g. 0.1 BTC). Trades >= this are
     /// tracked separately for large-print detection.
-    #[arg(long, default_value_t = 1.0)]
+    #[arg(long, default_value_t = 0.1)]
     large_trade_threshold: f64,
 }
 

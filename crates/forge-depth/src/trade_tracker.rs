@@ -93,7 +93,10 @@ impl TradeTracker {
                 0.5
             },
             max_trade_size: self.bar_max_trade_size,
-            trade_intensity: if bar_vol > 0.0 { total_count as f64 / bar_vol } else { 0.0 },
+            trade_intensity: if bar_vol > 0.0 {
+                let raw = total_count as f64 / bar_vol;
+                raw.min(20.0)
+            } else { 0.0 },
         }
     }
 
