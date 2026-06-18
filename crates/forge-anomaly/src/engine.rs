@@ -302,6 +302,10 @@ fn classify_feature_anomalies(
         false,
     );
 
+    push_z_fdr(&mut out, bar, AnomalyKind::AggressorImbalance, z_fdr[7], f.aggressor_ratio, zt, true);
+    push_z_fdr(&mut out, bar, AnomalyKind::LargePrint, z_fdr[8], f.large_print_imbalance, zt, true);
+    push_z_fdr(&mut out, bar, AnomalyKind::TradeIntensity, z_fdr[9], f.trade_intensity, zt, false);
+
     let _ = cfg;
     out
 }

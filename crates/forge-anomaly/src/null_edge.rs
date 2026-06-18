@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn shuffle_produces_different_vector() {
         let mut gate = NullEdgeGate::new(4, 0.25, 10.0, 0);
-        let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        let x = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 0.5, 0.0, 0.0];
         let s = gate.shuffle(&x, 0);
         assert_ne!(s, x);
     }

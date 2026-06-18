@@ -19,7 +19,7 @@ use arrow::record_batch::RecordBatch;
 use clap::Parser;
 use forge_book::OrderBook;
 use forge_core::{EventKind, Price, Qty, Side, UnixNanos};
-use forge_depth::{CVD, DepthFeatures, DepthSnapshot, VolumeProfile, WallTracker};
+use forge_depth::{CVD, DepthFeatures, DepthSnapshot, TradeTracker, VolumeProfile, WallTracker};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
 /// Depth-pattern study tool.
@@ -80,6 +80,11 @@ struct Args {
     /// Feed latency in nanoseconds added to exch_ts
     #[arg(long, default_value_t = 500_000)]
     feed_latency_ns: u64,
+
+    /// Large trade threshold in base units (e.g. 1.0 BTC). Trades >= this are
+    /// tracked separately for large-print detection.
+    #[arg(long, default_value_t = 1.0)]
+    large_trade_threshold: f64,
 }
 
 /// Read parquet file and return all record batches.
@@ -241,6 +246,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut applied = 0u64;
     let mut snapshots: Vec<DepthFeatures> = Vec::new();
     let mut cvd_history: Vec<f64> = Vec::new();
+    let mut trade_tracker = TradeTracker::new(args.large_trade_threshold);
 
     // Volume bar state
     let volume_bar = args.volume_bar.unwrap_or(0.0);
@@ -349,6 +355,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let t = &hour_trades[trade_idx];
                 let trade_side = if t.is_buyer_maker { Side::Ask } else { Side::Bid };
                 cvd.record_trade(trade_side, t.qty);
+                trade_tracker.record_trade(trade_side, t.qty);
                 vp_trades.push((t.event_time_ms, t.price, t.qty, trade_side));
                 cum_trade_vol += t.qty;
                 trade_idx += 1;
@@ -391,8 +398,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let prev_cvd = if cvd_history.len() >= 1 { Some(cvd_history[cvd_history.len() - 1]) } else { None };
                 let prev2_cvd = if cvd_history.len() >= 2 { Some(cvd_history[cvd_history.len() - 2]) } else { None };
 
-                let features = DepthFeatures::compute(&snapshot, &cvd, &vp, &wall_tracker, prev_cvd, prev2_cvd, cum_trade_vol);
+                let trade_stats = trade_tracker.snapshot(cum_trade_vol);
+                let features = DepthFeatures::compute(&snapshot, &cvd, &vp, &wall_tracker, &trade_stats, prev_cvd, prev2_cvd, cum_trade_vol);
 
+                trade_tracker.reset_bar();
                 cvd_history.push(cvd.delta());
                 if cvd_history.len() > 100 { cvd_history.drain(0..1); }
 
@@ -418,6 +427,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t = &hour_trades[trade_idx];
             let trade_side = if t.is_buyer_maker { Side::Ask } else { Side::Bid };
             cvd.record_trade(trade_side, t.qty);
+            trade_tracker.record_trade(trade_side, t.qty);
             vp_trades.push((t.event_time_ms, t.price, t.qty, trade_side));
             cum_trade_vol += t.qty;
             trade_idx += 1;

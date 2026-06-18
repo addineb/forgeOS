@@ -248,6 +248,9 @@ fn kind_str(k: AnomalyKind) -> &'static str {
         AnomalyKind::Absorption => "absorption",
         AnomalyKind::LiquidityVacuum => "liquidity_vacuum",
         AnomalyKind::VolDeltaDivergence => "vol_delta_divergence",
+        AnomalyKind::AggressorImbalance => "aggressor_imbalance",
+        AnomalyKind::LargePrint => "large_print",
+        AnomalyKind::TradeIntensity => "trade_intensity",
         AnomalyKind::PatternRepeat => "pattern_repeat",
     }
 }

@@ -22,6 +22,9 @@
 //! | 4 | Liquidity vacuum |
 //! | 5 | Volume-delta divergence |
 //! | 6 | CVD acceleration (volume-scaled) |
+//! | 7 | Aggressor ratio |
+//! | 8 | Large-print imbalance |
+//! | 9 | Trade intensity |
 //!
 //! ## Quick start
 //!
@@ -65,4 +68,4 @@ pub use types::{
 };
 
 /// Number of microstructure features in the multivariate detection vector.
-pub const FEATURE_DIM: usize = 7;
+pub const FEATURE_DIM: usize = 10;

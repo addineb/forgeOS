@@ -18,9 +18,11 @@ pub mod cvd;
 pub mod volume_profile;
 pub mod wall_tracker;
 pub mod features;
+pub mod trade_tracker;
 
 pub use depth::DepthSnapshot;
 pub use cvd::CVD;
 pub use volume_profile::VolumeProfile;
 pub use wall_tracker::WallTracker;
 pub use features::DepthFeatures;
+pub use trade_tracker::{TradeTracker, TradeBarStats};

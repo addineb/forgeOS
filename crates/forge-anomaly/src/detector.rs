@@ -471,8 +471,8 @@ mod tests {
         let mut w = RollingFeatureWindow::new(20);
         fill_window(&mut w, 20);
         let det = MahalanobisDetector::new(2.0, 1e-3);
-        let normal = [0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let outlier = [5.0, -4.0, 0.8, 0.9, 0.7, 2.0, 50.0];
+        let normal = [0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0];
+        let outlier = [5.0, -4.0, 0.8, 0.9, 0.7, 2.0, 50.0, 0.9, 0.8, 10.0];
         assert!(det.distance(&w, &outlier) > det.distance(&w, &normal));
     }
 
@@ -482,7 +482,7 @@ mod tests {
         fill_window(&mut w, 30);
         let det = IsolationForestDetector::new(32, 0.5);
         let normal = [0.0; FEATURE_DIM];
-        let outlier = [10.0, -8.0, 0.9, 0.8, 0.7, 5.0, 100.0];
+        let outlier = [10.0, -8.0, 0.9, 0.8, 0.7, 5.0, 100.0, 0.9, 0.8, 10.0];
         assert!(det.score(&w, &outlier) >= det.score(&w, &normal));
     }
 
@@ -491,7 +491,7 @@ mod tests {
         let mut w = RollingFeatureWindow::new(30);
         fill_window(&mut w, 30);
         let det = IsolationForestDetector::new(32, 0.5);
-        let x = [5.0, -3.0, 0.5, 0.4, 0.3, 1.0, 20.0];
+        let x = [5.0, -3.0, 0.5, 0.4, 0.3, 1.0, 20.0, 0.7, 0.6, 5.0];
         let s1 = det.score(&w, &x);
         let s2 = det.score(&w, &x);
         assert!((s1 - s2).abs() < 1e-12, "score must be idempotent: {} vs {}", s1, s2);
@@ -502,7 +502,7 @@ mod tests {
         let mut w = RollingFeatureWindow::new(30);
         fill_window(&mut w, 30);
         let det = AnomalyDetector::new(DetectionMethod::Both, 1000.0, 1e-3, 32, 0.99);
-        let normal = [0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let normal = [0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0];
         assert!(!det.is_anomaly(&w, &normal));
     }
 }

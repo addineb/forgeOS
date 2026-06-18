@@ -79,6 +79,28 @@ struct DepthscopeRow {
     liq_imbalance: f64,
     #[serde(default, deserialize_with = "deserialize_f64_nan")]
     basis_bps: f64,
+    #[serde(default)]
+    trade_count: u64,
+    #[serde(default)]
+    buy_count: u64,
+    #[serde(default)]
+    sell_count: u64,
+    #[serde(default)]
+    aggressor_ratio: f64,
+    #[serde(default)]
+    large_buy_count: u64,
+    #[serde(default)]
+    large_sell_count: u64,
+    #[serde(default, deserialize_with = "deserialize_f64_nan")]
+    large_buy_vol: f64,
+    #[serde(default, deserialize_with = "deserialize_f64_nan")]
+    large_sell_vol: f64,
+    #[serde(default)]
+    large_aggressor_ratio: f64,
+    #[serde(default, deserialize_with = "deserialize_f64_nan")]
+    max_trade_size: f64,
+    #[serde(default, deserialize_with = "deserialize_f64_nan")]
+    trade_intensity: f64,
 }
 
 impl From<DepthscopeRow> for VolumeBar {
@@ -109,6 +131,17 @@ impl From<DepthscopeRow> for VolumeBar {
             cvd_ratio: row.cvd_ratio,
             cvd_momentum: row.cvd_momentum,
             cvd_acceleration: row.cvd_acceleration,
+            trade_count: row.trade_count,
+            buy_count: row.buy_count,
+            sell_count: row.sell_count,
+            aggressor_ratio: row.aggressor_ratio,
+            large_buy_count: row.large_buy_count,
+            large_sell_count: row.large_sell_count,
+            large_buy_vol: row.large_buy_vol,
+            large_sell_vol: row.large_sell_vol,
+            large_aggressor_ratio: row.large_aggressor_ratio,
+            max_trade_size: row.max_trade_size,
+            trade_intensity: row.trade_intensity,
         }
     }
 }

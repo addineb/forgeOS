@@ -36,7 +36,10 @@ impl PatternCounter {
                 AnomalyKind::Absorption => 8,
                 AnomalyKind::LiquidityVacuum => 16,
                 AnomalyKind::VolDeltaDivergence => 32,
-                AnomalyKind::PatternRepeat => 64,
+                AnomalyKind::AggressorImbalance => 64,
+                AnomalyKind::LargePrint => 128,
+                AnomalyKind::TradeIntensity => 256,
+                AnomalyKind::PatternRepeat => 512,
             };
             let bucket = (e.z_score.abs() / 2.0) as u64;
             let magnitude_bucket = bucket.min(3);

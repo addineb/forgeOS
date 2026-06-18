@@ -8,6 +8,7 @@ use crate::depth::DepthSnapshot;
 use crate::cvd::CVD;
 use crate::volume_profile::VolumeProfile;
 use crate::wall_tracker::WallTracker;
+use crate::trade_tracker::TradeBarStats;
 
 /// Aggregated depth features at a point in time, computed over a rolling window.
 /// This is what the study tools will output for analysis.
@@ -125,6 +126,29 @@ pub struct DepthFeatures {
     pub depth_breadth_ask: f64,
     /// Depth breadth: (bid_top100 - bid_top10) / bid_top100.
     pub depth_breadth_bid: f64,
+    // --- Trade microstructure ---
+    /// Total number of trades in this bar.
+    pub trade_count: u64,
+    /// Number of buy-aggressor trades in this bar.
+    pub buy_count: u64,
+    /// Number of sell-aggressor trades in this bar.
+    pub sell_count: u64,
+    /// Aggressor ratio: buy_count / total_count (0.5 = balanced).
+    pub aggressor_ratio: f64,
+    /// Number of large buy trades in this bar.
+    pub large_buy_count: u64,
+    /// Number of large sell trades in this bar.
+    pub large_sell_count: u64,
+    /// Volume from large buy trades in this bar.
+    pub large_buy_vol: f64,
+    /// Volume from large sell trades in this bar.
+    pub large_sell_vol: f64,
+    /// Large trade aggressor ratio: large_buy / total_large.
+    pub large_aggressor_ratio: f64,
+    /// Largest single trade in this bar.
+    pub max_trade_size: f64,
+    /// Trade intensity: trades per unit of bar volume.
+    pub trade_intensity: f64,
     // --- Price context ---
     /// Mid price at snapshot time.
     pub mid_price: f64,
@@ -143,6 +167,7 @@ impl DepthFeatures {
         cvd: &CVD,
         vp: &VolumeProfile,
         wall_tracker: &WallTracker,
+        trade_stats: &TradeBarStats,
         prev_cvd_delta: Option<f64>,
         prev2_cvd_delta: Option<f64>,
         cum_vol: f64,
@@ -280,6 +305,17 @@ impl DepthFeatures {
             cross_ask_ratio,
             depth_breadth_ask,
             depth_breadth_bid,
+            trade_count: trade_stats.trade_count,
+            buy_count: trade_stats.buy_count,
+            sell_count: trade_stats.sell_count,
+            aggressor_ratio: trade_stats.aggressor_ratio,
+            large_buy_count: trade_stats.large_buy_count,
+            large_sell_count: trade_stats.large_sell_count,
+            large_buy_vol: trade_stats.large_buy_vol,
+            large_sell_vol: trade_stats.large_sell_vol,
+            large_aggressor_ratio: trade_stats.large_aggressor_ratio,
+            max_trade_size: trade_stats.max_trade_size,
+            trade_intensity: trade_stats.trade_intensity,
             mid_price: snapshot.mid,
             best_bid: snapshot.best_bid,
             best_ask: snapshot.best_ask,
@@ -297,6 +333,9 @@ impl DepthFeatures {
          ask_vol_top1,ask_vol_top3,ask_vol_top5,ask_vol_top10,ask_vol_top20,ask_vol_top50,ask_vol_top100,\
          bid_vol_top1,bid_vol_top3,bid_vol_top5,bid_vol_top10,bid_vol_top20,bid_vol_top50,bid_vol_top100,\
          ask_conc_ratio,bid_conc_ratio,ask_depth_skew,bid_depth_skew,cross_ask_ratio,depth_breadth_ask,depth_breadth_bid,\
+         trade_count,buy_count,sell_count,aggressor_ratio,\
+         large_buy_count,large_sell_count,large_buy_vol,large_sell_vol,large_aggressor_ratio,\
+         max_trade_size,trade_intensity,\
          mid_price,best_bid,best_ask"
     }
 
@@ -311,6 +350,9 @@ impl DepthFeatures {
              {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
              {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
              {:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},\
+             {},{},{},{:.4},\
+             {},{},{:.4},{:.4},{:.4},\
+             {:.4},{:.4},\
              {:.2},{:.2},{:.2}",
             self.ts,
             self.cum_vol,
@@ -333,6 +375,10 @@ impl DepthFeatures {
             self.ask_conc_ratio, self.bid_conc_ratio,
             self.ask_depth_skew, self.bid_depth_skew,
             self.cross_ask_ratio, self.depth_breadth_ask, self.depth_breadth_bid,
+            self.trade_count, self.buy_count, self.sell_count, self.aggressor_ratio,
+            self.large_buy_count, self.large_sell_count,
+            self.large_buy_vol, self.large_sell_vol, self.large_aggressor_ratio,
+            self.max_trade_size, self.trade_intensity,
             self.mid_price, self.best_bid, self.best_ask,
         )
     }

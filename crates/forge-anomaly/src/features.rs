@@ -72,6 +72,13 @@ impl FeatureExtractor {
         let vol_delta_divergence =
             compute_vol_delta_divergence(mid_return_bps, cur.cvd_delta, cur.cvd_momentum);
 
+        let large_total = cur.large_buy_vol + cur.large_sell_vol;
+        let large_print_imbalance = if large_total > 0.0 {
+            (cur.large_buy_vol - cur.large_sell_vol) / large_total
+        } else {
+            0.0
+        };
+
         BarFeatures {
             ofi,
             ofi_normalized,
@@ -88,6 +95,11 @@ impl FeatureExtractor {
             vol_delta_divergence,
             mid_return_bps,
             cvd_acceleration_normalized: cur.cvd_acceleration / vol_scale,
+            aggressor_ratio: cur.aggressor_ratio,
+            large_buy_vol: cur.large_buy_vol,
+            large_sell_vol: cur.large_sell_vol,
+            large_print_imbalance,
+            trade_intensity: cur.trade_intensity,
             bar_index: cur.bar_index,
         }
     }

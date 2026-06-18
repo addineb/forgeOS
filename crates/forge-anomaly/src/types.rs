@@ -55,6 +55,28 @@ pub struct VolumeBar {
     pub cvd_momentum: f64,
     /// CVD acceleration (2nd derivative).
     pub cvd_acceleration: f64,
+    /// Total trades in this bar.
+    pub trade_count: u64,
+    /// Buy-aggressor trade count.
+    pub buy_count: u64,
+    /// Sell-aggressor trade count.
+    pub sell_count: u64,
+    /// Aggressor ratio (buy / total, 0.5 = balanced).
+    pub aggressor_ratio: f64,
+    /// Large buy trade count.
+    pub large_buy_count: u64,
+    /// Large sell trade count.
+    pub large_sell_count: u64,
+    /// Large buy trade volume.
+    pub large_buy_vol: f64,
+    /// Large sell trade volume.
+    pub large_sell_vol: f64,
+    /// Large trade aggressor ratio.
+    pub large_aggressor_ratio: f64,
+    /// Largest single trade in this bar.
+    pub max_trade_size: f64,
+    /// Trade intensity (trades per unit bar volume).
+    pub trade_intensity: f64,
 }
 
 /// Which microstructure mechanism contributed to the signal.
@@ -66,6 +88,9 @@ pub enum AnomalyKind {
     Absorption,
     LiquidityVacuum,
     VolDeltaDivergence,
+    AggressorImbalance,
+    LargePrint,
+    TradeIntensity,
     PatternRepeat,
 }
 
@@ -132,15 +157,18 @@ pub struct BarFeatures {
     pub liquidity_vacuum: f64,
     pub bid_vacuum: f64,
     pub ask_vacuum: f64,
-    /// Price vs CVD disagreement (divergence strength).
     pub vol_delta_divergence: f64,
     pub mid_return_bps: f64,
     pub cvd_acceleration_normalized: f64,
+    pub aggressor_ratio: f64,
+    pub large_buy_vol: f64,
+    pub large_sell_vol: f64,
+    pub large_print_imbalance: f64,
+    pub trade_intensity: f64,
     pub bar_index: u64,
 }
 
 impl BarFeatures {
-    /// Pack into the fixed-size multivariate detection vector.
     #[must_use]
     pub fn to_vector(&self) -> FeatureVector {
         [
@@ -151,6 +179,9 @@ impl BarFeatures {
             self.liquidity_vacuum,
             self.vol_delta_divergence,
             self.cvd_acceleration_normalized,
+            self.aggressor_ratio,
+            self.large_print_imbalance,
+            self.trade_intensity,
         ]
     }
 }
