@@ -35,6 +35,12 @@ struct Args {
     expected_move_iso_coeff: f64,
     #[arg(long, default_value_t = 0.05)]
     fdr_alpha: f64,
+    #[arg(long, default_value_t = 100)]
+    null_edge_permutations: u32,
+    #[arg(long, default_value_t = 0.25)]
+    null_edge_margin: f64,
+    #[arg(long, default_value_t = 8.0)]
+    max_signals_per_100_bars: f64,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -64,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         expected_move_maha_coeff: args.expected_move_maha_coeff,
         expected_move_iso_coeff: args.expected_move_iso_coeff,
         fdr_alpha: args.fdr_alpha,
+        null_edge_permutations: args.null_edge_permutations,
+        null_edge_margin: args.null_edge_margin,
+        max_signals_per_100_bars: args.max_signals_per_100_bars,
         ..EngineConfig::default()
     };
 
@@ -167,6 +176,9 @@ fn run_backtest(args: &Args, method: DetectionMethod) -> Result<(), Box<dyn std:
         expected_move_maha_coeff: args.expected_move_maha_coeff,
         expected_move_iso_coeff: args.expected_move_iso_coeff,
         fdr_alpha: args.fdr_alpha,
+        null_edge_permutations: args.null_edge_permutations,
+        null_edge_margin: args.null_edge_margin,
+        max_signals_per_100_bars: args.max_signals_per_100_bars,
         ..EngineConfig::default()
     };
 
