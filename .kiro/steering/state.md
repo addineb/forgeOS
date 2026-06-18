@@ -49,6 +49,12 @@ reproducible, coinflip loses on real data.
   bars from 14 dates. Date-aware CV splits folds on date boundaries (not bar index).
   sweepscope v10: 16 PROMOTE, 4 PARK, 739 RETIRE (vs v9: 23 PROMOTE, 4 PARK, 732 RETIRE).
   OI collapse, CVD momentum, ask skew all promote on clean data.
+- v11 sweep (long grid expansion): 20 PROMOTE, 8 PARK, 2480 RETIRE. All short-side.
+- v12 sweep (family-level DSR, both directions in grid): 49 PROMOTE (short-only),
+  10 PARK, 2812 RETIRE. 10 hypothesis families vs 1613 configs. PBO=0.486, DSR families=10.
+  Long-side signals trigger 100s of trades but lose ~12 bps — need bull market data.
+- ETHUSDT: CHD data pulled (18 dates), depthscope running (batch in background, ~4h/date).
+  Will enable cross-market signal validation.
 - LAG-SUBSPACE engine clone = CANCELLED (no pulse to justify touching the engine).
 - NEXT: pick a fresh lead from the UNTESTED high-value buckets - Type C forced-flow
   (LIQUIDATION cascades, via CHD liquidations) or Type B chart-trigger + orderflow-
