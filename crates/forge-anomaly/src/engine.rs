@@ -367,6 +367,9 @@ fn classify_signal_type(
         .iter()
         .any(|e| e.kind == AnomalyKind::VolDeltaDivergence);
     let has_absorption = events.iter().any(|e| e.kind == AnomalyKind::Absorption);
+    let has_large_print = events.iter().any(|e| e.kind == AnomalyKind::LargePrint);
+    let has_aggressor = events.iter().any(|e| e.kind == AnomalyKind::AggressorImbalance);
+    let has_trade_intensity = events.iter().any(|e| e.kind == AnomalyKind::TradeIntensity);
     let flow_aligns = match direction {
         SignalDirection::Long => f.cvd_delta > 0.0 || f.ofi_normalized > 0.0,
         SignalDirection::Short => f.cvd_delta < 0.0 || f.ofi_normalized < 0.0,
@@ -377,14 +380,23 @@ fn classify_signal_type(
 
     if has_divergence || (has_absorption && !flow_aligns) {
         let desc = format!(
-            "reversal[{}]: divergence={:.2} absorption={:.2} mid_ret={:.1}bps",
-            regime_str, f.vol_delta_divergence, f.absorption, f.mid_return_bps
+            "reversal[{}]: divergence={:.2} absorption={:.2} mid_ret={:.1}bps agg={:.3} large={:.3}",
+            regime_str, f.vol_delta_divergence, f.absorption, f.mid_return_bps,
+            f.aggressor_ratio, f.large_print_imbalance
         );
         (SignalType::Reversal, desc)
+    } else if has_large_print || has_aggressor || has_trade_intensity {
+        let desc = format!(
+            "spot[{}]: ofi={:.3} cvd={:.2} agg={:.3} large={:.3} intensity={:.2}",
+            regime_str, f.ofi_normalized, f.cvd_delta,
+            f.aggressor_ratio, f.large_print_imbalance, f.trade_intensity
+        );
+        (SignalType::MomentumContinuation, desc)
     } else {
         let desc = format!(
-            "momentum[{}]: ofi={:.3} cvd={:.2} imb={:.3} vacuum={:.3}",
-            regime_str, f.ofi_normalized, f.cvd_delta, f.depth_imbalance, f.liquidity_vacuum
+            "momentum[{}]: ofi={:.3} cvd={:.2} imb={:.3} vacuum={:.3} agg={:.3} large={:.3} intensity={:.2}",
+            regime_str, f.ofi_normalized, f.cvd_delta, f.depth_imbalance, f.liquidity_vacuum,
+            f.aggressor_ratio, f.large_print_imbalance, f.trade_intensity
         );
         (SignalType::MomentumContinuation, desc)
     }
