@@ -1,0 +1,21 @@
+[package]
+name = "forge-anomaly"
+version = "0.2.0"
+edition = "2021"
+description = "Volume-bar anomaly engine: multivariate Mahalanobis + Isolation Forest detection on order-flow microstructure"
+publish = false
+
+[dependencies]
+forge-core = { path = "../forge-core" }
+ndarray = { version = "0.15", features = ["serde"] }
+ndarray-stats = "0.5"
+linfa = "0.7"
+csv = "1"
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+
+[[bin]]
+name = "anomalyscope"
+path = "src/bin/anomalyscope.rs"
