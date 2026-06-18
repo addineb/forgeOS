@@ -56,9 +56,12 @@ so local $ / backticks are not expanded. Output returns clean + untruncated.
 ## Rust build/test
 - `cargo build --release` / `cargo test` / `cargo clippy`. Release profile uses
   panic=abort, thin LTO. Prefer writing test output to a file for clean reads.
-## Box source sync (IMPORTANT - discovered 2026-06-11)
-- The box /root/forgeOS is NOT a git repo (no .git, no creds). git pull there is a
-  no-op and silently leaves STALE code. Sync source via scp from local over the
-  existing passwordless SSH (no tokens on box):
-  scp -o BatchMode=yes -o StrictHostKeyChecking=no "/c/Users/User/.kiro/forgeOS/<f>" root@167.233.57.140:/root/forgeOS/<f>
-  After scp, grep the box file to confirm the change landed before building.
+## Box source sync (git pull — set up 2026-06-18)
+- `/root/forgeOS` is a real git clone of `addineb/forgeOS` on branch `main`.
+  Credentials live in `/root/.git-credentials` (credential.helper=store).
+- **Normal update after you push from laptop:**
+  `ssh root@167.233.57.140 'cd /root/forgeOS && git pull --ff-only origin main'`
+- Machine-local paths are NOT in git (preserved across clone): `/root/forgeOS/data`
+  (*.forge windows), `/root/chd/data` (parquet), `/root/depthscope_out` (CSVs),
+  `/root/runs` (sweep logs).
+- scp is only for uncommitted local experiments; committed work = push then pull.
