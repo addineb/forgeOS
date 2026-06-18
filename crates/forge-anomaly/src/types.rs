@@ -244,7 +244,7 @@ pub struct EngineConfig {
     pub mahalanobis_threshold: f64,
     /// Isolation Forest anomaly score threshold [0, 1].
     pub isolation_threshold: f64,
-    /// Covariance regularization (added to diagonal).
+    /// Covariance regularization (added to diagonal, relative to variance).
     pub cov_regularization: f64,
     /// Number of trees in the isolation forest.
     pub isolation_trees: usize,
@@ -296,7 +296,7 @@ impl Default for EngineConfig {
             lookback_bars: 50,
             mahalanobis_threshold: 4.0,
             isolation_threshold: 0.65,
-            cov_regularization: 1e-4,
+            cov_regularization: 0.01,
             isolation_trees: 64,
             method: DetectionMethod::Mahalanobis,
             min_confidence: 0.55,

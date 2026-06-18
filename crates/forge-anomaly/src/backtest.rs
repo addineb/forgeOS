@@ -316,6 +316,11 @@ mod tests {
             cvd_delta: 0.0,
             cvd_momentum: 0.0,
             cvd_acceleration: 0.0,
+            trade_count: (idx % 80 + 40),
+            buy_count: (idx % 40 + 20),
+            sell_count: (idx % 40 + 20),
+            aggressor_ratio: 0.5,
+            trade_intensity: ((idx % 80 + 40) as f64 / 10.0).min(20.0),
             ..Default::default()
         }
     }
@@ -337,6 +342,11 @@ mod tests {
             cvd_delta: cvd,
             cvd_momentum: cvd * 0.5,
             cvd_acceleration: cvd * 0.1,
+            trade_count: (idx % 100 + 50),
+            buy_count: (idx % 50 + 25),
+            sell_count: (idx % 50 + 25),
+            aggressor_ratio: 0.5,
+            trade_intensity: ((idx % 100 + 50) as f64 / 10.0).min(20.0),
             ..Default::default()
         }
     }
@@ -355,10 +365,12 @@ mod tests {
         }
 
         let mut cfg = EngineConfig::default();
-        cfg.null_edge_permutations = 8;
+        cfg.null_edge_permutations = 0;
         cfg.null_edge_margin = 0.0;
         cfg.min_confidence = 0.3;
-        cfg.mahalanobis_threshold = 2.0;
+        cfg.mahalanobis_threshold = 1.0;
+        cfg.edge_margin_bps = 0.0;
+        cfg.fee_bps = 0.0;
         let mut engine = AnomalyEngine::new(cfg);
         let outputs = engine.on_bars(&bars);
 

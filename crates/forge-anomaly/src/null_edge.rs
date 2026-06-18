@@ -22,7 +22,7 @@ impl NullEdgeGate {
     #[must_use]
     pub fn new(permutations: u32, margin: f64, max_signals_per_100: f64, seed: u64) -> Self {
         Self {
-            permutations: permutations.max(4),
+            permutations,
             margin: margin.max(0.0),
             max_signals_per_100: max_signals_per_100.max(1.0),
             recent_signals: 0,
@@ -59,6 +59,9 @@ impl NullEdgeGate {
         real_dist: f64,
         detector: &MahalanobisDetector,
     ) -> bool {
+        if self.permutations == 0 {
+            return true;
+        }
         if real_dist <= 0.0 {
             return false;
         }
@@ -79,6 +82,9 @@ impl NullEdgeGate {
         real_score: f64,
         detector: &IsolationForestDetector,
     ) -> bool {
+        if self.permutations == 0 {
+            return true;
+        }
         let mut shuffled_sum = 0.0;
         for p in 0..self.permutations {
             let perm = self.shuffle(x, p);

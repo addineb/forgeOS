@@ -119,8 +119,10 @@ impl RollingFeatureWindow {
         }
         let nf = (n - 1) as f64;
         cov.mapv_inplace(|x| x / nf);
+        let var_floor = 1e-6;
         for i in 0..FEATURE_DIM {
-            cov[[i, i]] += regularization;
+            let vi = cov[[i, i]].max(var_floor);
+            cov[[i, i]] += regularization * vi;
         }
         cov
     }
