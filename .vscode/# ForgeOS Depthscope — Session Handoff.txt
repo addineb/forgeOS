@@ -1,0 +1,166 @@
+# ForgeOS Depthscope — Session Handoff
+
+## Project Overview
+ForgeOS is a clean-room Rust backtest engine for crypto microstructure edge discovery. The #1 rule is the null-edge gate: coinflip must lose ~fees, or the engine is lying. The current focus is depthscope — a tool that replays L2 orderbook data and computes depth features at macrostructure timescales (15min-4hr holds).
+
+## Team
+- **Trader**: 10y discretionary macrostructure trader, NOT a coder. Wants honest verdicts, simple trading terms. Method: chart pattern TRIGGER + orderflow CONFIRM.
+- **GLM-5.1 (you)**: Engine architecture, Rust code, honesty gates, null-edge validation. The skeptic.
+- **DeepSeek V4 Pro**: Data analysis, feature prototyping, ML/statistical work, Python scripts. The quick thinker.
+
+## WHERE TO FIND EVERYTHING
+
+### GitHub Repo
+- Remote: `github.com:addineb/forgeOS.git`
+- Branch: `depth-pattern`
+- Clone: `git clone git@github.com:addineb/forgeOS.git && cd forgeOS && git checkout depth-pattern`
+- Push access: you have it. Commit and push your changes.
+
+### Obsidian Vault (trader's notes, research, decisions)
+- Location: `C:\Users\User\Desktop\obsidian\forgeos\`
+- This is where the trader captures ideas, research notes, and decisions
+- Key files to read for full context:
+  - `docs/START-HERE.md` — project entry point
+  - `docs/ForgeOS-HOME.md` — project home/overview
+  - `docs/PROJECT-CONTEXT.md` — current project context and priorities
+  - `docs/TODO.md` — what's pending
+  - `docs/roadmap.md` — project roadmap
+  - `docs/MOC-Decisions.md` — all major decisions and why
+  - `docs/MOC-Engine.md` — engine architecture decisions
+  - `docs/MOC-Strategies.md` — strategy research and verdicts
+  - `docs/MOC-Edge-Hunt.md` — edge hunting methodology
+  - `docs/research/sweep-study.md` — the sweep study (CLOSED, no edge)
+  - `docs/research/` — all research docs (lag, OI, VP, sweep, etc.)
+  - `docs/engine-design.md` — engine design notes
+  - `docs/migration-from-wallbot.md` — why we rebuilt from scratch
+
+### Code Structure (in workspace `C:\Users\User\.kiro\forgeOS\`)
+- `crates/depthscope/src/main.rs` — THE MAIN FILE you'll be working on
+- `crates/forge-depth/src/features.rs` — DepthFeatures struct, compute(), csv_header(), to_csv_row()
+- `crates/forge-depth/src/depth.rs` — DepthSnapshot, ask_vol_at_band(), bid_vol_at_band()
+- `crates/forge-depth/src/cvd.rs` — CVD tracker
+- `crates/forge-depth/src/volume_profile.rs` — VolumeProfile
+- `crates/forge-depth/src/wall_tracker.rs` — WallTracker
+- `crates/forge-book/src/book.rs` — OrderBook (the core book engine)
+- `crates/forge-core/src/` — Price, Qty, Side, Event, EventKind, UnixNanos
+- `crates/forge-data/src/` — data reading/writing
+- `crates/forgelag/` — the old lagshot study (shelved)
+- `crates/forge-sim/` — simulation engine
+- `crates/forge-strategy/` — strategy framework
+- `tools/` — Python analysis scripts
+
+### Hetzner Box (where the data and builds live)
+- SSH: `root@167.233.57.140`
+- Rust: 1.96.0 (run `source ~/.cargo/env` first)
+- Data: `/root/chd/data/ticks/BTCUSDT/bookDelta/` and `/root/chd/data/ticks/BTCUSDT/trade/`
+- Build: `source ~/.cargo/env && cd /root/forgeOS && cargo build --release -p depthscope`
+- Binary: `/root/forgeOS/target/release/depthscope`
+- Deploy changed files: `scp <local_file> root@167.233.57.140:/root/forgeOS/<path>` then rebuild
+
+### Memory Files (persistent notes across sessions)
+- `/memories/forgeos-notes.md` — project summary, current state, team structure
+- `/memories/community-sources.md` — repos to scrap ideas from
+- `/memories/repo/depthscope-status.md` — depthscope feature list and status
+
+## Current State (as of 2026-06-16)
+
+### Depthscope — What's Built and Working
+Binary tool at `crates/depthscope/src/main.rs`. Library at `crates/forge-depth/src/`.
+
+**57 features per snapshot:**
+- Depth shape: full_imbalance, top5_imbalance, weighted_imbalance, spread_bps, bid/ask levels, total vol
+- Depth concentration: ask/bid_concentration (top-3/total)
+- Inter-level gaps: best_ask/bid_gap_bps, mean_ask/bid_gap_bps
+- CVD: delta, ratio, count_imbalance, momentum, acceleration
+- Volume profile: poc_price, va_high, va_low, concentration, mid_to_poc_bps
+- Wall tracking: active_wall_count, wall_cancel_ratio, avg_wall_lifetime_s, bid/ask_wall_vol
+- Depth bands: V1/V3/V5/V10/V20/V50/V100 per side (14 columns)
+- Depth band ratios: ask/bid_conc_ratio, ask/bid_depth_skew, cross_ask_ratio, depth_breadth_ask/bid (7 columns)
+- Price context: mid_price, best_bid, best_ask, cum_vol
+- Forward returns: fwd_ret_15m_bps, fwd_ret_1h_bps, fwd_ret_4h_bps
+
+**Two modes:**
+- Time-bar: `--interval-s 60` (snapshot every 60s)
+- Volume-bar: `--volume-bar 10` (snapshot every 10 BTC traded)
+
+**CLI flags:**
+- `--data-root`, `--symbol`, `--date`, `--hours`, `--interval-s`, `--volume-bar`, `--warmup-s`, `--wall-threshold`, `--vp-bin-width`, `--vp-window-s` (default 300), `--top-n`, `--output` (supports `{symbol}`, `{date}`, `{mode}` placeholders), `--feed-latency-ns`
+
+**Data quality checks (just added, NOT yet deployed to Hetzner):**
+- Crossed book warning at each snapshot
+- Low level count warning (<50 levels per side after warmup)
+- Data quality summary at end: crossed_trims, evicted, final levels
+
+**Known issues:**
+- Forward returns are per-date only (4hr return at 20:00 UTC = 0 if no next-day data). Solution: Python post-processing to stitch dates.
+- CHD data has no initial snapshots, only deltas. 5-min warmup workaround (book converges to 1100+ levels per side).
+
+### What's on Hetzner (NOT yet deployed with latest integrity checks)
+- Last deployed: volume bar dedup fix + VP window fix + output placeholders + cum_vol + depth band ratios
+- Need to deploy: book integrity checks (crossed book, low level warnings)
+- Command: `scp C:\Users\User\.kiro\forgeOS\crates\depthscope\src\main.rs root@167.233.57.140:/root/forgeOS/crates/depthscope/src/main.rs` then rebuild
+
+### Available Data
+- 17 BTC dates on Hetzner at `/root/chd/data/ticks/BTCUSDT/bookDelta/` and `/root/chd/data/ticks/BTCUSDT/trade/`
+- Dates: 2025-12-01, 2025-12-15, 2026-01-15, 2026-02-01, 2026-03-01, 2026-04-01/02/03, 2026-05-01, 2026-06-02 through 06-10
+- NO ETH data yet (DeepSeek's job to pull)
+
+## What Needs To Be Done Next (Priority Order)
+
+### 1. Deploy integrity checks and run full dataset (IMMEDIATE)
+- Deploy latest main.rs to Hetzner (has book integrity checks)
+- Build: `ssh root@167.233.57.140 "source ~/.cargo/env && cd /root/forgeOS && cargo build --release -p depthscope"`
+- Run all 17 BTC dates with volume-bar mode (10 BTC bars): create a shell script on Hetzner that loops over all dates
+- Example command per date: `./target/release/depthscope --data-root /root/chd/data/ticks --symbol BTCUSDT --date 2026-06-09 --volume-bar 10 --warmup-s 300 --output /root/depthscope_out/BTCUSDT_2026-06-09_vb10.csv`
+- Also run time-bar mode (60s) for comparison: `--interval-s 60 --output /root/depthscope_out/BTCUSDT_2026-06-09_tb60s.csv`
+
+### 2. Cross-date forward returns (Python post-processing)
+- The 4hr forward return at 20:00 UTC is 0 because there's no next-day data loaded
+- Write a Python script that:
+  1. Reads all per-date CSVs in order
+  2. For each snapshot, finds the closest future snapshot at 15min/1hr/4hr ahead
+  3. Recomputes forward returns using the next date's data
+- This is straightforward — just merge the CSVs by timestamp and look up mid_price
+
+### 3. Pull ETHUSDT data (DeepSeek's job)
+- Need ETH data for cross-venue comparison
+- CHD has ETHUSDT data available
+
+### 4. Start depth-pattern analysis
+- With 17 days × ~2000 volume bars = ~34,000 data points
+- Key questions:
+  - Do depth band ratios (conc_ratio, depth_skew) predict forward returns?
+  - Does CVD momentum predict direction at 15min-4hr?
+  - Are there regime shifts in depth structure that precede big moves?
+  - Can we find a depth pattern that clears the ~9bps fee bar?
+
+### 5. Engine audit (trader reminder)
+- After depthscope work, trader wants a full review of the Opus-built engine crates
+- Check forge-core, forge-data, forge-book for correctness
+
+## Key Lessons from Prior Work
+- Binding constraint: ~9bps taker fee vs ~5bps microstructure edge (signals real but smaller than toll)
+- LAGSHOT: real edge but NOT capturable at retail latency (~1-2.4s). Shelved.
+- OI-CASCADE: real cascades but naive fade sub-fee. Exhausted.
+- SWEEP/STOP-RUN: real setup, big moves (45-126bps), BUT orderflow confirm doesn't separate reversal from continuation. No trade clears net-positive at trustable n.
+- VP LVN: coin flip alone; orderflow confirm (absorption) failed to separate.
+- LADDER: per-trade positive but per-euro NEGATIVE (size illusion). CLOSED.
+- Durable wins: exhaustion/flow-deceleration (directional read), structural wick-stop, reclaim entry, OKX reference venue
+- NEXT lead: must be >>9bps per trade, latency-robust, NOT symmetric mean-reversion
+
+## Sweep Study Context (from docs/research/sweep-study.md)
+- Sweeps are REAL, moves are BIG (45-126bps mean), BUT orderflow confirm (top-5 depth imbalance absorption) does NOT separate reversal from continuation
+- This is WHY we're doing depth-pattern study — need deeper features than top-5 imbalance
+- The community info dump about desync risk, sequence numbers, checksums, and snapshot+delta architecture has been reviewed. Key takeaways for our backtesting case:
+  - We don't need live reconnection (we replay from parquet)
+  - We DO need book integrity checks (crossed book, low levels) — just added
+  - We should consider adding sequence number gap detection if CHD provides sequence IDs
+  - Checksum validation would be ideal but CHD doesn't provide exchange checksums
+
+## Build/Test Commands
+- Local check: `cargo check -p depthscope`
+- Local test: `cargo test --release`
+- Hetzner build: `ssh root@167.233.57.140 "source ~/.cargo/env && cd /root/forgeOS && cargo build --release -p depthscope"`
+- Hetzner test: `ssh root@167.233.57.140 "source ~/.cargo/env && cd /root/forgeOS && cargo test --release"`
+- Cross-compile from Windows: DOES NOT WORK (zstd-sys needs Linux gcc). Build on Hetzner instead.
+- Git push: `git push origin depth-pattern`

@@ -15,6 +15,7 @@ members = [
     "crates/forgelag",
     "crates/forge-depth",
     "crates/depthscope",
+    "crates/sweepscope",
 ]
 
 [profile.release]

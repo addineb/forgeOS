@@ -8,7 +8,10 @@
   "rust-analyzer.cargo.target": "x86_64-unknown-linux-gnu",
   "rust-analyzer.files.excludeDirs": ["target", "generated"],
   "rust-analyzer.checkOnSave.command": "check",
-  "rust-analyzer.checkOnSave.extraArgs": ["--target", "x86_64-unknown-linux-gnu"],
+  "rust-analyzer.checkOnSave.extraArgs": [
+    "--target",
+    "x86_64-unknown-linux-gnu"
+  ],
 
   // --- Editor ---
   "editor.formatOnSave": true,
@@ -49,5 +52,6 @@
   "search.exclude": {
     "target/**": true,
     "**/node_modules": true
-  }
+  },
+  "CodeGPT.apiKey": "Byteplus"
 }
