@@ -7,15 +7,15 @@
 //! sequence that suggests persistent selling pressure.
 //!
 //! Key design decisions:
-//! - **Strength bands**: Based on chi-squared distribution properties. For a standard normal z,
-//!   |z| > 1.645 corresponds to the top 10% tail (p < 0.10), |z| > 2.576 to top 1% (p < 0.01).
-//!   We use 1.65 and 2.58 as natural breakpoints: Weak (<1.65), Medium (1.65-2.58), Strong (≥2.58).
-//! - **Quality filter**: MIN_AVG_Z = 1.65 (the 90th percentile of |z| under normality). This is
-//!   less aggressive than 2.0 but still filters out background noise. Additionally, we require
-//!   the sequence's avg |z| to exceed the rolling median |z| by at least 10%, adding context
-//!   awareness so patterns are only counted when they stand out from recent market behavior.
-//! - **Cooldown**: max(2, seq_len / 2). This ties the cooldown to the sequence length itself —
-//!   a 4-bar sequence needs at least 2 bars gap, an 8-bar sequence needs 4 bars gap. This is
+//! - **Strength bands**: Slightly more permissive than pure normal distribution critical values
+//!   (1.60/2.50 vs 1.65/2.58) to better fit fat-tailed order flow data, where extreme z-scores
+//!   are more common than a normal distribution would predict.
+//! - **Quality filter**: MIN_AVG_Z = 1.60. This filters out weak background noise while allowing
+//!   moderately strong patterns through. Additionally, we require the sequence's avg |z| to be
+//!   at least 15% higher than the rolling median |z|, ensuring patterns stand out from recent
+//!   market behavior.
+//! - **Cooldown**: max(2, (seq_len + 1) / 2). This ties the cooldown to the sequence length
+//!   itself — a 3-bar sequence needs 2 bars gap, a 5-bar sequence needs 3 bars gap. This is
 //!   more defensible than arbitrary lookback fractions.
 //!
 //! This is timeframe-agnostic because it operates on bar boundaries, not clock time or
@@ -27,9 +27,9 @@ use std::collections::VecDeque;
 use crate::types::{AnomalyEvent, AnomalyKind, SignalDirection};
 
 /// Minimum average |z-score| for a sequence to be considered "quality" and counted.
-/// Set to 1.65, which is the 90th percentile of |z| under a standard normal distribution.
-/// This filters out weak background noise while allowing moderate-strength patterns through.
-const MIN_AVG_Z: f64 = 1.65;
+/// Set to 1.60, which is slightly more permissive than the 90th percentile (1.65) to
+/// better accommodate fat-tailed order flow data while still filtering out weak noise.
+const MIN_AVG_Z: f64 = 1.60;
 
 /// Tracks ordered anomaly-kind sequences across a rolling bar window.
 #[derive(Debug)]
@@ -41,7 +41,7 @@ pub struct PatternCounter {
     /// Subsequence length to hash (scales with lookback, clamped to [2, 8]).
     seq_len: usize,
     /// Cooldown: minimum bars between counted repetitions of the same sequence.
-    /// Computed as max(2, seq_len / 2).
+    /// Computed as max(2, (seq_len + 1) / 2).
     cooldown: usize,
     /// Rolling buffer of (bar_index, primary_anomaly, secondary_anomaly, avg_z) for recent bars.
     history: VecDeque<BarEntry>,
@@ -80,19 +80,19 @@ enum DirTag {
 
 /// Strength level derived from |z-score|, used for quality-aware matching.
 ///
-/// Band rationale (based on standard normal distribution tail probabilities):
-/// - Weak: |z| < 1.65 (bottom 90% of |z|, p > 0.10). Common noise-level anomalies.
-/// - Medium: 1.65 ≤ |z| < 2.58 (90th-99th percentile, 0.10 > p > 0.01). Meaningful anomalies.
-/// - Strong: |z| ≥ 2.58 (top 1%, p < 0.01). Rare, high-signal anomalies.
+/// Band rationale (adjusted for fat-tailed order flow data):
+/// - Weak: |z| < 1.60. Common noise-level anomalies.
+/// - Medium: 1.60 ≤ |z| < 2.50. Meaningful anomalies.
+/// - Strong: |z| ≥ 2.50. Rare, high-signal anomalies.
 ///
-/// These breakpoints are statistically grounded rather than arbitrary:
-/// - 1.645 is the critical value for a one-tailed test at α = 0.05 (or two-tailed at α = 0.10).
-/// - 2.576 is the critical value for a two-tailed test at α = 0.01.
+/// These values are slightly more permissive than pure normal distribution critical values
+/// (1.65/2.58) to better accommodate the fat tails commonly observed in order flow data,
+/// where extreme z-scores occur more frequently than a normal distribution would predict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum StrengthLevel {
-    Weak,   // |z| < 1.65 (90th percentile, common)
-    Medium, // 1.65 <= |z| < 2.58 (90th-99th percentile, meaningful)
-    Strong, // |z| >= 2.58 (99th+ percentile, rare/high-signal)
+    Weak,   // |z| < 1.60
+    Medium, // 1.60 <= |z| < 2.50
+    Strong, // |z| >= 2.50
 }
 
 impl DirTag {
@@ -107,9 +107,9 @@ impl DirTag {
 
 impl StrengthLevel {
     fn from_z(z_abs: f64) -> Self {
-        if z_abs < 1.65 {
+        if z_abs < 1.60 {
             StrengthLevel::Weak
-        } else if z_abs < 2.58 {
+        } else if z_abs < 2.50 {
             StrengthLevel::Medium
         } else {
             StrengthLevel::Strong
@@ -122,10 +122,10 @@ impl PatternCounter {
     pub fn new(lookback_bars: usize, min_count: u32) -> Self {
         // seq_len scales with lookback: ~25% of lookback, capped at 8.
         let seq_len = (lookback_bars / 4).clamp(2, 8);
-        // Cooldown: at least 2 bars, or half the sequence length.
-        // Rationale: a sequence of length N should not be counted again until at least N/2 bars
-        // have passed, ensuring the pattern has had time to "reset" before being counted again.
-        let cooldown = 2.max(seq_len / 2);
+        // Cooldown: at least 2 bars, or (seq_len + 1) / 2.
+        // Rationale: (seq_len + 1) / 2 gives a more consistent progression:
+        //   seq_len=3 → cooldown=2, seq_len=4 → cooldown=2, seq_len=5 → cooldown=3, etc.
+        let cooldown = 2.max((seq_len + 1) / 2);
         Self {
             lookback: lookback_bars.max(1),
             min_count: min_count.max(2),
@@ -263,11 +263,13 @@ impl PatternCounter {
         }
 
         // Quality filter 2 (context awareness): the sequence's avg |z| must be at least
-        // as high as the rolling median |z|. This ensures the pattern stands out from
-        // recent background market behavior. If median is low (< MIN_AVG_Z), skip this
-        // check and rely on the absolute MIN_AVG_Z threshold instead.
+        // 15% higher than the rolling median |z|. This ensures the pattern stands out
+        // significantly from recent background market behavior.
+        // Example: if median |z| = 1.8, sequence needs avg |z| >= 1.8 * 1.15 = 2.07.
+        // Only apply when median is meaningfully above avg_z (median > avg_z * 1.1),
+        // so uniform sequences (where median ≈ avg) are not rejected.
         let median_z = self.median_recent_z();
-        if median_z >= MIN_AVG_Z && avg_z < median_z {
+        if median_z > avg_z * 1.1 && avg_z < median_z * 1.15 {
             return 0;
         }
 
@@ -362,7 +364,7 @@ mod tests {
         for round in 0..2 {
             for (i, &(kind, dir)) in seq.iter().enumerate() {
                 let bar = (seq_len * round + i) as u64;
-                let events = vec![event(kind, 3.0, dir)]; // Medium strength (1.65-2.58)
+                let events = vec![event(kind, 3.0, dir)]; // Strong strength (>= 2.50)
                 counter.record(bar, &events);
             }
         }
@@ -401,7 +403,7 @@ mod tests {
         let mut counter = PatternCounter::new(20, 2);
         let seq_len = counter.seq_len;
 
-        // Build a sequence with weak z-scores (below MIN_AVG_Z threshold of 1.65).
+        // Build a sequence with weak z-scores (below MIN_AVG_Z threshold of 1.60).
         for i in 0..seq_len {
             let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
             let events = vec![event(kind, 1.0, SignalDirection::Short)]; // Weak
@@ -473,15 +475,15 @@ mod tests {
             counter.record(i as u64, &events);
         }
 
-        // Now try a moderate-z sequence (avg z = 1.8, which is > MIN_AVG_Z = 1.65).
-        // But since median is ~4.0, the 10% rule should reject it.
+        // Now try a moderate-z sequence (avg z = 1.8, which is > MIN_AVG_Z = 1.60).
+        // But since median is ~4.0, the 15% rule should reject it.
         for i in 0..seq_len {
             let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
             let events = vec![event(kind, 1.8, SignalDirection::Short)];
             counter.record((10 + i) as u64, &events);
         }
 
-        // Should be rejected because avg_z (1.8) < median_z (4.0) * 1.1 (4.4).
+        // Should be rejected because avg_z (1.8) < median_z (4.0) * 1.15 (4.6).
         assert_eq!(counter.current_seq_hash(), 0);
     }
 }
