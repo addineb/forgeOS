@@ -112,4 +112,32 @@ mod tests {
         let x = [0.1, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0];
         assert!(det.distance(&w, &x).is_err());
     }
+
+    #[test]
+    fn known_outlier_distance_is_large() {
+        // Build a window with tight, low-variance data so that a moderate
+        // outlier produces a large Mahalanobis distance.
+        let mut w = RollingFeatureWindow::new(20);
+        let baseline = [0.0; FEATURE_DIM];
+        for _ in 0..20 {
+            w.push(baseline);
+        }
+        let det = MahalanobisDetector::new(4.0, 0.1);
+        // Inject one feature at +10 standard deviations (rough estimate).
+        let outlier = [10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let d = det.distance(&w, &outlier).unwrap();
+        assert!(d > 1.0, "Mahalanobis distance {d} should be > 1 for clear outlier");
+    }
+
+    #[test]
+    fn identical_points_have_zero_distance() {
+        let mut w = RollingFeatureWindow::new(20);
+        let x = [0.5; FEATURE_DIM];
+        for _ in 0..20 {
+            w.push(x);
+        }
+        let det = MahalanobisDetector::new(4.0, 1e-4);
+        let d = det.distance_or_zero(&w, &x);
+        assert!(d < 1.0, "Identical point should have near-zero Mahalanobis distance, got {d}");
+    }
 }
