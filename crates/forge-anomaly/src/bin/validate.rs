@@ -58,6 +58,12 @@ struct Cli {
     #[arg(long)]
     diagnostic: bool,
 
+    /// Export causal signals as a sweepscope-compatible CSV (bar_index, direction,
+    /// expected_move_bps, hold_bars, confidence).  Only meaningful with
+    /// `--engine causal`.  Use with `sweepscope --signals <this_file>`.
+    #[arg(long, value_hint = clap::ValueHint::FilePath)]
+    signals_csv: Option<PathBuf>,
+
     /// Engine implementation. `legacy` (default) runs the Mahalanobis + z-score + FDR
     /// pipeline. `causal` runs the new template-based CausalEngine (first template:
     /// absorption_reversal). Both modes share the same output schema.
@@ -155,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             seen_earliest_ts,
             seen_latest_ts,
             cli.diagnostic,
+            cli.signals_csv,
         );
     }
 
@@ -672,6 +679,7 @@ fn run_causal_mode(
     seen_earliest_ts: u64,
     seen_latest_ts: u64,
     diagnostic: bool,
+    signals_csv: Option<PathBuf>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = CausalEngine::new(cfg.clone());
     let mut all_signals: Vec<CausalSignal> = Vec::new();
@@ -689,6 +697,28 @@ fn run_causal_mode(
             *anomaly_counts.get_mut(sig.template_id).unwrap() += 1;
         }
         all_signals.extend(output.signals);
+    }
+
+    // ── Export signals CSV for sweepscope (if requested) ──
+    if let Some(ref csv_path) = signals_csv {
+        let mut w = csv::Writer::from_path(csv_path)?;
+        w.write_record(&["bar_index", "direction", "expected_move_bps", "hold_bars", "confidence"])?;
+        for sig in &all_signals {
+            let dir_str = match sig.direction {
+                CausalDirection::Long => "long",
+                CausalDirection::Short => "short",
+                CausalDirection::Neutral => continue,
+            };
+            w.write_record(&[
+                sig.bar_index.to_string(),
+                dir_str.to_string(),
+                sig.expected_move_bps.to_string(),
+                sig.hold_bars.to_string(),
+                sig.confidence.to_string(),
+            ])?;
+        }
+        w.flush()?;
+        eprintln!("  exported {} signals to {}", all_signals.len(), csv_path.display());
     }
 
     // ── Header ──
