@@ -6,6 +6,7 @@ publish = false
 description = "Sweep study tool: entry+exit grid search on depthscope CSVs with honest scoring (DSR, PBO, purged CV)."
 
 [dependencies]
+forge-anomaly = { path = "../forge-anomaly" }
 forge-metrics = { path = "../forge-metrics" }
 clap = { version = "4", features = ["derive"] }
 csv = "1"
