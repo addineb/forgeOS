@@ -51,6 +51,32 @@ pub trait CausalTemplate {
     /// Returns `Some(outcome)` if at least step 1 fired within the template's
     /// recency window, `None` otherwise.
     fn evaluate(&mut self, input: &TemplateInput) -> Option<TemplateOutcome>;
+
+    /// Snapshot of internal diagnostic counters, or `None` if this template
+    /// does not expose diagnostics.  Default: `None`.  Templates that track
+    /// per-step completion (e.g., for `--diagnostic` mode in `validate`)
+    /// override this and return their counters by template id.
+    fn diagnostic(&self, _template_id: &str) -> Option<DiagnosticSnapshot> {
+        None
+    }
+}
+
+/// Lightweight diagnostic snapshot for the validate binary's `--diagnostic`
+/// mode.  Returned by `CausalTemplate::diagnostic()` for templates that
+/// track step-by-step completion.
+#[derive(Debug, Clone, Default)]
+pub struct DiagnosticSnapshot {
+    pub template_id: String,
+    pub bars_evaluated: u64,
+    pub step1_attempts: u64,
+    pub step1_fired: u64,
+    pub step2_attempts: u64,
+    pub step2_fired: u64,
+    pub step3_attempts: u64,
+    pub step3_fired: u64,
+    pub step1_expired: u64,
+    pub sign_flip_rejected: u64,
+    pub absorption_strict_failed: u64,
 }
 
 /// Helper used by templates: does the bar pass the precondition gate

@@ -81,6 +81,16 @@ impl CausalEngine {
         self.bars_processed
     }
 
+    /// Snapshot of diagnostic counters for every template that exposes them.
+    /// Templates without diagnostics simply return `None` and are skipped.
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<crate::causal::template::DiagnosticSnapshot> {
+        self.templates
+            .iter()
+            .filter_map(|t| t.diagnostic(t.id()))
+            .collect()
+    }
+
     #[must_use]
     pub fn ready(&self) -> bool {
         self.cvd_roll.len() >= self.cfg.causal.lookback_bars.max(1)

@@ -51,6 +51,13 @@ struct Cli {
     #[arg(long)]
     synthetic: bool,
 
+    /// Show step-by-step diagnostic counters for causal templates (only meaningful
+    /// with `--engine causal`).  Reports how far candidate episodes progressed
+    /// through the 3-step chain (Pressure → Absorption → Deceleration) before
+    /// breaking, so we can localize where the chain is failing on real data.
+    #[arg(long)]
+    diagnostic: bool,
+
     /// Engine implementation. `legacy` (default) runs the Mahalanobis + z-score + FDR
     /// pipeline. `causal` runs the new template-based CausalEngine (first template:
     /// absorption_reversal). Both modes share the same output schema.
@@ -147,6 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &desc,
             seen_earliest_ts,
             seen_latest_ts,
+            cli.diagnostic,
         );
     }
 
@@ -663,6 +671,7 @@ fn run_causal_mode(
     desc: &str,
     seen_earliest_ts: u64,
     seen_latest_ts: u64,
+    diagnostic: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = CausalEngine::new(cfg.clone());
     let mut all_signals: Vec<CausalSignal> = Vec::new();
@@ -877,6 +886,35 @@ fn run_causal_mode(
                 s.description,
             )?;
         }
+    }
+
+    if diagnostic {
+        writeln!(out)?;
+        writeln!(out, "── Step-by-Step Diagnostic ─────────────────────────────────")?;
+        writeln!(
+            out,
+            "  {:<28} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "metric", "bars", "step1", "→step2", "→step3", "expires", "absfail", "signflip"
+        )?;
+        for snap in engine.diagnostics() {
+            writeln!(
+                out,
+                "  {:<28} {:>8} {:>5}/{:<2} {:>5}/{:<2} {:>5}/{:<2} {:>8} {:>8} {:>8}",
+                snap.template_id,
+                snap.bars_evaluated,
+                snap.step1_fired, snap.step1_attempts,
+                snap.step2_fired, snap.step2_attempts,
+                snap.step3_fired, snap.step3_attempts,
+                snap.step1_expired,
+                snap.absorption_strict_failed,
+                snap.sign_flip_rejected,
+            )?;
+            writeln!(out, "  (fired/total; expires = step1 recency window expired; absfail = strict-`>` absorption didn't hold; signflip = step3 sign-flip rejected)")?;
+        }
+        writeln!(
+            out,
+            "  step3_attempts - step3_fired - sign_flip_rejected = magnitude-still-too-high rejections"
+        )?;
     }
 
     Ok(())

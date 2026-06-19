@@ -21,13 +21,40 @@
 //! bids, expect buyers to step in); Short if absorption is on the ask side.
 
 use crate::causal::template::{
-    CausalTemplate, TemplateInput, direction_label, format_step_strengths,
-    passes_depth_precondition, signed_direction, step_name, step1_within_window,
+    direction_label, format_step_strengths, passes_depth_precondition, signed_direction,
+    step1_within_window, step_name, CausalTemplate, DiagnosticSnapshot, TemplateInput,
 };
-use crate::causal::{
-    AbsorptionReversalParams, CausalDirection, Step, TemplateOutcome,
-};
+use crate::causal::{AbsorptionReversalParams, CausalDirection, Step, TemplateOutcome};
 use crate::types::BarFeatures;
+
+/// Diagnostic counters tracking how far candidate episodes progress through
+/// the 3-step causal chain. Incremented inside `evaluate()` at each
+/// transition point so we can localize where the chain breaks in real data.
+///
+/// Bucket meanings:
+/// - `bars_evaluated`: total bars passed to `evaluate()`
+/// - `step1_attempts`: bars where pressure_threshold was evaluated
+/// - `step1_fired`: bars where step 1 fired (pressure + precondition passed)
+/// - `step2_attempts`: bars with an active step 1 that we tested step 2 on
+/// - `step2_fired`: step 2 fired (absorption on defending side ≥ threshold)
+/// - `step3_attempts`: bars with an active step 2 that we tested step 3 on
+/// - `step3_fired`: step 3 fired (deceleration with same sign passed)
+/// - `step1_expired`: bars where an active step 1 exceeded the recency window
+/// - `sign_flip_rejected`: bars where step 3 was rejected due to sign flip
+/// - `absorption_strict_failed`: step 2 attempts where strict `>` absorption didn't hold
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiagnosticCounters {
+    pub bars_evaluated: u64,
+    pub step1_attempts: u64,
+    pub step1_fired: u64,
+    pub step2_attempts: u64,
+    pub step2_fired: u64,
+    pub step3_attempts: u64,
+    pub step3_fired: u64,
+    pub step1_expired: u64,
+    pub sign_flip_rejected: u64,
+    pub absorption_strict_failed: u64,
+}
 
 /// One running instance of the absorption → reversal template.
 ///
@@ -43,6 +70,8 @@ pub struct AbsorptionReversalTemplate {
     step1_dir: CausalDirection,
     /// Defending-side depth at step 1 (for precondition continuity).
     step1_defending_depth: f64,
+    /// Diagnostic counters (only updated when running with `--diagnostic`).
+    diag: DiagnosticCounters,
 }
 
 impl AbsorptionReversalTemplate {
@@ -54,7 +83,13 @@ impl AbsorptionReversalTemplate {
             step1_cvd_abs: 0.0,
             step1_dir: CausalDirection::Neutral,
             step1_defending_depth: 0.0,
+            diag: DiagnosticCounters::default(),
         }
+    }
+
+    /// Reset diagnostic counters. Call before re-running with diagnostic mode.
+    pub fn reset_diag(&mut self) {
+        self.diag = DiagnosticCounters::default();
     }
 
     /// Compute the defending-side depth-imbalance ratio (0..=1) for `dir`.
@@ -80,6 +115,25 @@ impl CausalTemplate for AbsorptionReversalTemplate {
           // and is observed over hold_bars, not gated as a pre-signal check.
     }
 
+    fn diagnostic(&self, template_id: &str) -> Option<DiagnosticSnapshot> {
+        if template_id != self.id() {
+            return None;
+        }
+        Some(DiagnosticSnapshot {
+            template_id: self.id().to_string(),
+            bars_evaluated: self.diag.bars_evaluated,
+            step1_attempts: self.diag.step1_attempts,
+            step1_fired: self.diag.step1_fired,
+            step2_attempts: self.diag.step2_attempts,
+            step2_fired: self.diag.step2_fired,
+            step3_attempts: self.diag.step3_attempts,
+            step3_fired: self.diag.step3_fired,
+            step1_expired: self.diag.step1_expired,
+            sign_flip_rejected: self.diag.sign_flip_rejected,
+            absorption_strict_failed: self.diag.absorption_strict_failed,
+        })
+    }
+
     fn evaluate(&mut self, input: &TemplateInput) -> Option<TemplateOutcome> {
         let history = input.history;
         let cvd_std = input.cvd_std;
@@ -96,6 +150,8 @@ impl CausalTemplate for AbsorptionReversalTemplate {
         let mut direction = self.step1_dir;
         let mut bars_in_story: u32 = 0;
 
+        self.diag.bars_evaluated += 1;
+
         // ── Step 1: heavy one-sided CVD ──
         // Threshold: |cvd_delta| > cvd_pressure_threshold * cvd_std
         // (z-like units; uses rolling std so it adapts to regime).
@@ -107,6 +163,7 @@ impl CausalTemplate for AbsorptionReversalTemplate {
             0.0
         };
 
+        self.diag.step1_attempts += 1;
         if step1_strength >= 1.0 && self.step1_bar.is_none() {
             // Only fire step 1 when no episode is currently armed. Re-arming on
             // every bar where pressure is elevated would let a small "echo"
@@ -125,6 +182,7 @@ impl CausalTemplate for AbsorptionReversalTemplate {
                     self.step1_dir = step1_dir;
                     self.step1_defending_depth = defending_depth;
                     direction = step1_dir;
+                    self.diag.step1_fired += 1;
                 }
             }
         }
@@ -141,8 +199,10 @@ impl CausalTemplate for AbsorptionReversalTemplate {
             ) {
                 // Step 1 expired; reset.
                 self.reset_step1();
+                self.diag.step1_expired += 1;
             } else {
                 // Same direction as step 1?
+                self.diag.step2_attempts += 1;
                 if direction != CausalDirection::Neutral {
                     let defending_absorption = match direction {
                         CausalDirection::Long => cur.bid_absorption,
@@ -151,12 +211,14 @@ impl CausalTemplate for AbsorptionReversalTemplate {
                     };
                     if defending_absorption >= self.params.absorption_hold_threshold {
                         let step2_strength =
-                            (defending_absorption / self.params.absorption_hold_threshold)
-                                .min(2.0);
+                            (defending_absorption / self.params.absorption_hold_threshold).min(2.0);
                         strengths[1] = step2_strength;
                         steps_passed = 2;
                         completed = Some(Step::Step2Absorption);
                         bars_in_story = (cur_bar - step1_bar_idx) as u32;
+                        self.diag.step2_fired += 1;
+                    } else {
+                        self.diag.absorption_strict_failed += 1;
                     }
                 }
             }
@@ -174,17 +236,21 @@ impl CausalTemplate for AbsorptionReversalTemplate {
         //   For Long  (step1 cvd > 0): need cur.cvd_delta > 0  AND  cur.cvd_delta < ratio * step1_cvd_abs
         //   For Short (step1 cvd < 0): need cur.cvd_delta < 0  AND  |cur.cvd_delta| < ratio * |step1_cvd_abs|
         if steps_passed >= 2 {
-            let decelerated = match direction {
-                CausalDirection::Long => {
-                    cur.cvd_delta > 0.0
-                        && cur.cvd_delta < self.params.deceleration_ratio * self.step1_cvd_abs
-                }
-                CausalDirection::Short => {
-                    cur.cvd_delta < 0.0
-                        && cur.cvd_delta.abs() < self.params.deceleration_ratio * self.step1_cvd_abs
-                }
-                CausalDirection::Neutral => false,
+            self.diag.step3_attempts += 1;
+            // Decompose the deceleration check so the diagnostic can distinguish
+            // sign-flip rejections from magnitude-still-too-high rejections.
+            let (sign_ok, magnitude_ok) = match direction {
+                CausalDirection::Long => (
+                    cur.cvd_delta > 0.0,
+                    cur.cvd_delta.abs() < self.params.deceleration_ratio * self.step1_cvd_abs,
+                ),
+                CausalDirection::Short => (
+                    cur.cvd_delta < 0.0,
+                    cur.cvd_delta.abs() < self.params.deceleration_ratio * self.step1_cvd_abs,
+                ),
+                CausalDirection::Neutral => (false, false),
             };
+            let decelerated = sign_ok && magnitude_ok;
             if decelerated {
                 // Strength: how much it decelerated (ratio of current to step1).
                 let now_abs = cur.cvd_delta.abs();
@@ -200,6 +266,14 @@ impl CausalTemplate for AbsorptionReversalTemplate {
                 completed = Some(Step::Step3Deceleration);
                 // Hold bar count: bars in story capped by max_step1_to_signal_bars.
                 bars_in_story = (cur_bar - self.step1_bar.unwrap_or(cur_bar)) as u32;
+                self.diag.step3_fired += 1;
+            } else {
+                // Distinguish why step 3 failed.
+                if !sign_ok {
+                    self.diag.sign_flip_rejected += 1;
+                }
+                // (Cases where magnitude alone failed are counted in step3_attempts
+                //  minus step3_fired minus sign_flip_rejected.)
             }
         }
 
@@ -330,9 +404,7 @@ mod tests {
     #[test]
     fn breaks_when_absorption_doesnt_hold() {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
-        let mut history: Vec<BarFeatures> = (0..20)
-            .map(|i| feat(i, 0.0, 0.0, 0.0, 0.5))
-            .collect();
+        let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
         history.push(feat(20, -3.0, 0.0, 0.0, 0.7)); // step 1 (no absorption)
         history.push(feat(21, -2.5, 0.0, 0.0, 0.7)); // step 2 FAILS
         history.push(feat(22, -2.0, 0.0, 0.0, 0.7)); // deceleration but no step 2
@@ -353,9 +425,7 @@ mod tests {
     #[test]
     fn rejects_thin_defending_depth() {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
-        let mut history: Vec<BarFeatures> = (0..20)
-            .map(|i| feat(i, 0.0, 0.0, 0.0, 0.5))
-            .collect();
+        let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
         // CVD spike but defending depth_imbalance = -0.9 → very thin bids
         // for a Long (defending_depth = (-0.9 + 1)/2 = 0.05 < 0.25).
         history.push(feat(20, -3.0, 0.0, 0.0, -0.9));
@@ -376,9 +446,7 @@ mod tests {
     #[test]
     fn step3_rejects_sign_flip() {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
-        let mut history: Vec<BarFeatures> = (0..20)
-            .map(|i| feat(i, 0.0, 0.0, 0.0, 0.5))
-            .collect();
+        let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
         // Step 1: Short, cvd=-3.0, asks-heavy defending.
         history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
         let input = TemplateInput {
@@ -424,9 +492,7 @@ mod tests {
     #[test]
     fn step3_accepts_same_sign_fade() {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
-        let mut history: Vec<BarFeatures> = (0..20)
-            .map(|i| feat(i, 0.0, 0.0, 0.0, 0.5))
-            .collect();
+        let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
         // Step 1: Short, cvd=-3.0.
         history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
         let input = TemplateInput {
@@ -453,5 +519,108 @@ mod tests {
         let outcome = t.evaluate(&input);
         assert!(outcome.is_some(), "step 3 must accept same-sign fade");
         assert_eq!(outcome.unwrap().direction, CausalDirection::Short);
+    }
+
+    /// Diagnostic counters track every transition through the chain.
+    /// This test verifies the counters increment at each branch point on a
+    /// known synthetic sequence.
+    #[test]
+    fn diagnostic_counters_track_chain_progress() {
+        let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
+        let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
+
+        // Bar 20: step 1 (Short, cvd=-3.0, asks-heavy).
+        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        let snap = t
+            .diagnostic("absorption_reversal")
+            .expect("template exposes diagnostics");
+        assert_eq!(snap.bars_evaluated, 1);
+        assert_eq!(snap.step1_attempts, 1);
+        assert_eq!(snap.step1_fired, 1);
+        // Step 2 fires on the SAME bar as step 1: bar 20 has both cvd=-3.0
+        // (pressure) AND ask_absorption=0.5 (absorption). Same-bar absorption
+        // is causally valid — the pressure and the defense coexist on one bar.
+        assert_eq!(snap.step2_attempts, 1);
+        assert_eq!(snap.step2_fired, 1);
+        // Step 3 was attempted (same bar, steps_passed=2) but magnitude too
+        // high: |cvd|=3.0 not < 0.5×3.0.  Fails magnitude but stays sign-ok.
+        assert_eq!(snap.step3_attempts, 1);
+        assert_eq!(snap.step3_fired, 0);
+
+        // Bar 21: step 2 fires again (ask_absorption=0.5 ≥ 0.3),
+        // step 3 attempted again (cvd=-2.5, |2.5| < 1.5 → fails magnitude).
+        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        let snap = t.diagnostic("absorption_reversal").unwrap();
+        assert_eq!(snap.bars_evaluated, 2);
+        assert_eq!(snap.step2_attempts, 2);
+        assert_eq!(snap.step2_fired, 2);
+        // Step 3 attempted on bars 20 and 21.
+        assert_eq!(snap.step3_attempts, 2);
+        assert_eq!(snap.step3_fired, 0);
+
+        // Bar 22: step 3 fires (cvd=-1.0, same sign, |1.0| < 1.5).
+        history.push(feat(22, -1.0, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        let snap = t.diagnostic("absorption_reversal").unwrap();
+        assert_eq!(snap.bars_evaluated, 3);
+        assert_eq!(snap.step2_attempts, 3);
+        assert_eq!(snap.step2_fired, 3);
+        // Step 3 attempted on bars 20, 21, 22 (fired only on 22).
+        assert_eq!(snap.step3_attempts, 3);
+        assert_eq!(snap.step3_fired, 1);
+    }
+
+    /// Sign-flip rejections are counted separately from magnitude rejections.
+    #[test]
+    fn diagnostic_counts_sign_flip() {
+        let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
+        let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
+        // Step 1: Short, cvd=-3.0.
+        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        // Step 2: ask_absorption holds.
+        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        // Step 3 candidate: cvd=+0.4 (sign flipped to long).
+        history.push(feat(22, 0.4, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        let snap = t.diagnostic("absorption_reversal").unwrap();
+        // Step 3 attempted on bars 20 (fails magnitude), 21 (fails magnitude),
+        // and 22 (sign flip rejected).
+        assert_eq!(snap.step3_attempts, 3);
+        assert_eq!(snap.sign_flip_rejected, 1);
+        assert_eq!(snap.step3_fired, 0);
     }
 }
