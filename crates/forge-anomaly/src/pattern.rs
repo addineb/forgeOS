@@ -25,7 +25,7 @@ use crate::types::{AnomalyEvent, AnomalyKind, SignalDirection};
 /// these through while still filtering true noise (< 1.0).  Sits in the upper
 /// third of the "Weak" band, requiring anomalies to be at least marginally
 /// significant to form patterns.
-const MIN_AVG_Z: f64 = 1.20;
+const MIN_AVG_Z: f64 = 1.35;
 
 /// Threshold for the final hybrid score. Sequences must score >= this to be considered repetitive.
 ///
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn rejects_weak_sequences() {
-        // MIN_AVG_Z = 1.30: z=1.0 entries fall below the quality gate,
+        // MIN_AVG_Z = 1.35: z=1.0 entries fall below the quality gate,
         // so no hash is generated at all — the sequence is invisible.
         let mut counter = PatternCounter::new(20, 2);
         let seq_len = counter.seq_len;
@@ -474,7 +474,7 @@ mod tests {
             counter.record(i as u64, &events);
         }
 
-        assert_eq!(counter.current_seq_hash(), 0); // Rejected by MIN_AVG_Z (1.30 > 1.0)
+        assert_eq!(counter.current_seq_hash(), 0); // Rejected by MIN_AVG_Z (1.35 > 1.0)
     }
 
     #[test]

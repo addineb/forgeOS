@@ -380,8 +380,8 @@ fn calc_confidence(events: &[AnomalyEvent], maha: f64, cfg: &EngineConfig) -> (f
             // patterns to add confirmation, not dominate the composite.  Patterns
             // that have appeared 4+ times get the full multiplier; otherwise a
             // softer scaling prevents low-count patterns from inflating confidence.
-            let rep_mult = (e.raw_value as f64 / 4.0).min(1.0).max(0.25);
-            pattern_bonus = e.confidence * 0.05 * rep_mult;
+            let rep_mult = (e.raw_value as f64 / 5.0).min(1.0).max(0.20);
+            pattern_bonus = e.confidence * 0.03 * rep_mult;
             pattern_count = e.raw_value as u32;
             continue;
         }
