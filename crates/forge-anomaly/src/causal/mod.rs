@@ -8,9 +8,23 @@
 //! First template: Absorption → Exhaustion → Reversal.
 //! Test ONE philosophy at a time.
 
-use std::collections::VecDeque;
+//! Causal engine: structural order-flow templates that answer
+//! "why should this situation force someone to trade?" instead of
+//! "is this bar statistically unusual?".
+//!
+//! Reuses `FeatureExtractor` (feature math) and a thin rolling buffer for
+//! scale estimation. Does NOT touch Mahalanobis, NullEdge, or PatternCounter.
+//!
+//! First template: Absorption → Exhaustion → Reversal.
+//! Test ONE philosophy at a time.
 
-use crate::types::BarFeatures;
+pub mod confidence;
+pub mod engine;
+pub mod rate_limit;
+pub mod template;
+pub mod templates;
+
+use std::collections::VecDeque;
 
 /// Which engine implementation runs when `validate` or the library is called.
 ///
