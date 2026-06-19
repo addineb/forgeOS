@@ -224,21 +224,25 @@ impl CausalTemplate for AbsorptionReversalTemplate {
             }
         }
 
-        // ── Step 3: pressure fading but still pushing same direction ──
+        // ── Step 3: pressure fading (two valid paths) ──
         //
-        // Causal requirement (per review): the pressure must FADE, not reverse.
-        // A sign flip is a different story (forced exit / capitulation, not
-        // exhaustion), and we want to enter before that. So step 3 fires only
-        // when cur.cvd_delta has the SAME SIGN as step 1 (still pushing the
-        // same side) AND its magnitude has dropped below the deceleration ratio.
+        // Path A (same-sign fade): CVD still pushes the same side as step 1
+        //   AND its magnitude has dropped below deceleration_ratio × step1.
+        //   Classic "pressure dying but still leaning" — aggressors exhausting.
         //
-        // Mathematically:
-        //   For Long  (step1 cvd > 0): need cur.cvd_delta > 0  AND  cur.cvd_delta < ratio * step1_cvd_abs
-        //   For Short (step1 cvd < 0): need cur.cvd_delta < 0  AND  |cur.cvd_delta| < ratio * |step1_cvd_abs|
+        // Path B (near-zero): CVD has faded to near-zero regardless of sign.
+        //   |cvd| < near_zero_ratio × step1_cvd_abs (default 0.15).
+        //   If flow has essentially stopped, the aggressive episode is over
+        //   regardless of which side the last flicker was on. This catches
+        //   the common real-data case where CVD crosses zero before
+        //   deceleration completes (100% of step3 attempts in first diagnostic).
+        //
+        // Sign flips that are NOT near-zero are still rejected — those are
+        // a different story (forced exit / capitulation, not exhaustion).
         if steps_passed >= 2 {
             self.diag.step3_attempts += 1;
-            // Decompose the deceleration check so the diagnostic can distinguish
-            // sign-flip rejections from magnitude-still-too-high rejections.
+            let near_zero_ratio = 0.15;
+            let near_zero = cur.cvd_delta.abs() < near_zero_ratio * self.step1_cvd_abs;
             let (sign_ok, magnitude_ok) = match direction {
                 CausalDirection::Long => (
                     cur.cvd_delta > 0.0,
@@ -250,7 +254,7 @@ impl CausalTemplate for AbsorptionReversalTemplate {
                 ),
                 CausalDirection::Neutral => (false, false),
             };
-            let decelerated = sign_ok && magnitude_ok;
+            let decelerated = (sign_ok && magnitude_ok) || near_zero;
             if decelerated {
                 // Strength: how much it decelerated (ratio of current to step1).
                 let now_abs = cur.cvd_delta.abs();
@@ -439,10 +443,10 @@ mod tests {
         assert!(outcome.is_none());
     }
 
-    /// Step 3 rejects a sign flip. Causal narrative says pressure is fading,
-    /// not reversing. If the bar's cvd flips sign relative to step 1, the
-    /// template must NOT emit (that's a different story: capitulation / forced
-    /// exit, which we want to enter BEFORE, not on the bar of).
+    /// Step 3 rejects a sign flip with significant magnitude. If CVD flips
+    /// sign AND the magnitude is still substantial (above near-zero), the
+    /// template must NOT emit — that's a different story (capitulation).
+    /// Near-zero flips (|cvd| < 0.15×step1) are accepted separately.
     #[test]
     fn step3_rejects_sign_flip() {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
@@ -457,7 +461,7 @@ mod tests {
         assert!(t.evaluate(&input).is_none(), "step 1 only");
         assert_eq!(t.step1_dir, CausalDirection::Short);
 
-        // Step 2: ask_absorption holds, cvd still negative (Short).
+        // Step 2: ask_absorption holds (0.5 ≥ 0.12 with relaxed threshold).
         history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
         let input = TemplateInput {
             history: &history,
@@ -466,10 +470,10 @@ mod tests {
         };
         assert!(t.evaluate(&input).is_none(), "step 2 only");
 
-        // Step 3 candidate: cvd has FLIPPED to +0.4.
-        // Magnitude 0.4 < 0.5 × 3 = 1.5 (old rule would pass).
-        // But sign is now positive — pressure reversed, not faded.
-        history.push(feat(22, 0.4, 0.0, 0.5, -0.7));
+        // Step 3 candidate: cvd=+1.0. Sign flipped, and magnitude 1.0 is
+        // ABOVE the near_zero threshold (0.15×3.0=0.45). This is a real
+        // sign flip with bite — must be rejected.
+        history.push(feat(22, 1.0, 0.0, 0.5, -0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -478,11 +482,8 @@ mod tests {
         let outcome = t.evaluate(&input);
         assert!(
             outcome.is_none(),
-            "step 3 must reject a sign flip (cur.cvd_delta > 0 for Short direction)"
+            "step 3 must reject a sign flip with magnitude above near-zero"
         );
-        // step 1 should NOT be reset (chain broken, not emitted).
-        // (Implementation choice: we don't reset on failed-step-3; the
-        // window will expire after max_step1_to_signal_bars.)
     }
 
     /// Step 3 still fires when magnitude drops below ratio AND sign is preserved.
@@ -521,6 +522,48 @@ mod tests {
         assert_eq!(outcome.unwrap().direction, CausalDirection::Short);
     }
 
+    /// Step 3 accepts a sign flip that is near-zero. If CVD has faded to
+    /// essentially nothing (|cvd| < 0.15 × step1 magnitude), the aggressive
+    /// episode is over regardless of which side the last flicker was on.
+    /// This is Path B of the deceleration check.
+    #[test]
+    fn step3_accepts_near_zero() {
+        let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
+        let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
+        // Step 1: Short, cvd=-3.0.
+        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        // Step 2: ask_absorption holds (0.5 ≥ 0.12 with relaxed threshold).
+        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        // Step 3: cvd=+0.3. Sign flipped (long instead of short), but
+        // |0.3| < 0.15 × 3.0 = 0.45 → near_zero = true → accepted.
+        history.push(feat(22, 0.3, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let outcome = t.evaluate(&input);
+        assert!(
+            outcome.is_some(),
+            "step 3 must accept near-zero sign flip as deceleration"
+        );
+        let o = outcome.unwrap();
+        assert_eq!(o.direction, CausalDirection::Short);
+        assert_eq!(o.completed_step, Some(Step::Step3Deceleration));
+    }
+
     /// Diagnostic counters track every transition through the chain.
     /// This test verifies the counters increment at each branch point on a
     /// known synthetic sequence.
@@ -553,8 +596,8 @@ mod tests {
         assert_eq!(snap.step3_attempts, 1);
         assert_eq!(snap.step3_fired, 0);
 
-        // Bar 21: step 2 fires again (ask_absorption=0.5 ≥ 0.3),
-        // step 3 attempted again (cvd=-2.5, |2.5| < 1.5 → fails magnitude).
+        // Bar 21: step 2 fires again (ask_absorption=0.5 ≥ 0.12),
+        // step 3 attempted again (cvd=-2.5, |2.5| < 0.7×3.0=2.1 → fails).
         history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
         let input = TemplateInput {
             history: &history,
@@ -608,8 +651,9 @@ mod tests {
             cvd_mean: 0.0,
         };
         let _ = t.evaluate(&input);
-        // Step 3 candidate: cvd=+0.4 (sign flipped to long).
-        history.push(feat(22, 0.4, 0.0, 0.5, -0.7));
+        // Step 3 candidate: cvd=+1.0 (sign flipped, magnitude 1.0 > near_zero
+        // threshold 0.45, so this is properly rejected).
+        history.push(feat(22, 1.0, 0.0, 0.5, -0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,

@@ -141,9 +141,21 @@ pub struct AbsorptionReversalParams {
 impl Default for AbsorptionReversalParams {
     fn default() -> Self {
         Self {
-            cvd_pressure_threshold: 0.6,
-            absorption_hold_threshold: 0.3,
-            deceleration_ratio: 0.5,
+            // Relaxed from 0.6 → 0.45: diagnostic showed step1 fires on 9.9%
+            // of bars, which is healthy. Slight relaxation gets more episodes
+            // into the pipeline for step2 to test.
+            cvd_pressure_threshold: 0.45,
+            // Relaxed from 0.3 → 0.12: diagnostic showed 27,669 absfail vs
+            // 19 step2_fired. Real absorption values are much lower than the
+            // original 0.3 threshold anticipated. 0.12 still filters noise
+            // (zero-absorption bars) while letting genuine holds through.
+            absorption_hold_threshold: 0.12,
+            // Relaxed from 0.5 → 0.70: diagnostic showed 0/19 step3 fire.
+            // Pressure rarely drops below 50% of step1 before sign flips.
+            // 0.70 means pressure can still be at 70% of step1 and count
+            // as deceleration — the key is that it's fading, not the
+            // absolute magnitude.
+            deceleration_ratio: 0.70,
             depth_precondition_min: 0.25,
             max_step1_to_signal_bars: 6,
             hold_bars: 8,
