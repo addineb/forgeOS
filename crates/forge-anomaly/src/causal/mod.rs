@@ -145,11 +145,11 @@ impl Default for AbsorptionReversalParams {
             // of bars, which is healthy. Slight relaxation gets more episodes
             // into the pipeline for step2 to test.
             cvd_pressure_threshold: 0.45,
-            // Tightened from 0.12 → 0.25 after absorption direction fix.
-            // With the correct absorption mapping, step2 fired on 51% of
-            // attempts (12,601/24,677), producing 1,447 signals (3.6%).
-            // 0.25 targets ~0.5-1.0% signal rate (200-400 on 40k bars).
-            absorption_hold_threshold: 0.25,
+            // Tightened from 0.12 → 0.25 → 0.50.  At 0.25 the step2 success
+            // rate was still 51% (absorption values are large on real data).
+            // 0.50 targets a ~25-30% step2 pass rate, aiming for 200-400
+            // signals on 40k bars (0.5-1.0%).
+            absorption_hold_threshold: 0.50,
             // Relaxed from 0.5 → 0.70: diagnostic showed 0/19 step3 fire.
             // Pressure rarely drops below 50% of step1 before sign flips.
             // 0.70 means pressure can still be at 70% of step1 and count
@@ -178,7 +178,7 @@ impl Default for CausalTemplatesConfig {
     fn default() -> Self {
         Self {
             absorption_reversal: AbsorptionReversalParams::default(),
-            signal_rate_limit: 4.0,  // tightened from 8.0: absorption fix boosted signal rate to 3.6%, target 0.5-1.0%
+            signal_rate_limit: 2.5, // tightened 8→4→2.5: target 200-400 signals on 40k bars
             lookback_bars: 50,
         }
     }
