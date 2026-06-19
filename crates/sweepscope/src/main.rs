@@ -7,6 +7,7 @@
 mod barrier;
 mod cv;
 mod grid;
+mod signal_source;
 mod trade;
 
 fn deserialize_f64_nan<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
@@ -25,6 +26,7 @@ use rayon::prelude::*;
 use barrier::TripleBarrier;
 use cv::PurgedCv;
 use grid::SweepGrid;
+use signal_source::SignalSource;
 use trade::TradeResult;
 
 use forge_metrics::{deflated_sharpe, sharpe, variance_of_sharpes};
@@ -79,6 +81,20 @@ struct Args {
     /// Minimum AnomalySignal confidence to include when loading --signals.
     #[arg(long, default_value_t = 0.0)]
     min_confidence: f64,
+    /// Run the forge-anomaly engine in-process on the loaded bars.  This is
+    /// the deep integration path — no CSV intermediate.  Mutually exclusive
+    /// with --signals.
+    #[arg(long)]
+    anomaly_engine: bool,
+    /// Lookback bars for the anomaly engine (passed to forge_anomaly::EngineConfig).
+    #[arg(long, default_value_t = 50)]
+    anomaly_lookback: usize,
+    /// Mahalanobis threshold for the anomaly engine.
+    #[arg(long, default_value_t = 4.0)]
+    anomaly_maha_thresh: f64,
+    /// Min anomaly confidence for a signal to be fed into the sweep.
+    #[arg(long, default_value_t = 0.50)]
+    anomaly_min_conf: f64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -200,6 +216,35 @@ struct Bar {
     bid_skew_avg_50: f64,
     #[serde(default, deserialize_with = "deserialize_f64_nan")]
     cvd_mom_cum_50: f64,
+    // ── Anomaly-engine fields (defaulted for legacy CSVs that lack them) ──
+    /// Bar index in the source series.  Populated by `load_csv` if absent.
+    #[serde(default)]
+    bar_index: u64,
+    /// Volume of this bar alone (cum_vol delta).  Populated by `load_csv` if absent.
+    #[serde(default)]
+    bar_vol: f64,
+    #[serde(default)]
+    trade_count: u64,
+    #[serde(default)]
+    buy_count: u64,
+    #[serde(default)]
+    sell_count: u64,
+    #[serde(default)]
+    aggressor_ratio: f64,
+    #[serde(default)]
+    large_buy_count: u64,
+    #[serde(default)]
+    large_sell_count: u64,
+    #[serde(default, deserialize_with = "deserialize_f64_nan")]
+    large_buy_vol: f64,
+    #[serde(default, deserialize_with = "deserialize_f64_nan")]
+    large_sell_vol: f64,
+    #[serde(default)]
+    large_aggressor_ratio: f64,
+    #[serde(default)]
+    max_trade_size: f64,
+    #[serde(default)]
+    trade_intensity: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,7 +310,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Loaded {} bars", bars.len());
     if bars.is_empty() { eprintln!("No data."); return Ok(()); }
 
-    // ── Signal-driven mode: precomputed AnomalySignals from forge-anomaly ──
+    let boundaries = find_date_boundaries(&bars);
+    let n_dates = boundaries.len() - 1;
+    let cv = PurgedCv::new_date_aware(boundaries, args.folds, args.purge_bars);
+    eprintln!("CV: {} folds, {} dates, {} bars purge", args.folds, n_dates, args.purge_bars);
+
+    let position_eur = args.eur_capital * args.eur_leverage;
+    eprintln!("EUR account: capital={:.0} leverage={:.0}x position={:.0} max_dd={:.0}",
+        args.eur_capital, args.eur_leverage, position_eur, args.eur_max_dd);
+
+    // ── Branch 1: deep integration — forge-anomaly engine in-process ──
+    if args.anomaly_engine {
+        return run_anomaly_engine_mode(&args, &bars, &cv, position_eur);
+    }
+
+    // ── Branch 2: precomputed AnomalySignal CSV (offline mode) ──
     if let Some(ref signals_path) = args.signals {
         let pre_filtered = load_signals_csv(signals_path, &bars, args.min_confidence)?;
         eprintln!(
@@ -276,18 +335,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_signal_mode(&args, &bars, &pre_filtered);
     }
 
+    // ── Branch 3: legacy grid mode (unchanged) ──
     let grid = SweepGrid::default();
     let configs = grid.expand();
     eprintln!("Sweep grid: {} configs (TP {:?} SL {:?} hold {:?})", configs.len(), grid.tp_bps, grid.sl_bps, grid.hold_bars);
-
-    let boundaries = find_date_boundaries(&bars);
-    let n_dates = boundaries.len() - 1;
-    let cv = PurgedCv::new_date_aware(boundaries, args.folds, args.purge_bars);
-    eprintln!("CV: {} folds, {} dates, {} bars purge", args.folds, n_dates, args.purge_bars);
-
-    let position_eur = args.eur_capital * args.eur_leverage;
-    eprintln!("EUR account: capital={:.0} leverage={:.0}x position={:.0} max_dd={:.0}",
-        args.eur_capital, args.eur_leverage, position_eur, args.eur_max_dd);
 
     let fee_bps = args.fee_bps;
     if args.null_edge {
@@ -306,7 +357,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("--- END NULL-EDGE ---\n");
     }
 
-    let mut results: Vec<CellResult> = configs
+    let results: Vec<CellResult> = configs
         .par_iter()
         .enumerate()
         .map(|(id, cfg)| {
@@ -314,6 +365,101 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect();
 
+    aggregate_and_score(&args, results, &bars)
+}
+
+// ── run_anomaly_engine_mode ─────────────────────────────────────────────────
+
+/// Deep integration: run `forge_anomaly::AnomalyEngine` over the bars in-process,
+/// collect the resulting `AnomalySignal`s as `RawSignal`s grouped by family
+/// (anomaly_reversal_long, anomaly_reversal_short, anomaly_momentum_long, …),
+/// then run the same per-config pipeline as grid mode.
+fn run_anomaly_engine_mode(
+    args: &Args,
+    bars: &[crate::Bar],
+    cv: &PurgedCv,
+    position_eur: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = forge_anomaly::EngineConfig::default();
+    config.lookback_bars = args.anomaly_lookback;
+    config.mahalanobis_threshold = args.anomaly_maha_thresh;
+    config.min_confidence = args.anomaly_min_conf;
+
+    let source = signal_source::AnomalySignalSource::with_params(
+        config,
+        args.tp_bps,
+        args.sl_bps,
+        args.hold_bars,
+        args.anomaly_min_conf,
+    );
+
+    eprintln!(
+        "Anomaly engine mode: lookback={} maha_thresh={} min_conf={:.2} (in-process)",
+        args.anomaly_lookback, args.anomaly_maha_thresh, args.anomaly_min_conf
+    );
+
+    let raw = source.collect_signals(bars);
+    eprintln!("  collected {} raw signals across {} families", raw.len(), {
+        let mut fams: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for s in &raw { fams.insert(s.family.clone()); }
+        fams.len()
+    });
+
+    // Group by family.
+    let mut by_family: std::collections::BTreeMap<String, Vec<signal_source::RawSignal>> =
+        std::collections::BTreeMap::new();
+    for s in raw {
+        by_family.entry(s.family.clone()).or_default().push(s);
+    }
+
+    // Build per-family virtual configs and run them through run_config_from_signals.
+    let fee_bps = args.fee_bps;
+    let family_vec: Vec<(String, Vec<signal_source::RawSignal>)> = by_family
+        .into_iter()
+        .collect();
+    let mut results: Vec<CellResult> = family_vec
+        .par_iter()
+        .enumerate()
+        .map(|(id, (family, signals))| {
+            // Pick per-family tp/sl/hold from the first signal; they all share the same defaults.
+            let (tp, sl, hold) = signals
+                .first()
+                .map(|s| (s.tp_bps, s.sl_bps, s.hold_bars))
+                .unwrap_or((args.tp_bps, args.sl_bps, args.hold_bars));
+            let cfg = grid::SweepConfig {
+                entry_name: family.clone(),
+                entry_threshold: 0.0,
+                tp_bps: tp,
+                sl_bps: sl,
+                hold_bars: hold,
+            };
+            run_signal_source_config(
+                id,
+                &cfg,
+                bars,
+                cv,
+                signals,
+                fee_bps,
+                args.min_trades,
+                args.eur_capital,
+                args.eur_leverage,
+                args.eur_max_dd,
+                position_eur,
+            )
+        })
+        .collect();
+
+    aggregate_and_score(args, results, bars)
+}
+
+// ── aggregate_and_score ─────────────────────────────────────────────────────
+
+/// Shared post-aggregation step: family rollup, DSR, verdict, scorecard, top-10.
+fn aggregate_and_score(
+    args: &Args,
+    mut results: Vec<CellResult>,
+    bars: &[crate::Bar],
+) -> Result<(), Box<dyn std::error::Error>> {
     fn entry_family(name: &str) -> String {
         let without_window = {
             let parts: Vec<&str> = name.rsplitn(2, '_').collect();
@@ -341,15 +487,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else { r.dsr = 0.0; }
     }
 
-    // Simple verdict: survive EUR DD + profitable + spread across enough dates
-    // PROMOTE = EUR>0, DD<limit, ≥3 dates with trades, OOS>0
-    // PARK = EUR>0, DD<limit, but <3 dates or OOS≤0
-    // RETIRE = DD>limit or EUR≤0
+    // ── Per-family verdict ──
     let mut family_dates: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut family_eur: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     let mut family_dd: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
     let mut family_oos: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-
     for r in &results {
         if r.round_trips < args.min_trades { continue; }
         let fam = entry_family(&r.entry_name);
@@ -364,7 +506,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if r.oos_net_bps > *o { *o = r.oos_net_bps; }
     }
 
-    // For each family, check if both directions have trades
     let mut family_has_long: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     let mut family_has_short: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for r in &results {
@@ -402,10 +543,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         r.verdict = family_verdicts.get(&fam).copied().unwrap_or(Verdict::Retire);
     }
 
-    // Write scorecard
+    // ── Write scorecard ──
     let mut out = File::create(&args.output)?;
     writeln!(out, "id,entry,threshold,tp_bps,sl_bps,hold_bars,trades,win_rate,net_pnl_bps,sharpe,dsr,oos_net_bps,oos_win_rate,eur_total_pnl,eur_per_trade,eur_max_dd,eur_dd_pct,trades_per_day,verdict,family")?;
-
     let mut n_p = 0; let mut n_k = 0; let mut n_r = 0;
     for r in &results {
         match r.verdict { Verdict::Promote => n_p += 1, Verdict::Park => n_k += 1, Verdict::Retire => n_r += 1, }
@@ -425,37 +565,166 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !parked.is_empty() { eprintln!("  Parked: {:?}", parked); }
     eprintln!("  Scorecard: {}", args.output.display());
 
-    // Top 10 by EUR total PnL
     let mut sorted: Vec<&CellResult> = results.iter().filter(|r| r.round_trips >= args.min_trades && !r.eur_liquidation_risk).collect();
     sorted.sort_by(|a, b| b.eur_total_pnl.partial_cmp(&a.eur_total_pnl).unwrap_or(std::cmp::Ordering::Equal));
     eprintln!("\nTop 10 by EUR total PnL:");
     for r in sorted.iter().take(10) {
-        eprintln!("  {:>12}  tp={:>3.0} sl={:>3.0} hold={:>3}  EUR={:+7.0}  DD={:.0}  DSR={:.3}  {}/d  {}",
+        eprintln!("  {:>32}  tp={:>3.0} sl={:>3.0} hold={:>3}  EUR={:+7.0}  DD={:.0}  DSR={:.3}  {}/d  {}",
             r.entry_name, r.tp_bps, r.sl_bps, r.hold_bars, r.eur_total_pnl, r.eur_max_dd, r.dsr, r.trades_per_day, r.verdict);
     }
 
-    // Per-date
     if let Some(per_date_path) = &args.per_date {
         let mut pd_out = File::create(per_date_path)?;
         writeln!(pd_out, "id,entry,threshold,tp_bps,sl_bps,hold_bars,date,trades,net_bps,win_rate,verdict,family")?;
         for r in &results {
             if r.round_trips < args.min_trades { continue; }
-            for (date, trades, net_bps, wr) in &r.per_date {
-                writeln!(pd_out, "{},{},{:.1},{:.1},{:.1},{},{},{},{:.2},{:.3},{},{}",
+            for (date, n, net_bps, wr) in &r.per_date {
+                writeln!(pd_out, "{},{},{:.1},{:.1},{:.1},{},{},{},{:.2},{:.3},{:?},{}",
                     r.id, r.entry_name, r.entry_threshold, r.tp_bps, r.sl_bps, r.hold_bars,
-                    date, trades, net_bps, wr, r.verdict, entry_family(&r.entry_name))?;
+                    date, n, net_bps, wr, r.verdict, entry_family(&r.entry_name))?;
             }
         }
         eprintln!("Per-date: {}", per_date_path.display());
     }
 
+    // Avoid unused-variable warning when there are no bars.
+    let _ = bars.len();
     Ok(())
 }
+
+// ── run_signal_source_config ─────────────────────────────────────────────────
+
+/// Like `run_config` but consumes pre-built `RawSignal`s instead of running
+/// the string-match detection in `run_trades`.  Identical downstream math:
+/// OOS slice, EUR walk, per-date aggregation, CellResult.
+fn run_signal_source_config(
+    id: usize,
+    cfg: &grid::SweepConfig,
+    bars: &[crate::Bar],
+    cv: &PurgedCv,
+    signals: &[signal_source::RawSignal],
+    fee_bps: f64,
+    _min_trades: usize,
+    eur_capital: f64,
+    _eur_leverage: f64,
+    eur_max_dd: f64,
+    position_eur: f64,
+) -> CellResult {
+    // Walk raw signals in bar order, skip overlaps (trade in-flight).
+    let mut sorted: Vec<&signal_source::RawSignal> = signals.iter().collect();
+    sorted.sort_by_key(|s| s.bar_index);
+
+    let mut all_trades: Vec<TradeResult> = Vec::new();
+    let mut last_exit: Option<usize> = None;
+    for sig in &sorted {
+        if let Some(prev) = last_exit {
+            if sig.bar_index <= prev {
+                continue;
+            }
+        }
+        if let Some(tr) = signal_source::barrier_walk(sig, bars, fee_bps, position_eur) {
+            last_exit = Some(tr.exit_idx);
+            all_trades.push(tr);
+        }
+    }
+
+    let trade_bar_indices: Vec<usize> = all_trades.iter().map(|t| t.entry_idx).collect();
+    let trade_returns: Vec<f64> = all_trades.iter().map(|t| t.net_pnl_bps / 10000.0).collect();
+
+    // OOS: filter signals to fold range and re-walk.
+    let mut oos_trades_all: Vec<TradeResult> = Vec::new();
+    for fi in 0..cv.n_folds() {
+        let oos_range = cv.oos_range(fi);
+        let oos_bars = &bars[oos_range.clone()];
+        let oos_signals: Vec<&signal_source::RawSignal> = sorted
+            .iter()
+            .copied()
+            .filter(|s| s.bar_index >= oos_range.start && s.bar_index < oos_range.end)
+            .collect();
+        let mut last_exit_oos: Option<usize> = None;
+        for sig in &oos_signals {
+            if let Some(prev) = last_exit_oos {
+                if sig.bar_index <= prev {
+                    continue;
+                }
+            }
+            if let Some(tr) = signal_source::barrier_walk(sig, oos_bars, fee_bps, position_eur) {
+                last_exit_oos = Some(tr.exit_idx);
+                oos_trades_all.push(tr);
+            }
+        }
+    }
+
+    // Per-date grouping
+    let mut date_map: std::collections::BTreeMap<String, Vec<&TradeResult>> = std::collections::BTreeMap::new();
+    for t in &all_trades {
+        date_map.entry(bars[t.entry_idx].date.clone()).or_default().push(t);
+    }
+    let per_date: Vec<(String, usize, f64, f64)> = date_map.iter().map(|(date, trades)| {
+        let n = trades.len();
+        let net = trades.iter().map(|t| t.net_pnl_bps).sum::<f64>() / n as f64;
+        let wins = trades.iter().filter(|t| t.net_pnl_bps > 0.0).count();
+        (date.clone(), n, net, wins as f64 / n as f64)
+    }).collect();
+
+    let round_trips = all_trades.len();
+    let (win_rate, avg_pnl_bps, net_pnl_bps, sharpe_val) = if round_trips == 0 { (0.0, 0.0, 0.0, 0.0) }
+    else {
+        let wins = all_trades.iter().filter(|t| t.net_pnl_bps > 0.0).count();
+        let wr = wins as f64 / round_trips as f64;
+        let avg = all_trades.iter().map(|t| t.gross_pnl_bps).sum::<f64>() / round_trips as f64;
+        let net = all_trades.iter().map(|t| t.net_pnl_bps).sum::<f64>() / round_trips as f64;
+        let rets: Vec<f64> = all_trades.iter().map(|t| t.net_pnl_bps / 10000.0).collect();
+        (wr, avg, net, sharpe(&rets))
+    };
+
+    let (oos_net_bps, oos_win_rate) = if oos_trades_all.is_empty() { (0.0, 0.0) }
+    else {
+        let oos_net = oos_trades_all.iter().map(|t| t.net_pnl_bps).sum::<f64>() / oos_trades_all.len() as f64;
+        let oos_wins = oos_trades_all.iter().filter(|t| t.net_pnl_bps > 0.0).count();
+        (oos_net, oos_wins as f64 / oos_trades_all.len() as f64)
+    };
+
+    let eur_total_pnl = if round_trips > 0 {
+        all_trades.iter().map(|t| t.eur_pnl).sum::<f64>()
+    } else { 0.0 };
+    let eur_per_trade = if round_trips > 0 { eur_total_pnl / round_trips as f64 } else { 0.0 };
+
+    let start_capital = eur_capital;
+    let mut equity = start_capital;
+    let mut peak = start_capital;
+    let mut max_dd = 0.0f64;
+    let mut liquidated = false;
+    for t in &all_trades {
+        equity += t.eur_pnl;
+        if equity <= 0.0 { liquidated = true; break; }
+        if equity > peak { peak = equity; }
+        let dd = peak - equity;
+        if dd > max_dd { max_dd = dd; }
+    }
+    let eur_max_dd_val = if liquidated { 9999.0 } else { max_dd };
+    let liquidation_risk = liquidated || eur_max_dd_val > eur_max_dd;
+    let trades_per_day = if date_map.len() > 0 {
+        round_trips as f64 / date_map.len() as f64
+    } else { 0.0 };
+
+    CellResult {
+        id, entry_name: cfg.entry_name.clone(), entry_threshold: cfg.entry_threshold,
+        tp_bps: cfg.tp_bps, sl_bps: cfg.sl_bps, hold_bars: cfg.hold_bars,
+        fee_bps, round_trips, win_rate, avg_pnl_bps, net_pnl_bps, sharpe: sharpe_val,
+        dsr: 0.0, oos_net_bps, oos_win_rate,
+        eur_total_pnl, eur_per_trade, eur_max_dd: eur_max_dd_val, eur_liquidation_risk: liquidation_risk,
+        trades_per_day, verdict: Verdict::Retire, trade_bar_indices, trade_returns, per_date,
+    }
+}
+
+// ── Legacy helpers used by the null-edge branch and the grid run_config ──────
 
 fn load_csv(path: &PathBuf) -> Result<Vec<Bar>, Box<dyn std::error::Error>> {
     let mut reader = ReaderBuilder::new().from_path(path)?;
     let mut bars = Vec::new();
-    for result in reader.deserialize() {
+    let mut prev_cum = 0.0_f64;
+    for (i, result) in reader.deserialize().enumerate() {
         let mut bar: Bar = result?;
         if bar.date.is_empty() {
             let secs = bar.ts / 1_000_000_000;
@@ -463,9 +732,131 @@ fn load_csv(path: &PathBuf) -> Result<Vec<Bar>, Box<dyn std::error::Error>> {
             let (y, m, d) = days_to_ymd(days_since_epoch);
             bar.date = format!("{:04}-{:02}-{:02}", y, m, d);
         }
+        bar.bar_index = i as u64;
+        if bar.bar_vol <= 0.0 && bar.cum_vol > prev_cum {
+            bar.bar_vol = bar.cum_vol - prev_cum;
+        }
+        prev_cum = bar.cum_vol;
         bars.push(bar);
     }
     Ok(bars)
+}
+fn load_signals_csv(
+    path: &PathBuf,
+    bars: &[Bar],
+    min_confidence: f64,
+) -> Result<Vec<PreFilteredSignal>, Box<dyn std::error::Error>> {
+    use std::path::Path;
+    #[derive(serde::Deserialize)]
+    #[allow(dead_code)]
+    struct CsvRow {
+        bar_index: u64,
+        #[serde(default)]
+        direction: String,
+        #[serde(default)]
+        expected_move_bps: f64,
+        #[serde(default)]
+        hold_bars: u32,
+        #[serde(default)]
+        confidence: f64,
+    }
+    let mut reader = ReaderBuilder::new().from_path(Path::new(path))?;
+    let mut out: Vec<PreFilteredSignal> = Vec::new();
+    for result in reader.deserialize() {
+        let row: CsvRow = result?;
+        let dir = match row.direction.as_str() {
+            "long" => forge_anomaly::SignalDirection::Long,
+            "short" => forge_anomaly::SignalDirection::Short,
+            _ => continue,
+        };
+        if row.confidence < min_confidence {
+            continue;
+        }
+        let bi = row.bar_index as usize;
+        if bi >= bars.len() {
+            continue;
+        }
+        out.push(PreFilteredSignal {
+            bar_index: bi,
+            direction: dir,
+            expected_move_bps: row.expected_move_bps,
+            hold_bars: row.hold_bars,
+            confidence: row.confidence,
+        });
+    }
+    out.sort_by_key(|s| s.bar_index);
+    Ok(out)
+}
+
+#[derive(Debug, Clone)]
+struct PreFilteredSignal {
+    bar_index: usize,
+    direction: forge_anomaly::SignalDirection,
+    expected_move_bps: f64,
+    hold_bars: u32,
+    confidence: f64,
+}
+
+fn run_signal_mode(
+    args: &Args,
+    bars: &[Bar],
+    signals: &[PreFilteredSignal],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let boundaries = find_date_boundaries(bars);
+    let cv = PurgedCv::new_date_aware(boundaries, args.folds, args.purge_bars);
+    let position_eur = args.eur_capital * args.eur_leverage;
+    let mut by_family: std::collections::BTreeMap<String, Vec<signal_source::RawSignal>> =
+        std::collections::BTreeMap::new();
+    for s in signals {
+        let tp = if s.expected_move_bps > 0.0 { s.expected_move_bps } else { args.tp_bps };
+        let hold = if s.hold_bars > 0 { s.hold_bars as usize } else { args.hold_bars };
+        let is_long = matches!(s.direction, forge_anomaly::SignalDirection::Long);
+        let family = if is_long { "anomaly_signal_long".to_string() } else { "anomaly_signal_short".to_string() };
+        let r = signal_source::RawSignal {
+            bar_index: s.bar_index,
+            is_long,
+            tp_bps: tp,
+            sl_bps: args.sl_bps,
+            hold_bars: hold,
+            family: family.clone(),
+        };
+        by_family.entry(family).or_default().push(r);
+    }
+    let fee_bps = args.fee_bps;
+    let family_vec: Vec<(String, Vec<signal_source::RawSignal>)> = by_family
+        .into_iter()
+        .collect();
+    let mut results: Vec<CellResult> = family_vec
+        .par_iter()
+        .enumerate()
+        .map(|(id, (family, signals))| {
+            let (tp, sl, hold) = signals
+                .first()
+                .map(|s| (s.tp_bps, s.sl_bps, s.hold_bars))
+                .unwrap_or((args.tp_bps, args.sl_bps, args.hold_bars));
+            let cfg = grid::SweepConfig {
+                entry_name: family.clone(),
+                entry_threshold: 0.0,
+                tp_bps: tp,
+                sl_bps: sl,
+                hold_bars: hold,
+            };
+            run_signal_source_config(
+                id,
+                &cfg,
+                bars,
+                &cv,
+                signals,
+                fee_bps,
+                args.min_trades,
+                args.eur_capital,
+                args.eur_leverage,
+                args.eur_max_dd,
+                position_eur,
+            )
+        })
+        .collect();
+    aggregate_and_score(args, results, bars)
 }
 
 fn days_to_ymd(mut days: i64) -> (i64, u32, u32) {
@@ -523,14 +914,11 @@ fn run_config(id: usize, cfg: &grid::SweepConfig, bars: &[Bar], cv: &PurgedCv,
         (oos_net, oos_wins as f64 / oos_trades_all.len() as f64)
     };
 
-    // EUR500 computations
     let eur_total_pnl = if round_trips > 0 {
         all_trades.iter().map(|t| t.eur_pnl).sum::<f64>()
     } else { 0.0 };
     let eur_per_trade = if round_trips > 0 { eur_total_pnl / round_trips as f64 } else { 0.0 };
 
-    // Compute max drawdown: equity starts at EUR500 capital, not zero.
-    // If equity drops below zero, account is liquidated — max DD = EUR500.
     let start_capital = eur_capital;
     let mut equity = start_capital;
     let mut peak = start_capital;
@@ -543,7 +931,7 @@ fn run_config(id: usize, cfg: &grid::SweepConfig, bars: &[Bar], cv: &PurgedCv,
         let dd = peak - equity;
         if dd > max_dd { max_dd = dd; }
     }
-    let eur_max_dd_val = if liquidated { 9999.0 } else { max_dd }; // 9999 = liquidated flag
+    let eur_max_dd_val = if liquidated { 9999.0 } else { max_dd };
     let liquidation_risk = liquidated || eur_max_dd_val > eur_max_dd;
     let trades_per_day = if n_dates_sorted(&date_map) > 0 {
         round_trips as f64 / n_dates_sorted(&date_map) as f64
@@ -555,8 +943,7 @@ fn run_config(id: usize, cfg: &grid::SweepConfig, bars: &[Bar], cv: &PurgedCv,
         fee_bps, round_trips, win_rate, avg_pnl_bps, net_pnl_bps, sharpe: sharpe_val,
         dsr: 0.0, oos_net_bps, oos_win_rate,
         eur_total_pnl, eur_per_trade, eur_max_dd: eur_max_dd_val, eur_liquidation_risk: liquidation_risk,
-        trades_per_day,
-        verdict: Verdict::Retire, trade_bar_indices, trade_returns, per_date,
+        trades_per_day, verdict: Verdict::Retire, trade_bar_indices, trade_returns, per_date,
     }
 }
 
@@ -661,7 +1048,6 @@ fn run_trades(entry_name: &str, threshold: f64, tp_bps: f64, sl_bps: f64, hold_b
                 else { (entry_price - exit_price) / entry_price * 10000.0 };
             let net_pnl_bps = gross_pnl_bps - fee_bps;
 
-            // EUR profit = net_bps / 10000 * position_eur
             let eur_pnl = net_pnl_bps / 10000.0 * position_eur;
 
             trades.push(TradeResult {
@@ -676,366 +1062,4 @@ fn run_trades(entry_name: &str, threshold: f64, tp_bps: f64, sl_bps: f64, hold_b
     trades
 }
 
-// ════════════════════════════════════════════════════════════════════════════════
-// Signal-driven mode: consume AnomalySignal from forge-anomaly
-// ════════════════════════════════════════════════════════════════════════════════
-//
-// Reads anomalyscope/validate-style signal CSVs, runs them through the same
-// triple-barrier + EUR walk + per-date CV pipeline as the grid scan.
-//
-// CSV format expected (anomalyscope non-verbose output):
-//   bar_index,ts,direction,signal_type,confidence,maha_dist,expected_move_bps,
-//   hold_bars,pattern_count,null_edge,description,mid_price
-//
-// Only bar_index and direction are strictly required. We index into `bars` via
-// bar_index, look up mid_price from there, and use expected_move_bps/hold_bars
-// per-signal if non-zero, otherwise fall back to the CLI defaults.
 
-fn load_signals_csv(
-    path: &std::path::Path,
-    bars: &[Bar],
-    min_confidence: f64,
-) -> Result<Vec<PreFilteredSignal>, Box<dyn std::error::Error>> {
-    use std::path::Path;
-    let mut reader = ReaderBuilder::new().from_path(Path::new(path))?;
-    let mut out: Vec<PreFilteredSignal> = Vec::new();
-    let mut skipped_conf = 0usize;
-    let mut skipped_long = 0usize;
-    let mut skipped_oob = 0usize;
-    for result in reader.deserialize() {
-        // Build an AnomalySignal-shaped struct with serde defaults
-        #[derive(serde::Deserialize)]
-        #[allow(dead_code)]
-        struct Row {
-            bar_index: u64,
-            #[serde(default)]
-            ts: i64,
-            #[serde(default)]
-            direction: String,
-            #[serde(default)]
-            signal_type: String,
-            #[serde(default)]
-            confidence: f64,
-            #[serde(default)]
-            expected_move_bps: f64,
-            #[serde(default)]
-            hold_bars: u32,
-        }
-        let row: Row = result?;
-
-        let dir = match row.direction.as_str() {
-            "long" => forge_anomaly::SignalDirection::Long,
-            "short" => forge_anomaly::SignalDirection::Short,
-            _ => { skipped_long += 1; continue; }
-        };
-        if row.confidence < min_confidence {
-            skipped_conf += 1;
-            continue;
-        }
-        let bi = row.bar_index as usize;
-        if bi >= bars.len() {
-            skipped_oob += 1;
-            continue;
-        }
-        out.push(PreFilteredSignal {
-            bar_index: bi,
-            direction: dir,
-            expected_move_bps: row.expected_move_bps,
-            hold_bars: row.hold_bars,
-            confidence: row.confidence,
-        });
-    }
-    out.sort_by_key(|s| s.bar_index);
-    eprintln!(
-        "  signal filter: skipped {} (low conf), {} (non-long/short), {} (out-of-bounds bar_index)",
-        skipped_conf, skipped_long, skipped_oob
-    );
-    Ok(out)
-}
-
-#[derive(Debug, Clone)]
-struct PreFilteredSignal {
-    bar_index: usize,
-    direction: forge_anomaly::SignalDirection,
-    /// 0.0 means "fall back to CLI default".
-    expected_move_bps: f64,
-    /// 0 means "fall back to CLI default".
-    hold_bars: u32,
-    confidence: f64,
-}
-
-/// Walk precomputed signals, applying the same triple-barrier + EUR PnL math
-/// as `run_trades`. Sorts by `bar_index`, skips signals that overlap with an
-/// in-flight trade (same skip logic as the grid version).
-fn run_trades_from_signals(
-    signals: &[PreFilteredSignal],
-    default_tp_bps: f64,
-    default_sl_bps: f64,
-    default_hold_bars: usize,
-    fee_bps: f64,
-    bars: &[Bar],
-    position_eur: f64,
-) -> Vec<TradeResult> {
-    let mut sorted: Vec<&PreFilteredSignal> = signals.iter().collect();
-    sorted.sort_by_key(|s| s.bar_index);
-
-    let mut trades = Vec::new();
-    let mut last_exit: Option<usize> = None;
-
-    for sig in sorted {
-        let i = sig.bar_index;
-        // Skip if the previous trade is still in-flight at this bar.
-        if let Some(prev_exit) = last_exit {
-            if i <= prev_exit { continue; }
-        }
-
-        let is_long = matches!(sig.direction, forge_anomaly::SignalDirection::Long);
-        let entry_price = bars[i].mid_price;
-        let entry_ts = bars[i].ts;
-
-        // Per-signal parameters override CLI defaults when non-zero.
-        let tp_bps = if sig.expected_move_bps > 0.0 { sig.expected_move_bps } else { default_tp_bps };
-        let hold_bars = if sig.hold_bars > 0 { sig.hold_bars as usize } else { default_hold_bars };
-        let sl_bps = default_sl_bps;
-
-        let barrier = TripleBarrier::find(bars, i, entry_price, is_long, tp_bps, sl_bps, hold_bars);
-        let exit_price = barrier.exit_price;
-        let exit_idx = barrier.exit_idx;
-        let gross_pnl_bps = if is_long {
-            (exit_price - entry_price) / entry_price * 10000.0
-        } else {
-            (entry_price - exit_price) / entry_price * 10000.0
-        };
-        let net_pnl_bps = gross_pnl_bps - fee_bps;
-        let eur_pnl = net_pnl_bps / 10000.0 * position_eur;
-
-        trades.push(TradeResult {
-            entry_ts,
-            exit_ts: bars[exit_idx].ts,
-            entry_idx: i,
-            exit_idx,
-            is_long,
-            entry_price,
-            exit_price,
-            gross_pnl_bps,
-            net_pnl_bps,
-            eur_pnl,
-            barrier_hit: barrier.barrier_hit,
-        });
-
-        last_exit = Some(exit_idx);
-    }
-    trades
-}
-
-/// Signal-mode orchestrator: reuses the full IS/OOS/per-date/EUR walk/verdict
-/// pipeline that `run_config` runs in grid mode.
-fn run_signal_mode(
-    args: &Args,
-    bars: &[Bar],
-    signals: &[PreFilteredSignal],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let position_eur = args.eur_capital * args.eur_leverage;
-    eprintln!(
-        "EUR account: capital={:.0} leverage={:.0}x position={:.0} max_dd={:.0}",
-        args.eur_capital, args.eur_leverage, position_eur, args.eur_max_dd
-    );
-
-    let boundaries = find_date_boundaries(bars);
-    let n_dates = boundaries.len() - 1;
-    let cv = PurgedCv::new_date_aware(boundaries, args.folds, args.purge_bars);
-    eprintln!("CV: {} folds, {} dates, {} bars purge", args.folds, n_dates, args.purge_bars);
-
-    let cfg = grid::SweepConfig {
-        entry_name: "anomaly_signal".to_string(),
-        entry_threshold: 0.0,
-        tp_bps: args.tp_bps,
-        sl_bps: args.sl_bps,
-        hold_bars: args.hold_bars,
-    };
-
-    // Single cell — one config × the signal set.
-    let cell = run_config_from_signals(
-        0, &cfg, bars, &cv,
-        signals, args.tp_bps, args.sl_bps, args.hold_bars,
-        args.fee_bps, args.min_trades, args.eur_capital, args.eur_leverage,
-        args.eur_max_dd, position_eur,
-    );
-
-    eprintln!("\n=== SIGNAL-MODE RESULT ===");
-    eprintln!("  signals loaded:    {}", signals.len());
-    eprintln!("  round trips:       {}", cell.round_trips);
-    eprintln!("  win rate:          {:.1}%", cell.win_rate * 100.0);
-    eprintln!("  avg net pnl:       {:+.2} bps", cell.avg_pnl_bps);
-    eprintln!("  net pnl:           {:+.2} bps", cell.net_pnl_bps);
-    eprintln!("  sharpe:            {:.3}", cell.sharpe);
-    eprintln!("  OOS net bps:       {:+.2}", cell.oos_net_bps);
-    eprintln!("  OOS win rate:      {:.1}%", cell.oos_win_rate * 100.0);
-    eprintln!("  EUR total pnl:     {:+.0}", cell.eur_total_pnl);
-    eprintln!("  EUR per trade:     {:+.2}", cell.eur_per_trade);
-    eprintln!("  EUR max DD:        {:.0}", cell.eur_max_dd);
-    eprintln!("  trades/day:        {:.2}", cell.trades_per_day);
-    eprintln!("  verdict:           {:?}", cell.verdict);
-    eprintln!("  families:          anomaly_signal_long + anomaly_signal_short");
-
-    // Write scorecard (same schema as grid mode, one row).
-    let mut out = File::create(&args.output)?;
-    writeln!(
-        out, "id,entry,threshold,tp_bps,sl_bps,hold_bars,trades,win_rate,net_pnl_bps,sharpe,dsr,oos_net_bps,oos_win_rate,eur_total_pnl,eur_per_trade,eur_max_dd,eur_dd_pct,trades_per_day,verdict,family"
-    )?;
-    let is_long_trades = cell.trade_bar_indices.iter().filter(|&&i| {
-        // Reconstruct direction from bar_idx ordering + the signal list.
-        signals.iter().any(|s| s.bar_index == i && matches!(s.direction, forge_anomaly::SignalDirection::Long))
-    }).count();
-    let is_short_trades = cell.round_trips - is_long_trades;
-    eprintln!("  long trades:       {}", is_long_trades);
-    eprintln!("  short trades:      {}", is_short_trades);
-    let verdict = cell.verdict;
-    writeln!(
-        out, "{},{},{:.1},{:.1},{:.1},{},{},{:.3},{:.2},{:.2},{:.3},{:.2},{:.3},{:.2},{:.2},{:.2},{:.1},{:.2},{},{}",
-        cell.id, cell.entry_name, cell.entry_threshold, cell.tp_bps, cell.sl_bps, cell.hold_bars,
-        cell.round_trips, cell.win_rate, cell.net_pnl_bps, cell.sharpe, cell.dsr,
-        cell.oos_net_bps, cell.oos_win_rate,
-        cell.eur_total_pnl, cell.eur_per_trade, cell.eur_max_dd, cell.eur_max_dd / args.eur_capital * 100.0,
-        cell.trades_per_day, verdict, "anomaly_signal"
-    )?;
-
-    if let Some(per_date_path) = &args.per_date {
-        let mut pd_out = File::create(per_date_path)?;
-        writeln!(
-            pd_out, "id,entry,threshold,tp_bps,sl_bps,hold_bars,date,trades,net_bps,win_rate,verdict,family"
-        )?;
-        for (date, n, net, wr) in &cell.per_date {
-            writeln!(
-                pd_out, "0,anomaly_signal,0.0,{:.1},{:.1},{},{},{},{:.2},{:.3},{:?},anomaly_signal",
-                args.tp_bps, args.sl_bps, args.hold_bars, date, n, net, wr, verdict
-            )?;
-        }
-        eprintln!("Per-date: {}", per_date_path.display());
-    }
-
-    eprintln!("  Scorecard: {}", args.output.display());
-    Ok(())
-}
-
-/// Mirror of `run_config` but consumes pre-filtered signals instead of running
-/// the grid detection step. Same downstream math (OOS, EUR walk, per-date).
-fn run_config_from_signals(
-    id: usize,
-    cfg: &grid::SweepConfig,
-    bars: &[Bar],
-    cv: &PurgedCv,
-    signals: &[PreFilteredSignal],
-    default_tp_bps: f64,
-    default_sl_bps: f64,
-    default_hold_bars: usize,
-    fee_bps: f64,
-    _min_trades: usize,
-    eur_capital: f64,
-    _eur_leverage: f64,
-    eur_max_dd: f64,
-    position_eur: f64,
-) -> CellResult {
-    let all_trades = run_trades_from_signals(
-        signals, default_tp_bps, default_sl_bps, default_hold_bars,
-        fee_bps, bars, position_eur,
-    );
-    let trade_bar_indices: Vec<usize> = all_trades.iter().map(|t| t.entry_idx).collect();
-    let trade_returns: Vec<f64> = all_trades.iter().map(|t| t.net_pnl_bps / 10000.0).collect();
-
-    let mut oos_trades_all = Vec::new();
-    for fi in 0..cv.n_folds() {
-        let oos_range = cv.oos_range(fi);
-        let oos_bars = &bars[oos_range.clone()];
-        let oos_signals: Vec<PreFilteredSignal> = signals
-            .iter()
-            .filter(|s| {
-                s.bar_index >= oos_range.start
-                    && s.bar_index < oos_range.end
-                    && s.bar_index < oos_bars.len()
-            })
-            .cloned()
-            .collect();
-        oos_trades_all.extend(run_trades_from_signals(
-            &oos_signals, default_tp_bps, default_sl_bps, default_hold_bars,
-            fee_bps, oos_bars, position_eur,
-        ));
-    }
-
-    let mut date_map: std::collections::BTreeMap<String, Vec<&TradeResult>> = std::collections::BTreeMap::new();
-    for t in &all_trades {
-        date_map.entry(bars[t.entry_idx].date.clone()).or_default().push(t);
-    }
-    let per_date: Vec<(String, usize, f64, f64)> = date_map.iter().map(|(date, trades)| {
-        let n = trades.len();
-        let net = trades.iter().map(|t| t.net_pnl_bps).sum::<f64>() / n as f64;
-        let wins = trades.iter().filter(|t| t.net_pnl_bps > 0.0).count();
-        (date.clone(), n, net, wins as f64 / n as f64)
-    }).collect();
-
-    let round_trips = all_trades.len();
-    let (win_rate, avg_pnl_bps, net_pnl_bps, sharpe_val) = if round_trips == 0 { (0.0, 0.0, 0.0, 0.0) }
-    else {
-        let wins = all_trades.iter().filter(|t| t.net_pnl_bps > 0.0).count();
-        let wr = wins as f64 / round_trips as f64;
-        let avg = all_trades.iter().map(|t| t.gross_pnl_bps).sum::<f64>() / round_trips as f64;
-        let net = all_trades.iter().map(|t| t.net_pnl_bps).sum::<f64>() / round_trips as f64;
-        let rets: Vec<f64> = all_trades.iter().map(|t| t.net_pnl_bps / 10000.0).collect();
-        (wr, avg, net, sharpe(&rets))
-    };
-
-    let (oos_net_bps, oos_win_rate) = if oos_trades_all.is_empty() { (0.0, 0.0) }
-    else {
-        let oos_net = oos_trades_all.iter().map(|t| t.net_pnl_bps).sum::<f64>() / oos_trades_all.len() as f64;
-        let oos_wins = oos_trades_all.iter().filter(|t| t.net_pnl_bps > 0.0).count();
-        (oos_net, oos_wins as f64 / oos_trades_all.len() as f64)
-    };
-
-    let eur_total_pnl = if round_trips > 0 {
-        all_trades.iter().map(|t| t.eur_pnl).sum::<f64>()
-    } else { 0.0 };
-    let eur_per_trade = if round_trips > 0 { eur_total_pnl / round_trips as f64 } else { 0.0 };
-
-    let start_capital = eur_capital;
-    let mut equity = start_capital;
-    let mut peak = start_capital;
-    let mut max_dd = 0.0f64;
-    let mut liquidated = false;
-    for t in &all_trades {
-        equity += t.eur_pnl;
-        if equity <= 0.0 { liquidated = true; break; }
-        if equity > peak { peak = equity; }
-        let dd = peak - equity;
-        if dd > max_dd { max_dd = dd; }
-    }
-    let eur_max_dd_val = if liquidated { 9999.0 } else { max_dd };
-    let liquidation_risk = liquidated || eur_max_dd_val > eur_max_dd;
-    let trades_per_day = if date_map.len() > 0 {
-        round_trips as f64 / date_map.len() as f64
-    } else { 0.0 };
-
-    // Simple verdict (no family aggregation in signal mode — just one row).
-    let verdict = if dd_verdict(max_dd, eur_total_pnl, eur_max_dd, date_map.len()) == 0 {
-        Verdict::Promote
-    } else if dd_verdict(max_dd, eur_total_pnl, eur_max_dd, date_map.len()) == 1 {
-        Verdict::Park
-    } else {
-        Verdict::Retire
-    };
-
-    CellResult {
-        id, entry_name: cfg.entry_name.clone(), entry_threshold: cfg.entry_threshold,
-        tp_bps: cfg.tp_bps, sl_bps: cfg.sl_bps, hold_bars: cfg.hold_bars,
-        fee_bps, round_trips, win_rate, avg_pnl_bps, net_pnl_bps, sharpe: sharpe_val,
-        dsr: 0.0, oos_net_bps, oos_win_rate,
-        eur_total_pnl, eur_per_trade, eur_max_dd: eur_max_dd_val, eur_liquidation_risk: liquidation_risk,
-        trades_per_day, verdict, trade_bar_indices, trade_returns, per_date,
-    }
-}
-
-/// 0=Promote, 1=Park, 2=Retire. Mirrors the family verdict logic in main().
-fn dd_verdict(max_dd: f64, eur_total: f64, eur_max_dd: f64, n_dates: usize) -> i32 {
-    if max_dd > eur_max_dd || eur_total <= 0.0 { return 2; }
-    if n_dates >= 3 { return 0; }
-    1
-}
