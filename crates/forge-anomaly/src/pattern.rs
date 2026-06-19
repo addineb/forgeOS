@@ -8,7 +8,7 @@
 //!
 //! A signal is generated only when:
 //! 1. The sequence has appeared at least 2 times (minimum frequency gate)
-//! 2. The combined final_score >= 0.60 threshold
+//! 2. The combined final_score >= 0.48 threshold
 //!
 //! This approach prevents common/weak sequences from triggering while allowing genuinely
 //! repetitive, high-quality patterns to be detected.
@@ -19,11 +19,21 @@ use std::collections::VecDeque;
 use crate::types::{AnomalyEvent, AnomalyKind, SignalDirection};
 
 /// Minimum average |z-score| for a sequence to pass the initial quality gate.
-const MIN_AVG_Z: f64 = 1.60;
+///
+/// **Calibration:** 1.30 was still too strict — many real patterns with moderate
+/// but consistent z-scores (1.2–1.5) were rejected.  Lowered to **1.20** to let
+/// these through while still filtering true noise (< 1.0).  Sits in the upper
+/// third of the "Weak" band, requiring anomalies to be at least marginally
+/// significant to form patterns.
+const MIN_AVG_Z: f64 = 1.20;
 
 /// Threshold for the final hybrid score. Sequences must score >= this to be considered repetitive.
-/// Set to 0.60 — requires both decent frequency and quality to trigger.
-const FINAL_SCORE_THRESHOLD: f64 = 0.45;
+///
+/// **Calibration:** Lowered from 0.48 to **0.42** to compensate for the still-low
+/// pattern hit rate (14% of signals, 0% on some days).  At 0.42, a freq=2 sequence
+/// with moderate quality (z ≈ 1.5–2.0 above background) passes, while freq=1 or
+/// very-weak sequences still fail.
+const FINAL_SCORE_THRESHOLD: f64 = 0.42;
 
 /// Maximum expected repetitions for normalization. A sequence appearing 5+ times is considered
 /// very frequent; this caps the frequency_score at 1.0.
@@ -35,6 +45,7 @@ pub struct PatternCounter {
     /// Total lookback window in bars.
     lookback: usize,
     /// Minimum repetition count to consider a pattern "repetitive."
+    #[allow(dead_code)] // stored for future threshold tuning; used via EngineConfig
     min_count: u32,
     /// Subsequence length to hash (scales with lookback, clamped to [2, 8]).
     seq_len: usize,
@@ -53,6 +64,7 @@ pub struct PatternCounter {
 /// A single bar's entry: top 1-2 anomalies plus the bar's average |z-score|.
 #[derive(Debug, Clone)]
 struct BarEntry {
+    #[allow(dead_code)] // stored for diagnostics; used in Debug output
     bar_index: u64,
     primary: AnomalyEntry,
     secondary: Option<AnomalyEntry>,
@@ -114,7 +126,7 @@ impl PatternCounter {
     #[must_use]
     pub fn new(lookback_bars: usize, min_count: u32) -> Self {
         let seq_len = (lookback_bars / 4).clamp(2, 8);
-        let cooldown = 2.max((seq_len + 1) / 2);
+        let cooldown = 2.max(seq_len.div_ceil(2));
         Self {
             lookback: lookback_bars.max(1),
             min_count: min_count.max(2),
@@ -159,7 +171,7 @@ impl PatternCounter {
         let mut vals: Vec<f64> = self.recent_z_values.iter().copied().collect();
         vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = vals.len() / 2;
-        if vals.len() % 2 == 0 {
+        if vals.len().is_multiple_of(2) {
             (vals[mid - 1] + vals[mid]) / 2.0
         } else {
             vals[mid]
@@ -237,21 +249,43 @@ impl PatternCounter {
     ///
     /// Formula: final_score = (frequency_score * 0.60) + (quality_score * 0.40)
     ///
-    /// - frequency_score: normalized repetition count (freq / MAX_FREQ_FOR_NORMALIZATION, capped at 1.0)
-    ///   Weight 0.60 because repetition is the primary signal — a pattern needs to appear multiple
-    ///   times to be meaningful.
+    /// **Bug fix #2:** The old implementation hardcoded `quality_score = 0.75`,
+    /// completely ignoring the actual z-score quality of the sequence.  Now we
+    /// compute the sequence's average |z| relative to the rolling median |z|,
+    /// clamped to produce a meaningful 0–1 range.  If we can't determine the
+    /// quality (no history), we use a neutral default of 0.5.
     ///
-    /// - quality_score: how much the sequence's avg |z| exceeds the rolling median |z|.
-    ///   Computed as (avg_z / median_z - 1.0), capped at 1.0. If median is 0 or very low,
-    ///   uses a default quality of 0.5.
-    ///   Weight 0.40 because quality matters but shouldn't dominate — a single strong occurrence
-    ///   isn't enough without repetition.
+    /// - frequency_score: normalized repetition count (freq / MAX_FREQ_FOR_NORMALIZATION,
+    ///   capped at 1.0).  Weight 0.60 because repetition is the primary signal.
     ///
-    /// The 0.60/0.40 split balances the two factors: frequency is slightly more important,
-    /// but quality still has meaningful influence.
-    fn compute_final_score(&self, _key: u64, freq: u32) -> f64 {
+    /// - quality_score: (seq_avg_z / median_z - 1.0), clamped to [0.0, 1.0].
+    ///   Measures how much the sequence stands out above background noise.
+    ///   Weight 0.40 — quality matters but shouldn't dominate without repetition.
+    fn compute_final_score(&self, key: u64, freq: u32) -> f64 {
         let frequency_score = (freq as f64 / MAX_FREQ_FOR_NORMALIZATION).min(1.0);
-        let quality_score = 0.75;
+
+        // Compute quality_score from actual data instead of a hardcoded constant.
+        // Uses a blend of absolute quality (how strong the sequence is vs the
+        // minimum bar) and relative quality (how much it stands out vs background).
+        let quality_score = match self.get_last_avg_z_for_key(key) {
+            Some(seq_avg_z) if seq_avg_z > 0.0 => {
+                let median_z = self.median_recent_z();
+                // Absolute: sequences with higher avg_z are inherently higher quality.
+                // Normalized so that avg_z = 2×MIN_AVG_Z maps to 1.0.
+                let abs_quality = ((seq_avg_z / MIN_AVG_Z) * 0.5).min(1.0);
+                // Relative: how much the sequence exceeds background noise.
+                let rel_quality = if median_z > 0.0 {
+                    ((seq_avg_z / median_z - 1.0) * 0.5).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                // Blend: absolute dominates when sequences are strong in isolation;
+                // relative helps when the whole market is noisy.
+                abs_quality * 0.6 + rel_quality * 0.4
+            }
+            _ => 0.5, // fallback: can't determine quality, use neutral
+        };
+
         frequency_score * 0.60 + quality_score * 0.40
     }
 
@@ -267,13 +301,7 @@ impl PatternCounter {
             return 0;
         }
 
-        let recent: Vec<&BarEntry> = self
-            .history
-            .iter()
-            .rev()
-            .take(self.seq_len)
-            .rev()
-            .collect();
+        let recent: Vec<&BarEntry> = self.history.iter().rev().take(self.seq_len).rev().collect();
 
         // Quality filter 1: reject low avg |z|.
         let total_z: f64 = recent.iter().map(|e| e.avg_z).sum();
@@ -282,9 +310,14 @@ impl PatternCounter {
             return 0;
         }
 
-        // Quality filter 2: context awareness (15% rule).
+        // Quality filter 2: context awareness.
+        // Require the sequence's avg |z| to be at least 10% above the rolling
+        // median (relaxed from 15% — too strict for calmer regimes where the
+        // background z is already low and a 10% excess is meaningful).
+        // The safeguard condition (median > avg * 1.1) prevents sequences that
+        // are far BELOW the background from being counted.
         let median_z = self.median_recent_z();
-        if median_z > avg_z * 1.1 && avg_z < median_z * 1.15 {
+        if median_z > avg_z * 1.1 && avg_z < median_z * 1.10 {
             return 0;
         }
 
@@ -299,11 +332,28 @@ impl PatternCounter {
             })
             .collect();
 
-        // Reject consecutive duplicate kinds.
-        for i in 1..entries.len() {
-            if entries[i].kind == entries[i - 1].kind {
-                return 0;
-            }
+        // **Bug fix #2:** Old code rejected any sequence with consecutive duplicate
+        // kinds entirely.  Real market data often has consecutive bars dominated by
+        // the same anomaly kind.  Instead of rejecting, we count duplicate runs and
+        // apply a mild penalty: each duplicate pair reduces the quality gate slightly.
+        // If the entire sequence is one kind repeated, we still reject (no pattern).
+        let dup_count = entries
+            .windows(2)
+            .filter(|w| w[0].kind == w[1].kind)
+            .count();
+        if dup_count >= entries.len() - 1 {
+            return 0; // all same kind — not a meaningful pattern
+        }
+        // Mild penalty: each duplicate pair slightly raises the effective avg_z bar
+        // by requiring the non-duplicate entries to carry more weight.
+        let penalty_factor = if dup_count > 0 {
+            1.0 + (dup_count as f64 * 0.10)
+        } else {
+            1.0
+        };
+        let effective_avg_z = avg_z / penalty_factor;
+        if effective_avg_z < MIN_AVG_Z {
+            return 0;
         }
 
         let mut key: u64 = 0;
@@ -316,8 +366,22 @@ impl PatternCounter {
 }
 
 /// Map AnomalyEntry to a unique bit pattern for hashing.
+///
+/// **Pattern detection v2:** Direction is intentionally EXCLUDED from the hash.
+/// Real microstructure patterns repeat across both bull and bear regimes — a
+/// [LiquidityVacuum → Absorption → OFI] structure is the same phenomenon
+/// whether it's long or short.  Hashing direction fragmented identical structures
+/// into different bins, making the frequency counter useless on real data.
+///
+/// Trade-off: we lose the ability to distinguish "bullish OFI pattern" from
+/// "bearish OFI pattern" at the sequence level.  This is acceptable because:
+/// - The quality filters (avg_z, context awareness, hybrid scoring) prevent
+///   noise patterns from accumulating.
+/// - The signal-level `weighted_dir()` still determines the trade direction
+///   from the current bar's anomaly events, not the pattern history.
+/// - StrengthLevel is also excluded (see previous fix).
 fn entry_to_bits(entry: AnomalyEntry) -> u64 {
-    let kind_bits = match entry.kind {
+    match entry.kind {
         AnomalyKind::Ofi => 1,
         AnomalyKind::Cvd => 2,
         AnomalyKind::DepthImbalance => 3,
@@ -328,18 +392,8 @@ fn entry_to_bits(entry: AnomalyEntry) -> u64 {
         AnomalyKind::LargePrint => 8,
         AnomalyKind::TradeIntensity => 9,
         AnomalyKind::PatternRepeat => 10,
-    };
-    let dir_bits = match entry.dir {
-        DirTag::Long => 0x100,
-        DirTag::Short => 0x200,
-        DirTag::Neutral => 0,
-    };
-    let strength_bits = match entry.strength {
-        StrengthLevel::Weak => 0x400,
-        StrengthLevel::Medium => 0x800,
-        StrengthLevel::Strong => 0xC00,
-    };
-    kind_bits | dir_bits | strength_bits
+    }
+    // Direction and StrengthLevel intentionally omitted — see doc comment.
 }
 
 #[cfg(test)]
@@ -368,9 +422,8 @@ mod tests {
             (AnomalyKind::Absorption, SignalDirection::Short),
             (AnomalyKind::LiquidityVacuum, SignalDirection::Short),
         ];
-        let seq: Vec<(AnomalyKind, SignalDirection)> = (0..seq_len)
-            .map(|i| kinds[i % kinds.len()])
-            .collect();
+        let seq: Vec<(AnomalyKind, SignalDirection)> =
+            (0..seq_len).map(|i| kinds[i % kinds.len()]).collect();
 
         // First occurrence.
         for (i, &(kind, dir)) in seq.iter().enumerate() {
@@ -410,6 +463,8 @@ mod tests {
 
     #[test]
     fn rejects_weak_sequences() {
+        // MIN_AVG_Z = 1.30: z=1.0 entries fall below the quality gate,
+        // so no hash is generated at all — the sequence is invisible.
         let mut counter = PatternCounter::new(20, 2);
         let seq_len = counter.seq_len;
 
@@ -419,7 +474,7 @@ mod tests {
             counter.record(i as u64, &events);
         }
 
-        assert_eq!(counter.current_seq_hash(), 0); // Rejected by MIN_AVG_Z filter
+        assert_eq!(counter.current_seq_hash(), 0); // Rejected by MIN_AVG_Z (1.30 > 1.0)
     }
 
     #[test]
@@ -486,6 +541,6 @@ mod tests {
             counter.record((10 + i) as u64, &events);
         }
 
-        assert_eq!(counter.current_seq_hash(), 0); // Rejected by 15% rule
+        assert_eq!(counter.current_seq_hash(), 0); // Rejected by 10% context rule
     }
 }

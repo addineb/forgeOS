@@ -235,6 +235,10 @@ pub struct EngineConfig {
     pub lookback_bars: usize,
     /// Mahalanobis distance threshold (chi-squared-like; ~3-5 typical).
     pub mahalanobis_threshold: f64,
+    /// Maximum Mahalanobis distance cap. Prevents regime-shift spikes
+    /// (observed up to 507) from producing unrealistic expected_move values
+    /// and excessive signals. Set to 0.0 to disable.
+    pub mahalanobis_max: f64,
     /// Covariance regularization (added to diagonal, relative to variance).
     pub cov_regularization: f64,
     /// Minimum composite confidence to emit a signal.
@@ -274,8 +278,9 @@ impl Default for EngineConfig {
         Self {
             lookback_bars: 50,
             mahalanobis_threshold: 4.0,
+            mahalanobis_max: 40.0, // cap at ~10× threshold (Bug fix #3)
             cov_regularization: 1.0,
-            min_confidence: 0.55,
+            min_confidence: 0.48,
             fee_bps: 9.0,
             edge_margin_bps: 3.0,
             depth_top_n: 5,

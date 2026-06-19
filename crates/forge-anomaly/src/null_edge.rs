@@ -75,11 +75,43 @@ impl NullEdgeGate {
         real_dist > shuffled_mean * (1.0 + self.margin)
     }
 
+    /// Like `validate` but with an explicit margin override (for pattern-relaxed checks).
+    #[must_use]
+    pub fn validate_with_margin(
+        &mut self,
+        window: &RollingFeatureWindow,
+        x: &FeatureVector,
+        real_dist: f64,
+        detector: &MahalanobisDetector,
+        margin: f64,
+    ) -> bool {
+        if !self.rate_ok() {
+            return false;
+        }
+        if self.permutations == 0 {
+            return true;
+        }
+        if real_dist <= 0.0 {
+            return false;
+        }
+        let mut shuffled_sum = 0.0;
+        for p in 0..self.permutations {
+            let perm = self.shuffle(x, p);
+            shuffled_sum += detector.distance_or_zero(window, &perm);
+        }
+        let shuffled_mean = shuffled_sum / self.permutations as f64;
+        real_dist > shuffled_mean * (1.0 + margin)
+    }
+
     fn shuffle(&mut self, x: &FeatureVector, perm_idx: u32) -> FeatureVector {
         let mut out = *x;
         let n = out.len();
         for i in 0..n {
-            self.seed = prng::splitmix64(self.seed.wrapping_add(perm_idx as u64).wrapping_add(i as u64));
+            self.seed = prng::splitmix64(
+                self.seed
+                    .wrapping_add(perm_idx as u64)
+                    .wrapping_add(i as u64),
+            );
             let j = (self.seed as usize) % n;
             out.swap(i, j);
         }

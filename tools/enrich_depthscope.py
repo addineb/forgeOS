@@ -93,6 +93,165 @@ def pull_liquidations(date, key, symbol):
     out = pd.concat(rows, ignore_index=True).sort_values("ts_ns").reset_index(drop=True)
     return out
 
+def pull_trades(date, key, symbol):
+    """Pull Binance spot aggregated trades for trade-level microstructure features.
+    Columns: event_time(ms), price, quantity, is_buyer_maker (true=seller taker)."""
+    rows = []
+    for hh in range(24):
+        p = "binance_spot/%s/%02d/%s_trades.parquet.zst" % (date, hh, symbol)
+        df = dl(p, key)
+        if df is None or len(df) == 0: continue
+        # Binance agg trades: event_time(ms), price, quantity, is_buyer_maker
+        ts = df["event_time"].astype("int64").values * 1_000_000  # ms -> ns
+        qty = pd.to_numeric(df["quantity"], errors="coerce").fillna(0.0).values
+        # is_buyer_maker=True → seller taker (aggressive sell)
+        # is_buyer_maker=False → buyer taker (aggressive buy)
+        maker = df["is_buyer_maker"].astype(bool).values
+        chunk = pd.DataFrame({
+            "ts_ns": ts,
+            "qty": qty,
+            "is_sell": maker,          # True = aggressive sell
+        })
+        rows.append(chunk)
+    if not rows: return None
+    out = pd.concat(rows, ignore_index=True).sort_values("ts_ns").reset_index(drop=True)
+    return out
+
+def merge_trades(bars, trades):
+    """Aggregate trade-level features per volume bar window.
+    Output columns needed by forge-anomaly VolumeBar:
+      trade_count, buy_count, sell_count, aggressor_ratio,
+      large_buy_count, large_sell_count, large_buy_vol, large_sell_vol,
+      large_aggressor_ratio, max_trade_size, trade_intensity
+    """
+    if trades is None or len(trades) == 0:
+        for c in ["trade_count","buy_count","sell_count","aggressor_ratio",
+                  "large_buy_count","large_sell_count","large_buy_vol","large_sell_vol",
+                  "large_aggressor_ratio","max_trade_size","trade_intensity"]:
+            bars[c] = 0.0 if "ratio" in c or "intensity" in c or "max" in c else 0
+        return bars
+
+    bar_ts = bars["ts"].values
+    trade_ts = trades["ts_ns"].values
+    trade_qty = trades["qty"].values
+    trade_is_sell = trades["is_sell"].values
+
+    # Per-bar binning: trades between previous bar's ts and current bar's ts
+    n_bars = len(bar_ts)
+    prev_ts = np.concatenate([[0], bar_ts[:-1]])
+
+    trade_count = np.zeros(n_bars, dtype=np.int64)
+    buy_count = np.zeros(n_bars, dtype=np.int64)
+    sell_count = np.zeros(n_bars, dtype=np.int64)
+    large_buy_count = np.zeros(n_bars, dtype=np.int64)
+    large_sell_count = np.zeros(n_bars, dtype=np.int64)
+    large_buy_vol = np.zeros(n_bars, dtype=np.float64)
+    large_sell_vol = np.zeros(n_bars, dtype=np.float64)
+    max_trade_size = np.zeros(n_bars, dtype=np.float64)
+
+    # Use searchsorted for vectorized bin assignment
+    bin_idx = np.searchsorted(bar_ts, trade_ts, side="right")
+    # Clip to valid range
+    valid = (bin_idx >= 0) & (bin_idx < n_bars)
+    bin_idx = bin_idx[valid]
+    trade_qty_v = trade_qty[valid]
+    trade_is_sell_v = trade_is_sell[valid]
+
+    if len(bin_idx) == 0:
+        return merge_trades(bars, None)  # fallback to zeros
+
+    # Aggregate per bin using pandas groupby for speed
+    tdf = pd.DataFrame({
+        "bin": bin_idx,
+        "qty": trade_qty_v,
+        "is_sell": trade_is_sell_v,
+    })
+
+    # Total trade count per bar
+    cnts = tdf.groupby("bin").size()
+    trade_count[cnts.index.values] = cnts.values
+
+    # Sell (aggressive) trades
+    sells = tdf[tdf["is_sell"]].groupby("bin").size()
+    sell_count[sells.index.values] = sells.values
+
+    # Buy (aggressive) trades
+    buys = tdf[~tdf["is_sell"]].groupby("bin").size()
+    buy_count[buys.index.values] = buys.values
+
+    # Large trades: > 5 BTC
+    LARGE_THRESH = 5.0
+    large = tdf[tdf["qty"] > LARGE_THRESH]
+    if len(large) > 0:
+        large_buy = large[~large["is_sell"]]
+        large_sell = large[large["is_sell"]]
+        lbc = large_buy.groupby("bin").size()
+        lsc = large_sell.groupby("bin").size()
+        lbv = large_buy.groupby("bin")["qty"].sum()
+        lsv = large_sell.groupby("bin")["qty"].sum()
+        large_buy_count[lbc.index.values] = lbc.values
+        large_sell_count[lsc.index.values] = lsc.values
+        large_buy_vol[lbv.index.values] = lbv.values
+        large_sell_vol[lsv.index.values] = lsv.values
+
+    # Max trade size per bar
+    maxt = tdf.groupby("bin")["qty"].max()
+    max_trade_size[maxt.index.values] = maxt.values
+
+    bars["trade_count"] = trade_count
+    bars["buy_count"] = buy_count
+    bars["sell_count"] = sell_count
+    total = buy_count + sell_count + 1e-10
+    bars["aggressor_ratio"] = buy_count / total
+
+    bars["large_buy_count"] = large_buy_count
+    bars["large_sell_count"] = large_sell_count
+    bars["large_buy_vol"] = large_buy_vol
+    bars["large_sell_vol"] = large_sell_vol
+    ltot = large_buy_vol + large_sell_vol + 0.5
+    bars["large_aggressor_ratio"] = (large_buy_vol - large_sell_vol) / ltot
+    bars["max_trade_size"] = max_trade_size
+
+    bar_vol = bars["cum_vol"].diff().fillna(bars["cum_vol"].iloc[0]).values
+    bar_vol = np.maximum(bar_vol, 1.0)
+    bars["trade_intensity"] = trade_count / bar_vol
+
+    return bars
+
+def estimate_trades_from_cvd(bars):
+    """Fallback: estimate trade features from CVD and bar volume when real trade
+    data is unavailable. Uses cvd_ratio as aggressor proxy and volume concentration
+    columns for large-print estimates."""
+    bar_vol = bars["cum_vol"].diff().fillna(bars["cum_vol"].iloc[0]).values
+    bar_vol = np.maximum(bar_vol, 1.0)
+
+    # Assume average trade size ~0.05 BTC (spot BTCUSDT typical)
+    AVG_TRADE = 0.05
+    bars["trade_count"] = (bar_vol / AVG_TRADE).astype(np.int64)
+
+    # cvd_ratio proxies buy aggressor share (0-1)
+    cvd_ratio = bars["cvd_ratio"].fillna(0.5).clip(0.01, 0.99).values
+    bars["buy_count"] = (bars["trade_count"].values * cvd_ratio).astype(np.int64)
+    bars["sell_count"] = bars["trade_count"] - bars["buy_count"]
+    bars["aggressor_ratio"] = cvd_ratio
+
+    # Large trades: use ask/bid concentration as proxy for large trade dominance
+    ask_conc = bars.get("ask_concentration", pd.Series(0.3, index=bars.index)).fillna(0.3).values
+    bid_conc = bars.get("bid_concentration", pd.Series(0.3, index=bars.index)).fillna(0.3).values
+    large_share = np.clip(np.maximum(ask_conc, bid_conc), 0.05, 0.80)
+    bars["large_buy_vol"] = bar_vol * cvd_ratio * large_share
+    bars["large_sell_vol"] = bar_vol * (1 - cvd_ratio) * large_share
+    bars["large_buy_count"] = (bars["buy_count"].values * large_share).astype(np.int64)
+    bars["large_sell_count"] = (bars["sell_count"].values * large_share).astype(np.int64)
+    ltot = bars["large_buy_vol"] + bars["large_sell_vol"] + 0.5
+    bars["large_aggressor_ratio"] = (bars["large_buy_vol"] - bars["large_sell_vol"]) / ltot
+
+    # Max trade size: estimate as ~5% of bar volume for the largest print
+    bars["max_trade_size"] = bar_vol * 0.05
+    bars["trade_intensity"] = bars["trade_count"].values / bar_vol
+
+    return bars
+
 def pull_binance_bbo(date, key):
     """Reconstruct Binance L2 BBO from diff feed for basis."""
     book = {"bid": {}, "ask": {}}
@@ -174,6 +333,7 @@ def main():
     ap.add_argument("--indir", default="/root/depthscope_out")
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--no-basis", action="store_true", help="skip Binance spot reconstruction (slow)")
+    ap.add_argument("--no-trades", action="store_true", help="skip trade download; use CVD-based estimates instead")
     a = ap.parse_args()
     if a.outdir is None: a.outdir = a.indir
 
@@ -218,6 +378,20 @@ def main():
         print("[enrich] liquidations: %d events, merged" % len(liq))
     else:
         print("[enrich] liquidations: NO DATA")
+
+    # Trade-level features (aggressor ratio, large prints, trade intensity)
+    if not a.no_trades:
+        print("[enrich] pulling trades...")
+        trades = pull_trades(a.date, key, a.symbol)
+        bars = merge_trades(bars, trades)
+        if trades is not None:
+            print("[enrich] trades: %d events, merged" % len(trades))
+        else:
+            print("[enrich] trades: NO DATA — falling back to CVD-based estimates")
+            bars = estimate_trades_from_cvd(bars)
+    else:
+        print("[enrich] trades: --no-trades set, using CVD-based estimates")
+        bars = estimate_trades_from_cvd(bars)
 
     # Basis (Binance spot BBO)
     if not a.no_basis:
