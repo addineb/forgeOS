@@ -224,6 +224,9 @@ impl AnomalyEngine {
         let key = self.patterns.current_seq_hash();
         if self.patterns.is_repetitive(key) {
             let dir = weighted_dir(anomalies).unwrap_or(SignalDirection::Neutral);
+            // Cap pattern-event confidence at 0.85 so even heavily-repeated
+            // patterns don't push the composite above 0.92.
+            let pat_conf = ((count as f64 / self.cfg.min_pattern_count as f64) * 0.65 + 0.20).min(0.85);
             anomalies.push(AnomalyEvent {
                 bar_index: bar.bar_index,
                 ts: bar.ts,
@@ -231,7 +234,7 @@ impl AnomalyEngine {
                 direction: dir,
                 z_score: count as f64,
                 raw_value: count as f64,
-                confidence: (count as f64 / self.cfg.min_pattern_count as f64).min(1.0),
+                confidence: pat_conf,
             });
         }
     }
@@ -324,16 +327,17 @@ fn z_sign(z: f64) -> SignalDirection {
 
 /// Build the per-event confidence from the z-score.
 ///
-/// Uses `(z-t)/(z+3.5t)` — gently steeper than `z+3t`.
-/// Maps: z=3→0.08, z=5→0.24, z=8→0.40, z=15→0.58, z=30→0.73.
-/// Keeps per-event confidence in 0.08-0.75 range, giving calc_confidence
-/// headroom so the composite spans 0.45-0.90 for typical signals.
+/// Uses `(z-t)/(z+5.5t)` — steep denominator so high z-scores compress.
+/// Maps: z=3→0.06, z=5→0.17, z=8→0.29, z=15→0.41, z=30→0.51.
+/// Keeps per-event confidence in 0.06-0.55 range, giving calc_confidence
+/// headroom so the composite spans 0.55-0.88 for typical signals
+/// (rather than saturating near 1.0).
 fn event_confidence(z: f64, t: f64) -> f64 {
     let d = z.abs() - t;
     if d <= 0.0 {
         return 0.0;
     }
-    (d / (z.abs() + 3.5 * t)).clamp(0.0, 1.0)
+    (d / (z.abs() + 5.5 * t)).clamp(0.0, 1.0)
 }
 
 fn vol_delta_dir(raw: f64, cvd_delta: f64, z: f64) -> SignalDirection {
@@ -359,24 +363,25 @@ fn vac_dir(signed: f64) -> SignalDirection {
 fn calc_confidence(events: &[AnomalyEvent], maha: f64, cfg: &EngineConfig) -> (f64, u32) {
     // Multiplicative formula: final = base * maha_factor * agreement_factor + pattern_bonus
     //
-    // With the steeper event_confidence (z+3t denominator), per-event scores
-    // stay in 0.10-0.80 range.  Reduced factor caps prevent the composite from
-    // saturating:
-    //   maha_factor:    1.00 – 1.08  (was 1.00–1.15)
-    //   agreement_factor: 1.00 – 1.05  (was 1.00–1.10)
-    //   pattern_bonus:  0 – 0.10      (was 0–0.15)
-    // Expected final range: 0.55 – 0.95 for real signals.
+    // With the steeper event_confidence (z+5.5t denominator), per-event scores
+    // stay in 0.06-0.55 range.  Tighter factor caps and a halved pattern_bonus
+    // (0.05 instead of 0.12) keep the composite from saturating at 1.0:
+    //   maha_factor:    1.00 – 1.04  (capped lower)
+    //   agreement_factor: 1.00 – 1.04  (unchanged)
+    //   pattern_bonus:  0 – 0.05      (was 0–0.12)
+    // Expected final range: 0.55 – 0.90 for real signals.
     let (mut total, mut weight) = (0.0, 0.0);
     let mut kinds = 0u32;
     let mut pattern_bonus = 0.0;
     let mut pattern_count = 1_u32;
     for e in events {
         if e.kind == AnomalyKind::PatternRepeat {
-            // Pattern bonus scales with repetition count: patterns that have
-            // appeared 3+ times get a stronger confidence boost.  This helps
-            // pattern-bearing signals clear the min_confidence gate.
-            let rep_mult = (e.raw_value as f64 / 3.0).min(1.0).max(0.33);
-            pattern_bonus = e.confidence * 0.12 * rep_mult;
+            // Pattern bonus is intentionally modest (was 0.12, now 0.05): we want
+            // patterns to add confirmation, not dominate the composite.  Patterns
+            // that have appeared 4+ times get the full multiplier; otherwise a
+            // softer scaling prevents low-count patterns from inflating confidence.
+            let rep_mult = (e.raw_value as f64 / 4.0).min(1.0).max(0.25);
+            pattern_bonus = e.confidence * 0.05 * rep_mult;
             pattern_count = e.raw_value as u32;
             continue;
         }
@@ -386,8 +391,8 @@ fn calc_confidence(events: &[AnomalyEvent], maha: f64, cfg: &EngineConfig) -> (f
         weight += w;
     }
     let base = if weight > 0.0 { total / weight } else { 0.0 };
-    // Maha factor: capped at 1.06 — mild edge for multivariate extremity.
-    let maha_factor = 1.0 + ((maha / cfg.mahalanobis_threshold - 1.0) * 0.025).clamp(0.0, 0.06);
+    // Maha factor: capped at 1.04 — mild edge for multivariate extremity.
+    let maha_factor = 1.0 + ((maha / cfg.mahalanobis_threshold - 1.0) * 0.020).clamp(0.0, 0.04);
     // Agreement factor: capped at 1.04 — small confirmation from multiple kinds.
     let agreement_factor = 1.0 + (kinds.saturating_sub(1) as f64 * 0.012).min(0.04);
     (
