@@ -1,7 +1,4 @@
 //! Backtest evaluation: measures whether detected anomalies predict forward returns.
-//!
-//! Takes engine outputs paired with forward-return data and computes
-//! conditional return statistics (hit rate, mean return, Sharpe, drawdown).
 
 /// Forward returns associated with a single bar (from enriched depthscope).
 #[derive(Debug, Clone, Copy, Default)]
@@ -32,7 +29,6 @@ pub struct SignalStats {
     pub avg_hold_bars: f64,
     pub avg_pattern_count: f64,
     pub avg_maha_dist: f64,
-    pub avg_iso_score: f64,
     pub n_momentum: u64,
     pub n_reversal: u64,
 }
@@ -49,7 +45,6 @@ pub struct EvalRow {
     pub hold_bars: u32,
     pub pattern_count: u32,
     pub maha_dist: f64,
-    pub iso_score: f64,
     pub fwd: ForwardReturns,
 }
 
@@ -74,7 +69,6 @@ pub fn evaluate(rows: &[EvalRow]) -> SignalStats {
     let mut sum_hold = 0.0;
     let mut sum_pattern = 0.0;
     let mut sum_maha = 0.0;
-    let mut sum_iso = 0.0;
     let mut worst_1h = f64::INFINITY;
     let mut best_1h = f64::NEG_INFINITY;
     let mut rets_1h: Vec<f64> = Vec::with_capacity(rows.len());
@@ -116,7 +110,6 @@ pub fn evaluate(rows: &[EvalRow]) -> SignalStats {
         sum_hold += r.hold_bars as f64;
         sum_pattern += r.pattern_count as f64;
         sum_maha += r.maha_dist;
-        sum_iso += r.iso_score;
         worst_1h = worst_1h.min(signed_ret_1h);
         best_1h = best_1h.max(signed_ret_1h);
         rets_1h.push(signed_ret_1h);
@@ -165,7 +158,6 @@ pub fn evaluate(rows: &[EvalRow]) -> SignalStats {
         avg_hold_bars: sum_hold / nf,
         avg_pattern_count: sum_pattern / nf,
         avg_maha_dist: sum_maha / nf,
-        avg_iso_score: sum_iso / nf,
         n_momentum: mom_count,
         n_reversal: rev_count,
     }
@@ -190,25 +182,18 @@ impl std::fmt::Display for SignalStats {
         writeln!(f, "  realized/expected: {:.3}", self.realized_vs_expected)?;
         writeln!(f, "  avg_confidence: {:.3}", self.avg_confidence)?;
         writeln!(f, "  avg_hold_bars:  {:.1}", self.avg_hold_bars)?;
-        writeln!(f, "  avg_patterns:  {:.1}", self.avg_pattern_count)?;
-        writeln!(f, "  avg_maha_dist:  {:.2}", self.avg_maha_dist)?;
-        writeln!(f, "  avg_iso_score:  {:.3}", self.avg_iso_score)
+        writeln!(f, "  avg_patterns:   {:.1}", self.avg_pattern_count)?;
+        writeln!(f, "  avg_maha_dist:  {:.2}", self.avg_maha_dist)
     }
 }
 
-/// OLS calibration of expected move from realized returns.
-/// Regresses |signed_ret_1h| against maha_dist and iso_score.
-/// Returns (maha_coeff, iso_coeff).
+/// Simple calibration: regresses |signed_ret_1h| against maha_dist.
+/// Returns `(maha_coeff, 0.0)` since the second variable (iso_score) is removed.
 pub fn calibrate_expected_move(rows: &[EvalRow]) -> (f64, f64) {
     if rows.len() < 3 {
-        return (3.0, 20.0);
+        return (3.0, 0.0);
     }
-    let mut s_xx1 = 0.0;
-    let mut s_xx2 = 0.0;
-    let mut s_x1x2 = 0.0;
-    let mut s_x1y = 0.0;
-    let mut s_x2y = 0.0;
-
+    let (mut s_xx, mut s_xy) = (0.0, 0.0);
     for r in rows {
         let y = match r.direction {
             crate::types::SignalDirection::Long => r.fwd.fwd_ret_1h_bps,
@@ -216,22 +201,11 @@ pub fn calibrate_expected_move(rows: &[EvalRow]) -> (f64, f64) {
             crate::types::SignalDirection::Neutral => 0.0,
         }
         .abs();
-        let x1 = r.maha_dist;
-        let x2 = r.iso_score;
-        s_xx1 += x1 * x1;
-        s_xx2 += x2 * x2;
-        s_x1x2 += x1 * x2;
-        s_x1y += x1 * y;
-        s_x2y += x2 * y;
+        s_xx += r.maha_dist * r.maha_dist;
+        s_xy += r.maha_dist * y;
     }
-
-    let det = s_xx1 * s_xx2 - s_x1x2 * s_x1x2;
-    if det.abs() < 1e-12 {
-        return (3.0, 20.0);
-    }
-    let maha_coeff = (s_xx2 * s_x1y - s_x1x2 * s_x2y) / det;
-    let iso_coeff = (s_xx1 * s_x2y - s_x1x2 * s_x1y) / det;
-    (maha_coeff.max(0.0), iso_coeff.max(0.0))
+    let coeff = if s_xx.abs() > 1e-12 { s_xy / s_xx } else { 3.0 };
+    (coeff.max(0.0), 0.0)
 }
 
 #[cfg(test)]
@@ -258,7 +232,6 @@ mod tests {
             hold_bars: 5,
             pattern_count: 2,
             maha_dist: 5.0,
-            iso_score: 0.7,
             fwd: ForwardReturns {
                 fwd_ret_15m_bps: 5.0,
                 fwd_ret_1h_bps: 12.0,
@@ -271,7 +244,6 @@ mod tests {
         assert_eq!(stats.n_short, 0);
         assert!((stats.hit_rate_1h - 1.0).abs() < 1e-9);
         assert!((stats.mean_ret_1h_bps - 12.0).abs() < 1e-9);
-        assert!((stats.sharpe_1h).abs() < 1e-9);
     }
 
     #[test]
@@ -286,7 +258,6 @@ mod tests {
             hold_bars: 3,
             pattern_count: 1,
             maha_dist: 4.5,
-            iso_score: 0.65,
             fwd: ForwardReturns {
                 fwd_ret_15m_bps: -3.0,
                 fwd_ret_1h_bps: -8.0,
@@ -396,7 +367,6 @@ mod tests {
                     hold_bars: sig.hold_bars,
                     pattern_count: sig.pattern_count,
                     maha_dist: sig.mahalanobis_dist,
-                    iso_score: sig.isolation_score,
                     fwd,
                 });
             }

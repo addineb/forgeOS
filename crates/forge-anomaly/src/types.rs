@@ -221,27 +221,12 @@ pub struct AnomalySignal {
     pub confidence: f64,
     pub description: String,
     pub mahalanobis_dist: f64,
-    pub isolation_score: f64,
     pub pattern_count: u32,
     pub expected_move_bps: f64,
     pub hold_bars: u32,
     pub passed_null_edge: bool,
     pub regime: Option<crate::regime::MarketRegime>,
     pub events: Vec<AnomalyEvent>,
-}
-
-/// Which multivariate detector(s) to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DetectionMethod {
-    /// Mahalanobis distance only (default, fast).
-    #[default]
-    Mahalanobis,
-    /// Isolation Forest only.
-    IsolationForest,
-    /// Both must agree (conservative).
-    Both,
-    /// Either detector may trigger (sensitive).
-    Either,
 }
 
 /// Engine configuration. All windows are in *bars*.
@@ -251,14 +236,8 @@ pub struct EngineConfig {
     pub lookback_bars: usize,
     /// Mahalanobis distance threshold (chi-squared-like; ~3-5 typical).
     pub mahalanobis_threshold: f64,
-    /// Isolation Forest anomaly score threshold [0, 1].
-    pub isolation_threshold: f64,
     /// Covariance regularization (added to diagonal, relative to variance).
     pub cov_regularization: f64,
-    /// Number of trees in the isolation forest.
-    pub isolation_trees: usize,
-    /// Detection method selection.
-    pub method: DetectionMethod,
     /// Minimum composite confidence to emit a signal.
     pub min_confidence: f64,
     /// Round-trip fee floor (bps).
@@ -293,8 +272,6 @@ pub struct EngineConfig {
     pub regime_autocorr_threshold: f64,
     /// Calibrated coefficient: maha_dist contribution to expected move (bps).
     pub expected_move_maha_coeff: f64,
-    /// Calibrated coefficient: iso_score contribution to expected move (bps).
-    pub expected_move_iso_coeff: f64,
     /// Benjamini-Hochberg FDR alpha level for per-feature significance (0.05 typical).
     pub fdr_alpha: f64,
 }
@@ -304,10 +281,7 @@ impl Default for EngineConfig {
         Self {
             lookback_bars: 50,
             mahalanobis_threshold: 4.0,
-            isolation_threshold: 0.65,
             cov_regularization: 1.0,
-            isolation_trees: 64,
-            method: DetectionMethod::Mahalanobis,
             min_confidence: 0.55,
             fee_bps: 9.0,
             edge_margin_bps: 3.0,
@@ -325,7 +299,6 @@ impl Default for EngineConfig {
             regime_vol_threshold: 15.0,
             regime_autocorr_threshold: 0.2,
             expected_move_maha_coeff: 3.0,
-            expected_move_iso_coeff: 20.0,
             fdr_alpha: 0.05,
         }
     }

@@ -2,10 +2,10 @@
 //!
 //! Prevents fake edge from random feature permutations or over-triggering.
 
-use crate::detector::{IsolationForestDetector, MahalanobisDetector};
+use crate::detector::MahalanobisDetector;
 use crate::prng;
 use crate::stats::RollingFeatureWindow;
-use crate::types::{DetectionMethod, FeatureVector};
+use crate::types::FeatureVector;
 
 /// Validates signals against shuffled-feature controls and rate limits.
 #[derive(Debug)]
@@ -31,7 +31,6 @@ impl NullEdgeGate {
         }
     }
 
-    /// Record a bar processed (for rate limiting).
     pub fn on_bar(&mut self) {
         self.recent_bars += 1;
         if self.recent_bars >= 100 {
@@ -40,25 +39,27 @@ impl NullEdgeGate {
         }
     }
 
-    /// Record that a signal was emitted.
     pub fn on_signal(&mut self) {
         self.recent_signals += 1;
     }
 
-    /// Whether signal rate is within acceptable bounds.
     #[must_use]
     pub fn rate_ok(&self) -> bool {
         (self.recent_signals as f64) < self.max_signals_per_100
     }
 
-    /// Mahalanobis null-edge: real distance must exceed shuffled permutations.
-    pub fn validate_mahalanobis(
+    /// Validate that the real Mahalanobis distance exceeds the mean distance
+    /// of shuffled-feature permutations by at least `(1 + margin)`.
+    pub fn validate(
         &mut self,
         window: &RollingFeatureWindow,
         x: &FeatureVector,
         real_dist: f64,
         detector: &MahalanobisDetector,
     ) -> bool {
+        if !self.rate_ok() {
+            return false;
+        }
         if self.permutations == 0 {
             return true;
         }
@@ -72,58 +73,6 @@ impl NullEdgeGate {
         }
         let shuffled_mean = shuffled_sum / self.permutations as f64;
         real_dist > shuffled_mean * (1.0 + self.margin)
-    }
-
-    /// Isolation Forest null-edge: real score must exceed shuffled controls.
-    pub fn validate_isolation(
-        &mut self,
-        window: &RollingFeatureWindow,
-        x: &FeatureVector,
-        real_score: f64,
-        detector: &IsolationForestDetector,
-    ) -> bool {
-        if self.permutations == 0 {
-            return true;
-        }
-        let mut shuffled_sum = 0.0;
-        for p in 0..self.permutations {
-            let perm = self.shuffle(x, p);
-            shuffled_sum += detector.score(window, &perm);
-        }
-        let shuffled_mean = shuffled_sum / self.permutations as f64;
-        real_score > shuffled_mean * (1.0 + self.margin)
-    }
-
-    /// Combined validation for the configured detection method.
-    pub fn validate(
-        &mut self,
-        method: DetectionMethod,
-        window: &RollingFeatureWindow,
-        x: &FeatureVector,
-        maha_dist: f64,
-        iso_score: f64,
-        maha_det: &MahalanobisDetector,
-        iso_det: &IsolationForestDetector,
-    ) -> bool {
-        if !self.rate_ok() {
-            return false;
-        }
-        match method {
-            DetectionMethod::Mahalanobis => {
-                self.validate_mahalanobis(window, x, maha_dist, maha_det)
-            }
-            DetectionMethod::IsolationForest => {
-                self.validate_isolation(window, x, iso_score, iso_det)
-            }
-            DetectionMethod::Both => {
-                self.validate_mahalanobis(window, x, maha_dist, maha_det)
-                    && self.validate_isolation(window, x, iso_score, iso_det)
-            }
-            DetectionMethod::Either => {
-                self.validate_mahalanobis(window, x, maha_dist, maha_det)
-                    || self.validate_isolation(window, x, iso_score, iso_det)
-            }
-        }
     }
 
     fn shuffle(&mut self, x: &FeatureVector, perm_idx: u32) -> FeatureVector {
@@ -147,6 +96,7 @@ impl NullEdgeGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn rate_limit_blocks_excess_signals() {
         let mut gate = NullEdgeGate::new(4, 0.25, 3.0, 0);
