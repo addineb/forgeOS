@@ -107,8 +107,11 @@ impl CausalTemplate for AbsorptionReversalTemplate {
             0.0
         };
 
-        if step1_strength >= 1.0 {
-            // Determine direction and check precondition gate (defending depth).
+        if step1_strength >= 1.0 && self.step1_bar.is_none() {
+            // Only fire step 1 when no episode is currently armed. Re-arming on
+            // every bar where pressure is elevated would let a small "echo"
+            // bar overwrite the original magnitude baseline, breaking the
+            // deceleration comparison in step 3.
             let step1_dir = signed_direction(cur.cvd_delta);
             if step1_dir != CausalDirection::Neutral {
                 let defending_depth = Self::defending_depth(cur, step1_dir);
@@ -159,12 +162,27 @@ impl CausalTemplate for AbsorptionReversalTemplate {
             }
         }
 
-        // ── Step 3: CVD decelerated given absorption ──
-        // |cvd_now| < deceleration_ratio * |cvd_step1|, on the same side as step 1.
+        // ── Step 3: pressure fading but still pushing same direction ──
+        //
+        // Causal requirement (per review): the pressure must FADE, not reverse.
+        // A sign flip is a different story (forced exit / capitulation, not
+        // exhaustion), and we want to enter before that. So step 3 fires only
+        // when cur.cvd_delta has the SAME SIGN as step 1 (still pushing the
+        // same side) AND its magnitude has dropped below the deceleration ratio.
+        //
+        // Mathematically:
+        //   For Long  (step1 cvd > 0): need cur.cvd_delta > 0  AND  cur.cvd_delta < ratio * step1_cvd_abs
+        //   For Short (step1 cvd < 0): need cur.cvd_delta < 0  AND  |cur.cvd_delta| < ratio * |step1_cvd_abs|
         if steps_passed >= 2 {
             let decelerated = match direction {
-                CausalDirection::Long => cur.cvd_delta < self.params.deceleration_ratio * self.step1_cvd_abs,
-                CausalDirection::Short => cur.cvd_delta > -(self.params.deceleration_ratio * self.step1_cvd_abs),
+                CausalDirection::Long => {
+                    cur.cvd_delta > 0.0
+                        && cur.cvd_delta < self.params.deceleration_ratio * self.step1_cvd_abs
+                }
+                CausalDirection::Short => {
+                    cur.cvd_delta < 0.0
+                        && cur.cvd_delta.abs() < self.params.deceleration_ratio * self.step1_cvd_abs
+                }
                 CausalDirection::Neutral => false,
             };
             if decelerated {
@@ -289,8 +307,10 @@ mod tests {
         assert!(outcome.is_none(), "step 2 alone does not emit");
         assert!(t.step1_bar.is_some(), "step 1 still armed");
 
-        // Step 3: CVD decelerates (current abs < 0.5 * step1_abs = 1.5).
-        history.push(feat(22, 0.4, 0.0, 0.5, -0.7));
+        // Step 3: CVD fading but still negative (same side as step 1).
+        // Old step 1 was cvd=-3.0, so current |cvd| must be < 0.5*3 = 1.5
+        // AND still negative (not flipped). cvd=-0.4 satisfies both.
+        history.push(feat(22, -0.4, 0.0, 0.5, -0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -347,5 +367,91 @@ mod tests {
         let outcome = t.evaluate(&input);
         // step 1 should NOT fire because precondition failed.
         assert!(outcome.is_none());
+    }
+
+    /// Step 3 rejects a sign flip. Causal narrative says pressure is fading,
+    /// not reversing. If the bar's cvd flips sign relative to step 1, the
+    /// template must NOT emit (that's a different story: capitulation / forced
+    /// exit, which we want to enter BEFORE, not on the bar of).
+    #[test]
+    fn step3_rejects_sign_flip() {
+        let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
+        let mut history: Vec<BarFeatures> = (0..20)
+            .map(|i| feat(i, 0.0, 0.0, 0.0, 0.5))
+            .collect();
+        // Step 1: Short, cvd=-3.0, asks-heavy defending.
+        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        assert!(t.evaluate(&input).is_none(), "step 1 only");
+        assert_eq!(t.step1_dir, CausalDirection::Short);
+
+        // Step 2: ask_absorption holds, cvd still negative (Short).
+        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        assert!(t.evaluate(&input).is_none(), "step 2 only");
+
+        // Step 3 candidate: cvd has FLIPPED to +0.4.
+        // Magnitude 0.4 < 0.5 × 3 = 1.5 (old rule would pass).
+        // But sign is now positive — pressure reversed, not faded.
+        history.push(feat(22, 0.4, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let outcome = t.evaluate(&input);
+        assert!(
+            outcome.is_none(),
+            "step 3 must reject a sign flip (cur.cvd_delta > 0 for Short direction)"
+        );
+        // step 1 should NOT be reset (chain broken, not emitted).
+        // (Implementation choice: we don't reset on failed-step-3; the
+        // window will expire after max_step1_to_signal_bars.)
+    }
+
+    /// Step 3 still fires when magnitude drops below ratio AND sign is preserved.
+    /// Verified with the existing completes_full_chain test (cvd=-0.4 after
+    /// step1 cvd=-3.0). This test documents that explicitly with a separate
+    /// assertion set.
+    #[test]
+    fn step3_accepts_same_sign_fade() {
+        let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
+        let mut history: Vec<BarFeatures> = (0..20)
+            .map(|i| feat(i, 0.0, 0.0, 0.0, 0.5))
+            .collect();
+        // Step 1: Short, cvd=-3.0.
+        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        // Step 2: ask_absorption holds.
+        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let _ = t.evaluate(&input);
+        // Step 3: cvd=-1.0 (still negative, |1.0| < 0.5 × 3 = 1.5 — yes).
+        history.push(feat(22, -1.0, 0.0, 0.5, -0.7));
+        let input = TemplateInput {
+            history: &history,
+            cvd_std: 1.0,
+            cvd_mean: 0.0,
+        };
+        let outcome = t.evaluate(&input);
+        assert!(outcome.is_some(), "step 3 must accept same-sign fade");
+        assert_eq!(outcome.unwrap().direction, CausalDirection::Short);
     }
 }

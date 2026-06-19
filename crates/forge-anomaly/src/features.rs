@@ -155,8 +155,13 @@ pub fn top_n_imbalance(bar: &VolumeBar, n: usize) -> f64 {
 fn compute_absorption(cur: &VolumeBar, prev: &VolumeBar, mid_return_bps: f64) -> (f64, f64) {
     let sell_pressure = (-cur.cvd_delta).max(0.0);
     let buy_pressure = cur.cvd_delta.max(0.0);
-    let bid_held = cur.best_bid >= prev.best_bid;
-    let ask_held = cur.best_ask <= prev.best_ask;
+    // Strict `>` (not `>=`): on volume bars, equal-to-previous price is common
+    // even when no flow hit the level. Require the defending side's price to
+    // actually improve (bid strictly up, ask strictly down) for absorption to
+    // count. Otherwise the absorption flag fires on noise and corrupts the
+    // causal template's step 2.
+    let bid_held = cur.best_bid > prev.best_bid;
+    let ask_held = cur.best_ask < prev.best_ask;
     let vol_scale = if cur.bar_vol > 0.0 { cur.bar_vol } else { 1.0 };
     let scale = (1.0 + mid_return_bps.abs() / 100.0).min(3.0);
 
