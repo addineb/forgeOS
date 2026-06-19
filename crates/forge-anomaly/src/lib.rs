@@ -3,15 +3,17 @@
 //! Volume-bar anomaly engine for ForgeOS. Detects repetitive behavioral patterns
 //! in order-book depth that precede momentum continuations or reversals.
 //!
-//! ## Design
+//! ## Two engine modes
 //!
-//! - **Volume bars** (not clock bars): fractal-aware; same logic on any bar size.
-//! - **Multivariate detection**: Mahalanobis distance (primary) and Isolation
-//!   Forest (alternative) over a rolling feature window.
-//! - **Fee-aware**: signals must clear ~9 bps round-trip costs + margin.
-//! - **Null-edge gate**: rejects signals indistinguishable from shuffled controls.
+//! `EngineConfig::engine_mode` selects between:
 //!
-//! ## Feature vector (per bar)
+//! - **`Legacy`** (default): multivariate Mahalanobis distance + z-score + FDR
+//!   + PatternRepeat. Statistical-deviation detector. Kept for A/B comparison.
+//! - **`Causal`**: structural order-flow template matching. Reuses
+//!   `FeatureExtractor` for feature math; adds a `causal` module with
+//!   templates that match ordered multi-bar causal chains.
+//!
+//! ## Feature vector (per bar, legacy mode)
 //!
 //! | Index | Feature |
 //! |-------|---------|
@@ -42,6 +44,7 @@
 #![forbid(unsafe_code)]
 
 pub mod backtest;
+pub mod causal;
 pub mod csv;
 pub mod detector;
 pub mod engine;
@@ -54,6 +57,10 @@ pub mod stats;
 pub mod types;
 
 pub use backtest::{EvalRow, ForwardReturns, SignalStats, calibrate_expected_move, evaluate};
+pub use causal::{
+    AbsorptionReversalParams, CausalDirection, CausalRollingBuf, CausalSignal,
+    CausalTemplatesConfig, EngineMode, Step, TemplateOutcome,
+};
 pub use csv::{load_volume_bars, load_volume_bars_with_fwd};
 pub use detector::{DetectorError, MahalanobisDetector};
 pub use engine::{AnomalyEngine, EngineOutput};

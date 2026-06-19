@@ -271,6 +271,11 @@ pub struct EngineConfig {
     pub expected_move_maha_coeff: f64,
     /// Benjamini-Hochberg FDR alpha level for per-feature significance (0.05 typical).
     pub fdr_alpha: f64,
+    /// Which engine implementation runs. Default = Legacy.
+    /// Flip to Causal after the first A/B validation cycle produces numbers.
+    pub engine_mode: crate::causal::EngineMode,
+    /// Causal-template configuration (used only when engine_mode = Causal).
+    pub causal: crate::causal::CausalTemplatesConfig,
 }
 
 impl Default for EngineConfig {
@@ -295,6 +300,8 @@ impl Default for EngineConfig {
             max_signals_per_100_bars: 8.0,
             expected_move_maha_coeff: 3.0,
             fdr_alpha: 0.05,
+            engine_mode: crate::causal::EngineMode::Legacy,
+            causal: crate::causal::CausalTemplatesConfig::default(),
         }
     }
 }
