@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(snap.step3_fired, 0);
 
         // Bar 21: step 2 fires again (ask_absorption=0.5 ≥ 0.50),
-        // step 3 attempted again (cvd=-2.5, |2.5| < 0.7×3.0=2.1 → fails).
+        // step 3 attempted again (cvd=-2.5, |2.5| < 0.55×3.0=1.65 → fails).
         history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,

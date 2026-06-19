@@ -150,12 +150,12 @@ impl Default for AbsorptionReversalParams {
             // 0.50 targets a ~25-30% step2 pass rate, aiming for 200-400
             // signals on 40k bars (0.5-1.0%).
             absorption_hold_threshold: 0.50,
-            // Relaxed from 0.5 → 0.70: diagnostic showed 0/19 step3 fire.
-            // Pressure rarely drops below 50% of step1 before sign flips.
-            // 0.70 means pressure can still be at 70% of step1 and count
-            // as deceleration — the key is that it's fading, not the
-            // absolute magnitude.
-            deceleration_ratio: 0.70,
+            // Tightened from 0.70 → 0.55: with absorption direction fixed,
+            // step3 fires on 10% of step2 episodes (910/8750 at 0.70).
+            // 0.55 requires CVD to drop further below step1 magnitude before
+            // counting as deceleration, reducing step3 completions causally
+            // rather than relying on the rate limiter.
+            deceleration_ratio: 0.55,
             depth_precondition_min: 0.25,
             max_step1_to_signal_bars: 6,
             hold_bars: 8,
@@ -178,7 +178,7 @@ impl Default for CausalTemplatesConfig {
     fn default() -> Self {
         Self {
             absorption_reversal: AbsorptionReversalParams::default(),
-            signal_rate_limit: 2.5, // tightened 8→4→2.5: target 200-400 signals on 40k bars
+            signal_rate_limit: 2.0, // tightened 8→4→2.5→2.0: target 400-600 signals
             lookback_bars: 50,
         }
     }
