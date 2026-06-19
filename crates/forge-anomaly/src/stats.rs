@@ -2,9 +2,7 @@
 
 use std::collections::VecDeque;
 
-use ndarray::{Array1, Array2};
-#[allow(unused_imports)]
-use ndarray_stats::SummaryStatisticsExt;
+use nalgebra::{DMatrix, DVector};
 
 use crate::types::FeatureVector;
 use crate::FEATURE_DIM;
@@ -83,11 +81,11 @@ impl RollingFeatureWindow {
         self.buffer.len() >= self.window
     }
 
-    /// Population mean vector.
+    /// Population mean vector as a nalgebra [`DVector<f64>`].
     #[must_use]
-    pub fn mean(&self) -> Array1<f64> {
+    pub fn mean(&self) -> DVector<f64> {
         let n = self.buffer.len() as f64;
-        let mut m = Array1::zeros(FEATURE_DIM);
+        let mut m = DVector::zeros(FEATURE_DIM);
         if n <= 0.0 {
             return m;
         }
@@ -97,39 +95,38 @@ impl RollingFeatureWindow {
         m
     }
 
-    /// Sample covariance matrix with diagonal regularization.
+    /// Sample covariance matrix as a nalgebra [`DMatrix<f64>`], with diagonal regularization.
     #[must_use]
-    pub fn covariance(&self, regularization: f64) -> Array2<f64> {
+    pub fn covariance_matrix(&self, regularization: f64) -> DMatrix<f64> {
         let n = self.buffer.len();
-        let mut cov = Array2::zeros((FEATURE_DIM, FEATURE_DIM));
+        let mut cov = DMatrix::zeros(FEATURE_DIM, FEATURE_DIM);
         if n < 2 {
             for i in 0..FEATURE_DIM {
-                cov[[i, i]] = regularization.max(1e-6);
+                cov[(i, i)] = regularization.max(1e-6);
             }
             return cov;
         }
         let mu = self.mean();
         for v in &self.buffer {
-            let diff = Array1::from_iter(v.iter().copied()) - &mu;
             for i in 0..FEATURE_DIM {
+                let di = v[i] - mu[i];
                 for j in 0..FEATURE_DIM {
-                    cov[[i, j]] += diff[i] * diff[j];
+                    cov[(i, j)] += di * (v[j] - mu[j]);
                 }
             }
         }
         let nf = (n - 1) as f64;
-        cov.mapv_inplace(|x| x / nf);
-        let trace = (0..FEATURE_DIM).map(|i| cov[[i, i]]).sum::<f64>();
+        cov /= nf;
+        let trace = (0..FEATURE_DIM).map(|i| cov[(i, i)]).sum::<f64>();
         let avg_var = (trace / FEATURE_DIM as f64).max(1e-6);
         for i in 0..FEATURE_DIM {
-            let vi = cov[[i, i]].max(1e-6);
-            cov[[i, i]] += regularization * avg_var.max(vi);
+            let vi = cov[(i, i)].max(1e-6);
+            cov[(i, i)] += regularization * avg_var.max(vi);
         }
         cov
     }
 
-    /// Per-feature z-score using rolling mean/std (no lookahead on current value
-    /// if called before push).
+    /// Per-feature z-score using rolling mean/std.
     #[must_use]
     pub fn z_scores(&self, v: &FeatureVector) -> [f64; FEATURE_DIM] {
         let n = self.buffer.len();
@@ -148,19 +145,23 @@ impl RollingFeatureWindow {
     }
 
     /// Per-feature z-scores with Benjamini-Hochberg FDR correction at level `alpha`.
-    /// Returns (z_score, significant) pairs after BH step-up procedure.
+    /// Returns `(z_score, significant)` pairs.
     #[must_use]
     pub fn z_scores_fdr(&self, v: &FeatureVector, alpha: f64) -> [(f64, bool); FEATURE_DIM] {
         let z = self.z_scores(v);
-        let mut indexed: Vec<(usize, f64, f64)> = z.iter().enumerate().map(|(i, &zv)| {
-            let p = two_sided_z_to_p(zv);
-            (i, zv, p)
-        }).collect();
+        let mut indexed: Vec<(usize, f64, f64)> = z
+            .iter()
+            .enumerate()
+            .map(|(i, &zv)| {
+                let p = two_sided_z_to_p(zv);
+                (i, zv, p)
+            })
+            .collect();
         indexed.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
         let m = FEATURE_DIM as f64;
         let mut significant = [false; FEATURE_DIM];
         let mut last_rank = None;
-            for (rank, (_idx, _, p)) in indexed.iter().enumerate() {
+        for (rank, (_idx, _, p)) in indexed.iter().enumerate() {
             let bh_critical = ((rank + 1) as f64 / m) * alpha;
             if *p <= bh_critical {
                 last_rank = Some(rank);
@@ -180,14 +181,14 @@ impl RollingFeatureWindow {
         out
     }
 
-    /// All stored vectors as a matrix (rows = samples).
+    /// All stored vectors as a nalgebra [`DMatrix<f64>`] (rows = samples, cols = features).
     #[must_use]
-    pub fn as_matrix(&self) -> Array2<f64> {
+    pub fn as_matrix(&self) -> DMatrix<f64> {
         let n = self.buffer.len();
-        let mut m = Array2::zeros((n, FEATURE_DIM));
+        let mut m = DMatrix::zeros(n, FEATURE_DIM);
         for (row, v) in self.buffer.iter().enumerate() {
             for (col, &x) in v.iter().enumerate() {
-                m[[row, col]] = x;
+                m[(row, col)] = x;
             }
         }
         m
@@ -251,16 +252,17 @@ mod tests {
     }
 
     #[test]
-    fn ndarray_stats_mean_matches() {
-        let mut w = RollingFeatureWindow::new(5);
-        for i in 0..5 {
+    fn covariance_matrix_positive_definite() {
+        let mut w = RollingFeatureWindow::new(10);
+        for i in 0..20 {
             let mut v = [0.0; FEATURE_DIM];
-            v[0] = i as f64;
+            v[0] = (i as f64) * 0.1;
+            v[1] = (i as f64) * 0.05;
+            v[2] = (i % 3) as f64;
             w.push(v);
         }
-        let col: Vec<f64> = w.buffer.iter().map(|v| v[0]).collect();
-        let arr = Array1::from(col);
-        let stat_mean = arr.mean().expect("non-empty column");
-        assert!((stat_mean - w.mean()[0]).abs() < 1e-9);
+        let cov = w.covariance_matrix(1.0);
+        let chol = nalgebra::linalg::Cholesky::new(cov);
+        assert!(chol.is_some(), "covariance should be positive-definite");
     }
 }

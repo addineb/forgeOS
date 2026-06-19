@@ -68,7 +68,7 @@ impl NullEdgeGate {
         let mut shuffled_sum = 0.0;
         for p in 0..self.permutations {
             let perm = self.shuffle(x, p);
-            shuffled_sum += detector.distance(window, &perm);
+            shuffled_sum += detector.distance_or_zero(window, &perm);
         }
         let shuffled_mean = shuffled_sum / self.permutations as f64;
         real_dist > shuffled_mean * (1.0 + self.margin)

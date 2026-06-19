@@ -7,12 +7,11 @@ publish = false
 
 [dependencies]
 forge-core = { path = "../forge-core" }
-ndarray = { version = "0.15", features = ["serde"] }
-ndarray-stats = "0.5"
-linfa = "0.7"
+nalgebra = { version = "0.33", default-features = false, features = ["std"] }
 csv = "1"
 serde = { version = "1", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
+thiserror = "2"
 
 [dev-dependencies]
 

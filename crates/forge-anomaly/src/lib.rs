@@ -55,7 +55,7 @@ pub mod types;
 
 pub use backtest::{EvalRow, ForwardReturns, SignalStats, calibrate_expected_move, evaluate};
 pub use csv::{load_volume_bars, load_volume_bars_with_fwd};
-pub use detector::{AnomalyDetector, IsolationForestDetector, MahalanobisDetector};
+pub use detector::{AnomalyDetector, DetectorError, IsolationForestDetector, MahalanobisDetector};
 pub use engine::{AnomalyEngine, EngineOutput};
 pub use features::FeatureExtractor;
 pub use null_edge::NullEdgeGate;

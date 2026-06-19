@@ -11,7 +11,7 @@ use crate::regime::{MarketRegime, RegimeDetector};
 use crate::stats::RollingFeatureWindow;
 use crate::types::{
     AnomalyEvent, AnomalyKind, AnomalySignal, BarFeatures, DetectionMethod, EngineConfig,
-    SignalDirection, SignalType, VolumeBar,
+    FeatureVector, SignalDirection, SignalType, VolumeBar,
 };
 
 /// Output of a single engine step.
@@ -114,12 +114,11 @@ impl AnomalyEngine {
 
         let vector = bar_features.to_vector();
 
-        // Detect against prior distribution (no lookahead).
-        let maha_dist = self.maha.distance(&self.window, &vector);
+        let maha_dist = self.maha.distance_or_zero(&self.window, &vector);
         let iso_score = self.iso.score_cached(&self.window, &vector);
 
         let z_fdr = self.window.z_scores_fdr(&vector, self.cfg.fdr_alpha);
-        let mut anomalies = classify_feature_anomalies(&bar_features, bar, &z_fdr, &self.cfg);
+        let mut anomalies = classify_feature_anomalies(&bar_features, bar, &z_fdr);
 
         self.window.push(vector);
         self.iso.bump_epoch();
@@ -159,13 +158,7 @@ impl AnomalyEngine {
 
         let signal = if detector_fired {
             self.try_compose_signal(
-                &anomalies,
-                &bar_features,
-                bar,
-                maha_dist,
-                iso_score,
-                &vector,
-                current_regime,
+                &anomalies, &bar_features, bar, maha_dist, iso_score, &vector, current_regime,
             )
         } else {
             None
@@ -198,7 +191,7 @@ impl AnomalyEngine {
         bar: &VolumeBar,
         maha_dist: f64,
         iso_score: f64,
-        vector: &crate::types::FeatureVector,
+        vector: &FeatureVector,
         regime: MarketRegime,
     ) -> Option<AnomalySignal> {
         if anomalies.is_empty() {
@@ -206,13 +199,7 @@ impl AnomalyEngine {
         }
 
         let passed_null = self.null_edge.validate(
-            self.cfg.method,
-            &self.window,
-            vector,
-            maha_dist,
-            iso_score,
-            &self.maha,
-            &self.iso,
+            self.cfg.method, &self.window, vector, maha_dist, iso_score, &self.maha, &self.iso,
         );
         if !passed_null {
             return None;
@@ -257,6 +244,8 @@ impl AnomalyEngine {
     }
 }
 
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 fn detector_triggered(
     method: DetectionMethod,
     maha_dist: f64,
@@ -278,54 +267,48 @@ fn classify_feature_anomalies(
     f: &BarFeatures,
     bar: &VolumeBar,
     z_fdr: &[(f64, bool); crate::FEATURE_DIM],
-    cfg: &EngineConfig,
 ) -> Vec<AnomalyEvent> {
     let zt = 2.0;
     let mut out = Vec::new();
 
-    push_z_fdr(&mut out, bar, AnomalyKind::Ofi, z_fdr[0], f.ofi_normalized, zt, true);
-    push_z_fdr(&mut out, bar, AnomalyKind::Cvd, z_fdr[1], f.cvd_delta, zt, true);
-    push_z_fdr(&mut out, bar, AnomalyKind::DepthImbalance, z_fdr[2], f.depth_imbalance, zt, true);
-    push_z_fdr(&mut out, bar, AnomalyKind::Absorption, z_fdr[3], f.absorption, zt, true);
+    push_anomaly(&mut out, bar, AnomalyKind::Ofi, z_fdr[0], f.ofi_normalized, zt, true);
+    push_anomaly(&mut out, bar, AnomalyKind::Cvd, z_fdr[1], f.cvd_delta, zt, true);
+    push_anomaly(&mut out, bar, AnomalyKind::DepthImbalance, z_fdr[2], f.depth_imbalance, zt, true);
+    push_anomaly(&mut out, bar, AnomalyKind::Absorption, z_fdr[3], f.absorption, zt, true);
 
+    push_anomaly(&mut out, bar, AnomalyKind::LiquidityVacuum, z_fdr[4], f.liquidity_vacuum, zt, false);
+    // Correct direction for vacuum: net bid vacuum = short pressure, net ask vacuum = long pressure
     let signed_vac = f.ask_vacuum - f.bid_vacuum;
-    push_z_fdr(&mut out, bar, AnomalyKind::LiquidityVacuum, z_fdr[4], f.liquidity_vacuum, zt, false);
     if let Some(event) = out.last_mut() {
         if event.kind == AnomalyKind::LiquidityVacuum {
-            event.direction = if signed_vac > 0.0 { SignalDirection::Long }
-                             else if signed_vac < 0.0 { SignalDirection::Short }
-                             else { SignalDirection::Neutral };
+            event.direction = if signed_vac > 0.0 {
+                SignalDirection::Long
+            } else if signed_vac < 0.0 {
+                SignalDirection::Short
+            } else {
+                SignalDirection::Neutral
+            };
         }
     }
 
-    push_z_fdr(
-        &mut out,
-        bar,
-        AnomalyKind::VolDeltaDivergence,
-        z_fdr[5],
-        f.vol_delta_divergence,
-        zt,
-        false,
-    );
+    push_anomaly(&mut out, bar, AnomalyKind::VolDeltaDivergence, z_fdr[5], f.vol_delta_divergence, zt, false);
+    // Skip index 6 (cvd_acceleration_normalized) — no separate anomaly kind for it
+    push_anomaly(&mut out, bar, AnomalyKind::AggressorImbalance, z_fdr[7], f.aggressor_ratio, zt, true);
+    push_anomaly(&mut out, bar, AnomalyKind::LargePrint, z_fdr[8], f.large_print_imbalance, zt, true);
+    push_anomaly(&mut out, bar, AnomalyKind::TradeIntensity, z_fdr[9], f.trade_intensity, zt, false);
 
-    push_z_fdr(&mut out, bar, AnomalyKind::AggressorImbalance, z_fdr[7], f.aggressor_ratio, zt, true);
-    push_z_fdr(&mut out, bar, AnomalyKind::LargePrint, z_fdr[8], f.large_print_imbalance, zt, true);
-    push_z_fdr(&mut out, bar, AnomalyKind::TradeIntensity, z_fdr[9], f.trade_intensity, zt, false);
-
-    let _ = cfg;
     out
 }
 
-fn push_z_fdr(
+fn push_anomaly(
     out: &mut Vec<AnomalyEvent>,
     bar: &VolumeBar,
     kind: AnomalyKind,
-    z_fdr: (f64, bool),
+    (z, significant): (f64, bool),
     raw: f64,
     threshold: f64,
     momentum_direction: bool,
 ) {
-    let (z, significant) = z_fdr;
     if z.abs() < threshold || !significant {
         return;
     }
@@ -334,21 +317,13 @@ fn push_z_fdr(
             SignalDirection::Long
         } else if raw > 0.0 && bar.cvd_delta < 0.0 {
             SignalDirection::Short
-        } else if z > 0.0 {
-            SignalDirection::Long
         } else {
-            SignalDirection::Short
+            z_sign(z)
         }
     } else if momentum_direction {
-        if z > 0.0 {
-            SignalDirection::Long
-        } else {
-            SignalDirection::Short
-        }
-    } else if z > 0.0 {
-        SignalDirection::Long
+        z_sign(z)
     } else {
-        SignalDirection::Short
+        z_sign(z)
     };
 
     let confidence = ((z.abs() - threshold) / threshold).clamp(0.0, 1.0);
@@ -363,15 +338,21 @@ fn push_z_fdr(
     });
 }
 
+fn z_sign(z: f64) -> SignalDirection {
+    if z > 0.0 {
+        SignalDirection::Long
+    } else {
+        SignalDirection::Short
+    }
+}
+
 fn classify_signal_type(
     f: &BarFeatures,
     direction: &SignalDirection,
     events: &[AnomalyEvent],
     regime: MarketRegime,
 ) -> (SignalType, String) {
-    let has_divergence = events
-        .iter()
-        .any(|e| e.kind == AnomalyKind::VolDeltaDivergence);
+    let has_divergence = events.iter().any(|e| e.kind == AnomalyKind::VolDeltaDivergence);
     let has_absorption = events.iter().any(|e| e.kind == AnomalyKind::Absorption);
     let has_large_print = events.iter().any(|e| e.kind == AnomalyKind::LargePrint);
     let has_aggressor = events.iter().any(|e| e.kind == AnomalyKind::AggressorImbalance);
@@ -409,8 +390,7 @@ fn classify_signal_type(
 }
 
 fn vote_direction(events: &[AnomalyEvent]) -> Option<SignalDirection> {
-    let mut long_w = 0.0;
-    let mut short_w = 0.0;
+    let (mut long_w, mut short_w) = (0.0, 0.0);
     for e in events {
         if e.kind == AnomalyKind::PatternRepeat {
             continue;
@@ -435,15 +415,8 @@ fn majority_direction(events: &[AnomalyEvent]) -> SignalDirection {
     vote_direction(events).unwrap_or(SignalDirection::Neutral)
 }
 
-fn composite_confidence(
-    events: &[AnomalyEvent],
-    maha: f64,
-    iso: f64,
-    cfg: &EngineConfig,
-) -> f64 {
-    let mut total = 0.0;
-    let mut weight = 0.0;
-    let mut kinds = 0u32;
+fn composite_confidence(events: &[AnomalyEvent], maha: f64, iso: f64, cfg: &EngineConfig) -> f64 {
+    let (mut total, mut weight, mut kinds) = (0.0, 0.0, 0u32);
     for e in events {
         if e.kind == AnomalyKind::PatternRepeat {
             continue;
@@ -477,7 +450,9 @@ fn expected_move_bps(maha: f64, iso: f64, cfg: &EngineConfig) -> f64 {
 }
 
 fn hold_bars(maha: f64, iso: f64, cfg: &EngineConfig) -> u32 {
-    let scale = (maha / cfg.mahalanobis_threshold).max(iso / cfg.isolation_threshold).max(1.0);
+    let scale = (maha / cfg.mahalanobis_threshold)
+        .max(iso / cfg.isolation_threshold)
+        .max(1.0);
     let hold = (cfg.base_hold_bars as f64 * scale).round() as u32;
     hold.clamp(cfg.base_hold_bars, cfg.max_hold_bars)
 }
@@ -485,7 +460,6 @@ fn hold_bars(maha: f64, iso: f64, cfg: &EngineConfig) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::VolumeBar;
 
     fn synth(idx: u64, bid_q: f64, cvd: f64) -> VolumeBar {
         VolumeBar {
