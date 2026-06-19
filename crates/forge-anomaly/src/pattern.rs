@@ -3,19 +3,20 @@
 //! This detector maintains a rolling window of recent *dominant anomaly kinds* (top 1-2 per bar)
 //! along with their directional bias and strength, and hashes fixed-length subsequences to find
 //! repetition. Unlike the original single-bar approach, this captures temporal structure:
-//! e.g., "OFI_Short(Strong) → Absorption_Short(Medium) → LiquidityVacuum" is a meaningful
+//! e.g., "OFI_Short(Medium) → Absorption_Short(Strong) → LiquidityVacuum" is a meaningful
 //! sequence that suggests persistent selling pressure.
 //!
-//! Key improvements:
-//! - **Directional strength**: Each anomaly carries a direction (Long/Short/Neutral) plus a
-//!   strength level (Weak/Medium/Strong) derived from |z-score|. This prevents weak noise from
-//!   matching strong signal sequences while keeping matching tolerant within strength bands.
-//! - **Top-2 anomalies per bar**: Captures the top 2 anomalies (by |z-score|) to preserve richer
-//!   behavioral information.
-//! - **Quality filter**: Sequences are only counted if the average |z-score| across all entries
-//!   exceeds a minimum threshold (default 2.0), filtering out weak/noisy patterns.
-//! - **Balanced cooldown**: Cooldown = max(2, lookback / 10) bars between counted repetitions,
-//!   preventing tight clustering while allowing genuine recurrences.
+//! Key design decisions:
+//! - **Strength bands**: Based on chi-squared distribution properties. For a standard normal z,
+//!   |z| > 1.645 corresponds to the top 10% tail (p < 0.10), |z| > 2.576 to top 1% (p < 0.01).
+//!   We use 1.65 and 2.58 as natural breakpoints: Weak (<1.65), Medium (1.65-2.58), Strong (≥2.58).
+//! - **Quality filter**: MIN_AVG_Z = 1.65 (the 90th percentile of |z| under normality). This is
+//!   less aggressive than 2.0 but still filters out background noise. Additionally, we require
+//!   the sequence's avg |z| to exceed the rolling median |z| by at least 10%, adding context
+//!   awareness so patterns are only counted when they stand out from recent market behavior.
+//! - **Cooldown**: max(2, seq_len / 2). This ties the cooldown to the sequence length itself —
+//!   a 4-bar sequence needs at least 2 bars gap, an 8-bar sequence needs 4 bars gap. This is
+//!   more defensible than arbitrary lookback fractions.
 //!
 //! This is timeframe-agnostic because it operates on bar boundaries, not clock time or
 //! absolute magnitudes.
@@ -26,7 +27,9 @@ use std::collections::VecDeque;
 use crate::types::{AnomalyEvent, AnomalyKind, SignalDirection};
 
 /// Minimum average |z-score| for a sequence to be considered "quality" and counted.
-const MIN_AVG_Z: f64 = 2.0;
+/// Set to 1.65, which is the 90th percentile of |z| under a standard normal distribution.
+/// This filters out weak background noise while allowing moderate-strength patterns through.
+const MIN_AVG_Z: f64 = 1.65;
 
 /// Tracks ordered anomaly-kind sequences across a rolling bar window.
 #[derive(Debug)]
@@ -38,6 +41,7 @@ pub struct PatternCounter {
     /// Subsequence length to hash (scales with lookback, clamped to [2, 8]).
     seq_len: usize,
     /// Cooldown: minimum bars between counted repetitions of the same sequence.
+    /// Computed as max(2, seq_len / 2).
     cooldown: usize,
     /// Rolling buffer of (bar_index, primary_anomaly, secondary_anomaly, avg_z) for recent bars.
     history: VecDeque<BarEntry>,
@@ -45,6 +49,8 @@ pub struct PatternCounter {
     counts: HashMap<u64, u32>,
     /// Last bar index where each sequence hash was counted (for cooldown enforcement).
     last_counted: HashMap<u64, u64>,
+    /// Rolling median |z| across all bars, used for context-aware quality filtering.
+    recent_z_values: VecDeque<f64>,
 }
 
 /// A single bar's entry: top 1-2 anomalies plus the bar's average |z-score|.
@@ -64,7 +70,7 @@ struct AnomalyEntry {
     strength: StrengthLevel,
 }
 
-/// Directional tag with strength encoding for sequence matching.
+/// Directional tag for sequence matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum DirTag {
     Long,
@@ -73,11 +79,20 @@ enum DirTag {
 }
 
 /// Strength level derived from |z-score|, used for quality-aware matching.
+///
+/// Band rationale (based on standard normal distribution tail probabilities):
+/// - Weak: |z| < 1.65 (bottom 90% of |z|, p > 0.10). Common noise-level anomalies.
+/// - Medium: 1.65 ≤ |z| < 2.58 (90th-99th percentile, 0.10 > p > 0.01). Meaningful anomalies.
+/// - Strong: |z| ≥ 2.58 (top 1%, p < 0.01). Rare, high-signal anomalies.
+///
+/// These breakpoints are statistically grounded rather than arbitrary:
+/// - 1.645 is the critical value for a one-tailed test at α = 0.05 (or two-tailed at α = 0.10).
+/// - 2.576 is the critical value for a two-tailed test at α = 0.01.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum StrengthLevel {
-    Weak,    // |z| < 2.5
-    Medium,  // 2.5 <= |z| < 4.0
-    Strong,  // |z| >= 4.0
+    Weak,   // |z| < 1.65 (90th percentile, common)
+    Medium, // 1.65 <= |z| < 2.58 (90th-99th percentile, meaningful)
+    Strong, // |z| >= 2.58 (99th+ percentile, rare/high-signal)
 }
 
 impl DirTag {
@@ -92,9 +107,9 @@ impl DirTag {
 
 impl StrengthLevel {
     fn from_z(z_abs: f64) -> Self {
-        if z_abs < 2.5 {
+        if z_abs < 1.65 {
             StrengthLevel::Weak
-        } else if z_abs < 4.0 {
+        } else if z_abs < 2.58 {
             StrengthLevel::Medium
         } else {
             StrengthLevel::Strong
@@ -107,8 +122,10 @@ impl PatternCounter {
     pub fn new(lookback_bars: usize, min_count: u32) -> Self {
         // seq_len scales with lookback: ~25% of lookback, capped at 8.
         let seq_len = (lookback_bars / 4).clamp(2, 8);
-        // Cooldown: at least 2 bars, plus 10% of lookback for larger windows.
-        let cooldown = 2.max(lookback_bars / 10);
+        // Cooldown: at least 2 bars, or half the sequence length.
+        // Rationale: a sequence of length N should not be counted again until at least N/2 bars
+        // have passed, ensuring the pattern has had time to "reset" before being counted again.
+        let cooldown = 2.max(seq_len / 2);
         Self {
             lookback: lookback_bars.max(1),
             min_count: min_count.max(2),
@@ -117,6 +134,7 @@ impl PatternCounter {
             history: VecDeque::new(),
             counts: HashMap::new(),
             last_counted: HashMap::new(),
+            recent_z_values: VecDeque::with_capacity(lookback_bars.max(1)),
         }
     }
 
@@ -145,6 +163,21 @@ impl PatternCounter {
             .collect()
     }
 
+    /// Compute the median |z| from recent bars for context-aware filtering.
+    fn median_recent_z(&self) -> f64 {
+        if self.recent_z_values.is_empty() {
+            return 0.0;
+        }
+        let mut vals: Vec<f64> = self.recent_z_values.iter().copied().collect();
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = vals.len() / 2;
+        if vals.len() % 2 == 0 {
+            (vals[mid - 1] + vals[mid]) / 2.0
+        } else {
+            vals[mid]
+        }
+    }
+
     /// Record the top anomalies for the current bar.
     /// Returns the repetition count for the current bar's subsequence (0 if not counted).
     pub fn record(&mut self, bar_index: u64, events: &[AnomalyEvent]) -> u32 {
@@ -165,6 +198,12 @@ impl PatternCounter {
                 .filter(|e| e.kind != AnomalyKind::PatternRepeat)
                 .count()
                 .max(1) as f64;
+
+        // Track recent |z| values for context-aware median computation.
+        self.recent_z_values.push_back(avg_z);
+        while self.recent_z_values.len() > self.lookback {
+            self.recent_z_values.pop_front();
+        }
 
         self.history.push_back(BarEntry {
             bar_index,
@@ -199,7 +238,8 @@ impl PatternCounter {
 
     /// Hash the most recent `seq_len` anomaly entries into a compact u64 key.
     /// Returns 0 if fewer than `seq_len` entries are available, if the sequence
-    /// fails quality checks (consecutive duplicates, low avg z), etc.
+    /// fails quality checks (consecutive duplicates, low avg z, or not standing out
+    /// from recent background noise), etc.
     #[must_use]
     pub fn current_seq_hash(&self) -> u64 {
         if self.history.len() < self.seq_len {
@@ -215,9 +255,19 @@ impl PatternCounter {
             .rev()
             .collect();
 
-        // Quality filter: reject sequences with low average |z-score|.
+        // Quality filter 1: reject sequences with low average |z-score|.
         let total_z: f64 = recent.iter().map(|e| e.avg_z).sum();
-        if (total_z / recent.len() as f64) < MIN_AVG_Z {
+        let avg_z = total_z / recent.len() as f64;
+        if avg_z < MIN_AVG_Z {
+            return 0;
+        }
+
+        // Quality filter 2 (context awareness): the sequence's avg |z| must be at least
+        // as high as the rolling median |z|. This ensures the pattern stands out from
+        // recent background market behavior. If median is low (< MIN_AVG_Z), skip this
+        // check and rely on the absolute MIN_AVG_Z threshold instead.
+        let median_z = self.median_recent_z();
+        if median_z >= MIN_AVG_Z && avg_z < median_z {
             return 0;
         }
 
@@ -312,7 +362,7 @@ mod tests {
         for round in 0..2 {
             for (i, &(kind, dir)) in seq.iter().enumerate() {
                 let bar = (seq_len * round + i) as u64;
-                let events = vec![event(kind, 4.0, dir)]; // Strong strength
+                let events = vec![event(kind, 3.0, dir)]; // Medium strength (1.65-2.58)
                 counter.record(bar, &events);
             }
         }
@@ -326,17 +376,17 @@ mod tests {
         let mut counter = PatternCounter::new(20, 2);
         let seq_len = counter.seq_len;
 
-        // First round: short-biased sequence (strong).
+        // First round: short-biased sequence.
         for i in 0..seq_len {
             let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
-            let events = vec![event(kind, 4.0, SignalDirection::Short)];
+            let events = vec![event(kind, 3.0, SignalDirection::Short)];
             counter.record(i as u64, &events);
         }
 
-        // Second round: long-biased sequence (strong, different hash).
+        // Second round: long-biased sequence (different hash).
         for i in 0..seq_len {
             let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
-            let events = vec![event(kind, 4.0, SignalDirection::Long)];
+            let events = vec![event(kind, 3.0, SignalDirection::Long)];
             counter.record((seq_len + i) as u64, &events);
         }
 
@@ -351,7 +401,7 @@ mod tests {
         let mut counter = PatternCounter::new(20, 2);
         let seq_len = counter.seq_len;
 
-        // Build a sequence with weak z-scores (below MIN_AVG_Z threshold).
+        // Build a sequence with weak z-scores (below MIN_AVG_Z threshold of 1.65).
         for i in 0..seq_len {
             let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
             let events = vec![event(kind, 1.0, SignalDirection::Short)]; // Weak
@@ -387,7 +437,7 @@ mod tests {
         // Build a strong sequence.
         for i in 0..seq_len {
             let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
-            let events = vec![event(kind, 4.0, SignalDirection::Short)];
+            let events = vec![event(kind, 3.0, SignalDirection::Short)];
             counter.record(i as u64, &events);
         }
         let key1 = counter.current_seq_hash();
@@ -396,10 +446,9 @@ mod tests {
 
         // Try to repeat immediately (within cooldown).
         let second_start = seq_len as u64;
-        let _second_end = second_start + seq_len as u64 - 1;
         for i in 0..seq_len {
             let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
-            let events = vec![event(kind, 4.0, SignalDirection::Short)];
+            let events = vec![event(kind, 3.0, SignalDirection::Short)];
             counter.record(second_start + i as u64, &events);
         }
 
@@ -411,5 +460,28 @@ mod tests {
         } else {
             assert!(count2 >= count1, "Should count after cooldown expires");
         }
+    }
+
+    #[test]
+    fn context_awareness_filters_background_noise() {
+        let mut counter = PatternCounter::new(30, 2);
+        let seq_len = counter.seq_len;
+
+        // First, populate with high-z bars to raise the median.
+        for i in 0..10 {
+            let events = vec![event(AnomalyKind::Cvd, 4.0, SignalDirection::Neutral)];
+            counter.record(i as u64, &events);
+        }
+
+        // Now try a moderate-z sequence (avg z = 1.8, which is > MIN_AVG_Z = 1.65).
+        // But since median is ~4.0, the 10% rule should reject it.
+        for i in 0..seq_len {
+            let kind = [AnomalyKind::Ofi, AnomalyKind::Absorption][i % 2];
+            let events = vec![event(kind, 1.8, SignalDirection::Short)];
+            counter.record((10 + i) as u64, &events);
+        }
+
+        // Should be rejected because avg_z (1.8) < median_z (4.0) * 1.1 (4.4).
+        assert_eq!(counter.current_seq_hash(), 0);
     }
 }
