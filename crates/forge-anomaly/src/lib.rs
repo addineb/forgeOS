@@ -60,7 +60,6 @@ pub use engine::{AnomalyEngine, EngineOutput};
 pub use features::FeatureExtractor;
 pub use null_edge::NullEdgeGate;
 pub use pattern::PatternCounter;
-pub use regime::{MarketRegime, RegimeDetector};
 pub use stats::RollingFeatureWindow;
 pub use types::{
     AnomalyEvent, AnomalyKind, AnomalySignal, BarFeatures, EngineConfig,

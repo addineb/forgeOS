@@ -225,7 +225,6 @@ pub struct AnomalySignal {
     pub expected_move_bps: f64,
     pub hold_bars: u32,
     pub passed_null_edge: bool,
-    pub regime: Option<crate::regime::MarketRegime>,
     pub events: Vec<AnomalyEvent>,
 }
 
@@ -264,12 +263,6 @@ pub struct EngineConfig {
     pub null_edge_seed: u64,
     /// Maximum signals per 100 bars (overfitting guard).
     pub max_signals_per_100_bars: f64,
-    /// Regime lookback (bars).
-    pub regime_lookback: usize,
-    /// Regime volatility threshold (bps std) for Volatile classification.
-    pub regime_vol_threshold: f64,
-    /// Regime autocorrelation threshold for Trending classification.
-    pub regime_autocorr_threshold: f64,
     /// Calibrated coefficient: maha_dist contribution to expected move (bps).
     pub expected_move_maha_coeff: f64,
     /// Benjamini-Hochberg FDR alpha level for per-feature significance (0.05 typical).
@@ -295,9 +288,6 @@ impl Default for EngineConfig {
             null_edge_margin: 0.25,
             null_edge_seed: 0xA5A5_5A5A_C3C3_3C3C,
             max_signals_per_100_bars: 8.0,
-            regime_lookback: 50,
-            regime_vol_threshold: 15.0,
-            regime_autocorr_threshold: 0.2,
             expected_move_maha_coeff: 3.0,
             fdr_alpha: 0.05,
         }
