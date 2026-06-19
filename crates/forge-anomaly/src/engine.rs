@@ -129,8 +129,8 @@ impl AnomalyEngine {
     }
 
     fn update_patterns(&mut self, anomalies: &mut Vec<AnomalyEvent>, bar: &VolumeBar) {
-        let key = PatternCounter::signature(anomalies);
-        let count = self.patterns.record(key);
+        let count = self.patterns.record(bar.bar_index, anomalies);
+        let key = self.patterns.current_seq_hash();
         if self.patterns.is_repetitive(key) {
             let dir = weighted_dir(anomalies).unwrap_or(SignalDirection::Neutral);
             anomalies.push(AnomalyEvent {

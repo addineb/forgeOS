@@ -1,0 +1,44 @@
+﻿cargo :     Checking forge-core v0.0.0 
+(C:\Users\User\.kiro\forgeOS\crates\forge-core)
+At line:1 char:51
++ ... $env:PATH"; cargo clippy -p forge-anomaly -- -W warnings 2>&1 | Out-F ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking fo...tes\forge-core) 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Checking forge-anomaly v0.2.0 
+(C:\Users\User\.kiro\forgeOS\crates\forge-anomaly)
+warning: this function has too many arguments (8/7)
+   --> crates\forge-anomaly\src\engine.rs:194:5
+    |
+194 | /     fn try_compose_signal(
+195 | |         &mut self,
+196 | |         anomalies: &[AnomalyEvent],
+197 | |         features: &BarFeatures,
+...   |
+202 | |         regime: MarketRegime,
+203 | |     ) -> Option<AnomalySignal> {
+    | |______________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clip
+py/rust-1.96.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> crates\forge-anomaly\src\null_edge.rs:98:5
+    |
+ 98 | /     pub fn validate(
+ 99 | |         &mut self,
+100 | |         method: DetectionMethod,
+101 | |         window: &RollingFeatureWindow,
+...   |
+106 | |         iso_det: &IsolationForestDetector,
+107 | |     ) -> bool {
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clip
+py/rust-1.96.0/index.html#too_many_arguments
+
+warning: `forge-anomaly` (lib) generated 2 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.99s
