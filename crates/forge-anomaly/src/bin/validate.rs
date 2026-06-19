@@ -12,7 +12,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use forge_anomaly::{
-    load_volume_bars, AnomalyEngine, AnomalyKind, AnomalySignal, EngineConfig, SignalDirection,
+    load_volume_bars, AnomalyEngine, AnomalyKind, AnomalySignal, CausalDirection,
+    CausalEngine, CausalEngineOutput, CausalSignal, EngineConfig, EngineMode, SignalDirection,
     SignalType, VolumeBar,
 };
 
@@ -49,6 +50,30 @@ struct Cli {
     /// Run on synthetic test data instead of a CSV file.
     #[arg(long)]
     synthetic: bool,
+
+    /// Engine implementation. `legacy` (default) runs the Mahalanobis + z-score + FDR
+    /// pipeline. `causal` runs the new template-based CausalEngine (first template:
+    /// absorption_reversal). Both modes share the same output schema.
+    #[arg(long, value_enum, default_value_t = EngineModeArg::Legacy)]
+    engine: EngineModeArg,
+}
+
+/// Clap-friendly enum mirroring `forge_anomaly::EngineMode`. Kept separate so
+/// clap's derive generates a clean `--help` listing without exposing the
+/// internal type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum EngineModeArg {
+    Legacy,
+    Causal,
+}
+
+impl From<EngineModeArg> for EngineMode {
+    fn from(a: EngineModeArg) -> Self {
+        match a {
+            EngineModeArg::Legacy => EngineMode::Legacy,
+            EngineModeArg::Causal => EngineMode::Causal,
+        }
+    }
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -100,21 +125,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Run engine.
+    // Track the date range actually seen (used by both engine modes).
+    let mut seen_earliest_ts: u64 = u64::MAX;
+    let mut seen_latest_ts: u64 = 0;
+    for bar in &bars {
+        seen_earliest_ts = seen_earliest_ts.min(bar.ts);
+        seen_latest_ts = seen_latest_ts.max(bar.ts);
+    }
+
+    // ── Dispatch by engine mode ──
+    let engine_mode: EngineMode = cli.engine.into();
+    if engine_mode == EngineMode::Causal {
+        // Causal mode ignores legacy-only config fields; uses causal defaults.
+        let mut causal_cfg = EngineConfig::default();
+        causal_cfg.engine_mode = EngineMode::Causal;
+        causal_cfg.lookback_bars = causal_cfg.causal.lookback_bars;
+        return run_causal_mode(
+            &mut out,
+            &bars,
+            &causal_cfg,
+            &desc,
+            seen_earliest_ts,
+            seen_latest_ts,
+        );
+    }
+
+    // Run engine (legacy).
     let mut engine = AnomalyEngine::new(cfg.clone());
     let mut all_signals: Vec<AnomalySignal> = Vec::new();
     let mut total_maha = 0.0;
     let mut maha_count = 0u64;
     let mut anomaly_counts: std::collections::HashMap<AnomalyKind, u64> =
         std::collections::HashMap::new();
-    // Track the date range actually seen.
-    let mut seen_earliest_ts: u64 = u64::MAX;
-    let mut seen_latest_ts: u64 = 0;
 
     for (_bar_idx, bar) in bars.iter().enumerate() {
         let output = engine.on_bar(bar);
-        seen_earliest_ts = seen_earliest_ts.min(bar.ts);
-        seen_latest_ts = seen_latest_ts.max(bar.ts);
 
         if output.mahalanobis_dist > 0.0 {
             total_maha += output.mahalanobis_dist;
@@ -590,4 +635,249 @@ fn nz(idx: usize, seed: usize) -> f64 {
     ((y.wrapping_mul(0xBF58476D1CE4E5B9) ^ (y >> 33)).wrapping_mul(0x94D049BB133111EB) as f64
         / u64::MAX as f64)
         - 0.5
+}
+
+// ── Causal mode ───────────────────────────────────────────────────────────────────
+
+/// Map `CausalDirection` to the legacy `SignalDirection` enum so the same
+/// downstream report columns render correctly.
+fn causal_dir_to_signal(d: CausalDirection) -> SignalDirection {
+    match d {
+        CausalDirection::Long => SignalDirection::Long,
+        CausalDirection::Short => SignalDirection::Short,
+        CausalDirection::Neutral => SignalDirection::Neutral,
+    }
+}
+
+/// Run the CausalEngine over `bars` and emit a legacy-schema report
+/// (signal table + summary statistics) to `out`.
+///
+/// The schema matches the legacy path:
+///   `# bar ts type dir conf maha move hold pattern`
+/// with two additions:
+///   `steps` (template completeness, e.g. 3/3) and `template` (template id).
+fn run_causal_mode(
+    out: &mut Box<dyn Write>,
+    bars: &[VolumeBar],
+    cfg: &EngineConfig,
+    desc: &str,
+    seen_earliest_ts: u64,
+    seen_latest_ts: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = CausalEngine::new(cfg.clone());
+    let mut all_signals: Vec<CausalSignal> = Vec::new();
+    let mut anomaly_counts: std::collections::HashMap<String, u64> =
+        std::collections::HashMap::new();
+
+    for bar in bars {
+        let output: CausalEngineOutput = engine.on_bar(bar);
+        // Causal mode has no per-feature z-score events; we just count template
+        // completions for visibility.  Anomaly kinds map to template steps.
+        for sig in &output.signals {
+            anomaly_counts
+                .entry(sig.template_id.to_string())
+                .or_insert(0);
+            *anomaly_counts.get_mut(sig.template_id).unwrap() += 1;
+        }
+        all_signals.extend(output.signals);
+    }
+
+    // ── Header ──
+    writeln!(out)?;
+    writeln!(
+        out,
+        "═══════════════════════════════════════════════════════════════"
+    )?;
+    writeln!(
+        out,
+        "  forge-anomaly validate  |  source: {}  |  engine: CAUSAL",
+        desc
+    )?;
+    let early = if seen_earliest_ts < u64::MAX {
+        format_ts_date_only(seen_earliest_ts)
+    } else {
+        "?".into()
+    };
+    let late = if seen_latest_ts > 0 {
+        format_ts_date_only(seen_latest_ts)
+    } else {
+        "?".into()
+    };
+    writeln!(
+        out,
+        "  dates: {} → {}  |  bars: {}",
+        early,
+        late,
+        bars.len()
+    )?;
+    writeln!(
+        out,
+        "  causal: lookback={}  rate_limit={:.1}/100  template=absorption_reversal",
+        cfg.causal.lookback_bars, cfg.causal.signal_rate_limit
+    )?;
+    writeln!(
+        out,
+        "  absorption_reversal: cvd_thr={:.2}*σ  abs_thr={:.2}  decel_ratio={:.2}  depth_pre≥{:.2}  max_bars={}  hold={}",
+        cfg.causal.absorption_reversal.cvd_pressure_threshold,
+        cfg.causal.absorption_reversal.absorption_hold_threshold,
+        cfg.causal.absorption_reversal.deceleration_ratio,
+        cfg.causal.absorption_reversal.depth_precondition_min,
+        cfg.causal.absorption_reversal.max_step1_to_signal_bars,
+        cfg.causal.absorption_reversal.hold_bars,
+    )?;
+    writeln!(
+        out,
+        "═══════════════════════════════════════════════════════════════"
+    )?;
+    writeln!(out)?;
+
+    // ── Signal table ──
+    if all_signals.is_empty() {
+        writeln!(out, "  NO SIGNALS generated (causal mode).")?;
+        writeln!(out, "  Template absorption_reversal did not complete a chain on this data.")?;
+    } else {
+        writeln!(
+            out,
+            "── Signal Table ─────────────────────────────────────────────"
+        )?;
+        writeln!(
+            out,
+            "  {:>3} {:>6} {:>19} {:>10} {:>8} {:>6.3} {:>6.1} {:>6.1} {:>5} {:>5} {}",
+            "#", "bar", "ts", "template", "dir", "conf", "maha", "move", "hold", "steps", "pat"
+        )?;
+        writeln!(
+            out,
+            "  {} {} {} {} {} {} {} {} {} {} {}",
+            "---",
+            "------",
+            "-------------------",
+            "----------",
+            "--------",
+            "-------",
+            "-------",
+            "-------",
+            "-----",
+            "-----",
+            "---"
+        )?;
+        for (idx, sig) in all_signals.iter().enumerate() {
+            let dir_label = match sig.direction {
+                CausalDirection::Long => "long",
+                CausalDirection::Short => "short",
+                CausalDirection::Neutral => "neutral",
+            };
+            let sig_dir = causal_dir_to_signal(sig.direction);
+            // Causal mode has no PatternRepeat.  Always show empty for the
+            // pattern column so A/B diffs align with legacy output.
+            writeln!(
+                out,
+                "  {:>3} {:>6} {:>19} {:>10} {:>8} {:>6.3} {:>6.1} {:>6.1} {:>5} {:>5} {:>3}",
+                idx,
+                sig.bar_index,
+                format_ts(sig.ts),
+                sig.template_id,
+                dir_label,
+                sig.confidence,
+                0.0, // no maha in causal mode
+                sig.expected_move_bps,
+                sig.hold_bars,
+                format!("{}/{}", sig.steps_passed, sig.steps_total),
+                "",
+            )?;
+            // Touch sig_dir to silence unused warning if compiler complains.
+            let _ = sig_dir;
+        }
+        writeln!(out)?;
+    }
+
+    // ── Statistics ──
+    writeln!(
+        out,
+        "── Summary Statistics ───────────────────────────────────────"
+    )?;
+    writeln!(out, "  bars processed:             {:>6}", bars.len())?;
+    writeln!(
+        out,
+        "  total signals:              {:>6}  ({:.1}% of bars)",
+        all_signals.len(),
+        all_signals.len() as f64 / bars.len().max(1) as f64 * 100.0
+    )?;
+    // In causal mode there is no PatternRepeat / maha split.  We print
+    // zeroed entries so A/B column counts match.
+    writeln!(
+        out,
+        "    causal template:          {:>6}  ({:.1}% of signals)  ← KEY METRIC",
+        all_signals.len(),
+        if all_signals.is_empty() {
+            0.0
+        } else {
+            100.0
+        }
+    )?;
+    writeln!(
+        out,
+        "    pattern-based (legacy):   {:>6}  ({:.1}% of signals)",
+        0,
+        0.0
+    )?;
+    writeln!(out)?;
+
+    if !all_signals.is_empty() {
+        let n = all_signals.len() as f64;
+        let avg_c = all_signals.iter().map(|s| s.confidence).sum::<f64>() / n;
+        let avg_mv = all_signals.iter().map(|s| s.expected_move_bps).sum::<f64>() / n;
+        let avg_h = all_signals.iter().map(|s| s.hold_bars as f64).sum::<f64>() / n;
+        let min_c = all_signals
+            .iter()
+            .map(|s| s.confidence)
+            .fold(f64::INFINITY, f64::min);
+        let max_c = all_signals
+            .iter()
+            .map(|s| s.confidence)
+            .fold(0.0_f64, f64::max);
+        writeln!(
+            out,
+            "  avg confidence:             {:.3}  (range {:.3} – {:.3})",
+            avg_c, min_c, max_c
+        )?;
+        writeln!(out, "  avg expected move:          {:.1} bps", avg_mv)?;
+        writeln!(out, "  avg hold bars:              {:.0}", avg_h)?;
+        writeln!(out, "  avg maha_dist (n/a):        —")?;
+
+        let lng = all_signals
+            .iter()
+            .filter(|s| matches!(s.direction, CausalDirection::Long))
+            .count();
+        let sht = all_signals
+            .iter()
+            .filter(|s| matches!(s.direction, CausalDirection::Short))
+            .count();
+        writeln!(out, "  reversal:  {}  momentum: {}  long: {}  short: {}",
+            all_signals.len(), 0, lng, sht)?;
+    }
+
+    writeln!(out)?;
+    writeln!(out, "── Template Completeness ────────────────────────────────────")?;
+    if all_signals.is_empty() {
+        writeln!(out, "  (no completions)")?;
+    } else {
+        let mut sorted: Vec<&CausalSignal> = all_signals.iter().collect();
+        sorted.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        for (i, s) in sorted.iter().take(10).enumerate() {
+            let dir_label = match s.direction {
+                CausalDirection::Long => "long",
+                CausalDirection::Short => "short",
+                CausalDirection::Neutral => "neutral",
+            };
+            writeln!(
+                out,
+                "  #{:>2} bar={:<6} dir={:<6} conf={:.3} steps={}/{} bars_in_story={}  {}",
+                i, s.bar_index, dir_label, s.confidence,
+                s.steps_passed, s.steps_total, s.bars_in_story,
+                s.description,
+            )?;
+        }
+    }
+
+    Ok(())
 }

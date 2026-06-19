@@ -58,8 +58,9 @@ pub mod types;
 
 pub use backtest::{EvalRow, ForwardReturns, SignalStats, calibrate_expected_move, evaluate};
 pub use causal::{
-    AbsorptionReversalParams, CausalDirection, CausalRollingBuf, CausalSignal,
-    CausalTemplatesConfig, EngineMode, Step, TemplateOutcome,
+    AbsorptionReversalParams, CausalDirection, CausalEngine, CausalEngineOutput,
+    CausalRollingBuf, CausalSignal, CausalTemplatesConfig, EngineMode, Step,
+    TemplateOutcome,
 };
 pub use csv::{load_volume_bars, load_volume_bars_with_fwd};
 pub use detector::{DetectorError, MahalanobisDetector};

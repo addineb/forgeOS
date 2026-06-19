@@ -24,6 +24,8 @@ pub mod rate_limit;
 pub mod template;
 pub mod templates;
 
+pub use engine::{CausalEngine, CausalEngineOutput};
+
 use std::collections::VecDeque;
 
 /// Which engine implementation runs when `validate` or the library is called.
