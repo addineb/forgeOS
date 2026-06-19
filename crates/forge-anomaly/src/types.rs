@@ -285,7 +285,7 @@ impl Default for EngineConfig {
             edge_margin_bps: 3.0,
             depth_top_n: 5,
             ofi_normalized: true,
-            min_pattern_count: 3,
+            min_pattern_count: 4,
             pattern_lookback_bars: 20,
             base_hold_bars: 3,
             max_hold_bars: 48,
