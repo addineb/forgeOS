@@ -467,7 +467,7 @@ mod tests {
         assert!(t.evaluate(&input).is_none(), "step 1 only");
         assert_eq!(t.step1_dir, CausalDirection::Short);
 
-        // Step 2: bid_absorption holds (0.5 ≥ 0.12).
+        // Step 2: bid_absorption holds (0.5 ≥ 0.25).
         history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
@@ -544,7 +544,7 @@ mod tests {
             cvd_mean: 0.0,
         };
         let _ = t.evaluate(&input);
-        // Step 2: bid_absorption holds (0.5 ≥ 0.12).
+        // Step 2: bid_absorption holds (0.5 ≥ 0.25).
         history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(snap.step3_attempts, 1);
         assert_eq!(snap.step3_fired, 0);
 
-        // Bar 21: step 2 fires again (ask_absorption=0.5 ≥ 0.12),
+        // Bar 21: step 2 fires again (ask_absorption=0.5 ≥ 0.25),
         // step 3 attempted again (cvd=-2.5, |2.5| < 0.7×3.0=2.1 → fails).
         history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
