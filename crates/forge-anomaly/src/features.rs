@@ -155,13 +155,12 @@ pub fn top_n_imbalance(bar: &VolumeBar, n: usize) -> f64 {
 fn compute_absorption(cur: &VolumeBar, prev: &VolumeBar, mid_return_bps: f64) -> (f64, f64) {
     let sell_pressure = (-cur.cvd_delta).max(0.0);
     let buy_pressure = cur.cvd_delta.max(0.0);
-    // Strict `>` (not `>=`): on volume bars, equal-to-previous price is common
-    // even when no flow hit the level. Require the defending side's price to
-    // actually improve (bid strictly up, ask strictly down) for absorption to
-    // count. Otherwise the absorption flag fires on noise and corrupts the
-    // causal template's step 2.
-    let bid_held = cur.best_bid > prev.best_bid;
-    let ask_held = cur.best_ask < prev.best_ask;
+    // Relaxed from strict `>`/`<` to `>=`/`<=`: diagnostic showed 28,731
+    // absfail vs 22 step2_fired.  Flat price during aggressive flow IS
+    // absorption — the defending side is holding.  The `> 0` pressure
+    // check already filters no-flow bars, so equal-price noise is moot.
+    let bid_held = cur.best_bid >= prev.best_bid;
+    let ask_held = cur.best_ask <= prev.best_ask;
     let vol_scale = if cur.bar_vol > 0.0 { cur.bar_vol } else { 1.0 };
     let scale = (1.0 + mid_return_bps.abs() / 100.0).min(3.0);
 
@@ -215,7 +214,11 @@ fn relative_drop(prev: f64, cur: f64) -> f64 {
 
 fn relative_rise(prev: f64, cur: f64) -> f64 {
     if prev <= 0.0 {
-        if cur > 0.0 { 1.0 } else { 0.0 }
+        if cur > 0.0 {
+            1.0
+        } else {
+            0.0
+        }
     } else {
         ((cur - prev) / prev).max(0.0)
     }

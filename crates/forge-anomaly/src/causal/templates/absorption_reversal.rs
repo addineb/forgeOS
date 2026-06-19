@@ -93,13 +93,17 @@ impl AbsorptionReversalTemplate {
     }
 
     /// Compute the defending-side depth-imbalance ratio (0..=1) for `dir`.
-    /// `bar.depth_imbalance` is (bid - ask) / (bid + ask). For Long we want
-    /// bids thick → positive; for Short we want asks thick → negative.
-    /// Returns 0..=1.
+    /// `bar.depth_imbalance` is (bid - ask) / (bid + ask).
+    /// `dir` comes from `signed_direction(cvd)` — the CVD sign, NOT the
+    /// signal direction.  CVD > 0 (Long) = buyers pressing, ask defends →
+    /// need ask-side depth.  CVD < 0 (Short) = sellers pressing, bid defends
+    /// → need bid-side depth.  Returns 0..=1.
     fn defending_depth(bar: &BarFeatures, dir: CausalDirection) -> f64 {
         match dir {
-            CausalDirection::Long => (bar.depth_imbalance + 1.0) / 2.0,
-            CausalDirection::Short => (1.0 - bar.depth_imbalance) / 2.0,
+            // CVD > 0: buyers pressing → ask is the defending side.
+            CausalDirection::Long => (1.0 - bar.depth_imbalance) / 2.0,
+            // CVD < 0: sellers pressing → bid is the defending side.
+            CausalDirection::Short => (bar.depth_imbalance + 1.0) / 2.0,
             CausalDirection::Neutral => 0.0,
         }
     }
@@ -204,9 +208,12 @@ impl CausalTemplate for AbsorptionReversalTemplate {
                 // Same direction as step 1?
                 self.diag.step2_attempts += 1;
                 if direction != CausalDirection::Neutral {
+                    // direction = step1_dir = signed_direction(CVD).
+                    // CVD < 0 (Short) → sellers pressing → bid defends → check bid_absorption.
+                    // CVD > 0 (Long)  → buyers pressing → ask defends → check ask_absorption.
                     let defending_absorption = match direction {
-                        CausalDirection::Long => cur.bid_absorption,
-                        CausalDirection::Short => cur.ask_absorption,
+                        CausalDirection::Long => cur.ask_absorption,
+                        CausalDirection::Short => cur.bid_absorption,
                         CausalDirection::Neutral => 0.0,
                     };
                     if defending_absorption >= self.params.absorption_hold_threshold {
@@ -359,10 +366,10 @@ mod tests {
             .map(|i| feat(i, 0.1 * (((i % 5) as f64) - 2.0), 0.0, 0.0, 0.5))
             .collect();
         // Step 1: strong negative CVD → Short direction.
-        // For Short, defending side = ask, so depth_imbalance must be NEGATIVE
-        // (asks-heavy). defending_depth = (1 - depth_im) / 2.
-        // With depth_im = -0.7, defending_depth = (1 - (-0.7))/2 = 0.85 ≥ 0.25 ✓
-        history.push(feat(20, -3.0, 0.0, 0.6, -0.7));
+        // For Short (CVD < 0), defending side = bid, so depth_imbalance must
+        // be POSITIVE (bids-heavy). defending_depth = (depth_im + 1)/2.
+        // With depth_im = +0.7, defending_depth = (0.7 + 1)/2 = 0.85 ≥ 0.25 ✓
+        history.push(feat(20, -3.0, 0.6, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -374,8 +381,8 @@ mod tests {
         assert!(t.step1_bar.is_some(), "step 1 should be armed");
         assert_eq!(t.step1_dir, CausalDirection::Short);
 
-        // Step 2: ask_absorption holds (same direction Short).
-        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        // Step 2: bid_absorption holds (Short → bid defense).
+        history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -386,9 +393,8 @@ mod tests {
         assert!(t.step1_bar.is_some(), "step 1 still armed");
 
         // Step 3: CVD fading but still negative (same side as step 1).
-        // Old step 1 was cvd=-3.0, so current |cvd| must be < 0.5*3 = 1.5
-        // AND still negative (not flipped). cvd=-0.4 satisfies both.
-        history.push(feat(22, -0.4, 0.0, 0.5, -0.7));
+        // With decel_ratio=0.70, |cvd| < 0.7×3.0 = 2.1. cvd=-0.4 satisfies.
+        history.push(feat(22, -0.4, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -451,8 +457,8 @@ mod tests {
     fn step3_rejects_sign_flip() {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
         let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
-        // Step 1: Short, cvd=-3.0, asks-heavy defending.
-        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        // Step 1: Short, cvd=-3.0, bids-heavy defending.
+        history.push(feat(20, -3.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -461,8 +467,8 @@ mod tests {
         assert!(t.evaluate(&input).is_none(), "step 1 only");
         assert_eq!(t.step1_dir, CausalDirection::Short);
 
-        // Step 2: ask_absorption holds (0.5 ≥ 0.12 with relaxed threshold).
-        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        // Step 2: bid_absorption holds (0.5 ≥ 0.12).
+        history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -473,7 +479,7 @@ mod tests {
         // Step 3 candidate: cvd=+1.0. Sign flipped, and magnitude 1.0 is
         // ABOVE the near_zero threshold (0.15×3.0=0.45). This is a real
         // sign flip with bite — must be rejected.
-        history.push(feat(22, 1.0, 0.0, 0.5, -0.7));
+        history.push(feat(22, 1.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -495,15 +501,15 @@ mod tests {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
         let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
         // Step 1: Short, cvd=-3.0.
-        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        history.push(feat(20, -3.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
             cvd_mean: 0.0,
         };
         let _ = t.evaluate(&input);
-        // Step 2: ask_absorption holds.
-        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        // Step 2: bid_absorption holds.
+        history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -511,7 +517,7 @@ mod tests {
         };
         let _ = t.evaluate(&input);
         // Step 3: cvd=-1.0 (still negative, |1.0| < 0.5 × 3 = 1.5 — yes).
-        history.push(feat(22, -1.0, 0.0, 0.5, -0.7));
+        history.push(feat(22, -1.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -531,15 +537,15 @@ mod tests {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
         let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
         // Step 1: Short, cvd=-3.0.
-        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        history.push(feat(20, -3.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
             cvd_mean: 0.0,
         };
         let _ = t.evaluate(&input);
-        // Step 2: ask_absorption holds (0.5 ≥ 0.12 with relaxed threshold).
-        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        // Step 2: bid_absorption holds (0.5 ≥ 0.12).
+        history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -548,7 +554,7 @@ mod tests {
         let _ = t.evaluate(&input);
         // Step 3: cvd=+0.3. Sign flipped (long instead of short), but
         // |0.3| < 0.15 × 3.0 = 0.45 → near_zero = true → accepted.
-        history.push(feat(22, 0.3, 0.0, 0.5, -0.7));
+        history.push(feat(22, 0.3, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -573,7 +579,7 @@ mod tests {
         let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
 
         // Bar 20: step 1 (Short, cvd=-3.0, asks-heavy).
-        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        history.push(feat(20, -3.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -598,7 +604,7 @@ mod tests {
 
         // Bar 21: step 2 fires again (ask_absorption=0.5 ≥ 0.12),
         // step 3 attempted again (cvd=-2.5, |2.5| < 0.7×3.0=2.1 → fails).
-        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -614,7 +620,7 @@ mod tests {
         assert_eq!(snap.step3_fired, 0);
 
         // Bar 22: step 3 fires (cvd=-1.0, same sign, |1.0| < 1.5).
-        history.push(feat(22, -1.0, 0.0, 0.5, -0.7));
+        history.push(feat(22, -1.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -636,15 +642,15 @@ mod tests {
         let mut t = AbsorptionReversalTemplate::new(AbsorptionReversalParams::default());
         let mut history: Vec<BarFeatures> = (0..20).map(|i| feat(i, 0.0, 0.0, 0.0, 0.5)).collect();
         // Step 1: Short, cvd=-3.0.
-        history.push(feat(20, -3.0, 0.0, 0.5, -0.7));
+        history.push(feat(20, -3.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
             cvd_mean: 0.0,
         };
         let _ = t.evaluate(&input);
-        // Step 2: ask_absorption holds.
-        history.push(feat(21, -2.5, 0.0, 0.5, -0.7));
+        // Step 2: bid_absorption holds.
+        history.push(feat(21, -2.5, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
@@ -653,7 +659,7 @@ mod tests {
         let _ = t.evaluate(&input);
         // Step 3 candidate: cvd=+1.0 (sign flipped, magnitude 1.0 > near_zero
         // threshold 0.45, so this is properly rejected).
-        history.push(feat(22, 1.0, 0.0, 0.5, -0.7));
+        history.push(feat(22, 1.0, 0.5, 0.0, 0.7));
         let input = TemplateInput {
             history: &history,
             cvd_std: 1.0,
