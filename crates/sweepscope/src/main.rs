@@ -636,10 +636,15 @@ fn run_signal_source_config(
     for fi in 0..cv.n_folds() {
         let oos_range = cv.oos_range(fi);
         let oos_bars = &bars[oos_range.clone()];
-        let oos_signals: Vec<&signal_source::RawSignal> = sorted
+        // Remap signal bar_index to OOS-relative index before walking.
+        let oos_signals: Vec<signal_source::RawSignal> = sorted
             .iter()
             .copied()
             .filter(|s| s.bar_index >= oos_range.start && s.bar_index < oos_range.end)
+            .map(|s| signal_source::RawSignal {
+                bar_index: s.bar_index - oos_range.start,
+                ..s.clone()
+            })
             .collect();
         let mut last_exit_oos: Option<usize> = None;
         for sig in &oos_signals {
